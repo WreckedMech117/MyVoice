@@ -18,13 +18,11 @@ A desktop application for voice cloning and text-to-speech using GPT-SoVITS tech
 - **Storage**: 12GB free space (for dependencies, GPT-SoVITS with models, and cache)
 - **Python**: 3.10 or higher
 
-### Included Dependencies
-
-- **FFmpeg** - Audio processing for Whisper (included in `ffmpeg/` directory)
-  - Pre-configured for Windows
-  - Used by OpenAI Whisper for audio transcription
-
 ### Required External Software
+
+- **FFmpeg** - Audio processing for Whisper (auto-installed via setup script)
+  - Required for OpenAI Whisper audio transcription
+  - Installation handled by `setup_ffmpeg.bat` or `setup_ffmpeg.py`
 
 - **GPT-SoVITS** - Voice cloning engine (not included in this repository)
   - Download and setup instructions: [GPT-SoVITS GitHub](https://github.com/RVC-Boss/GPT-SoVITS)
@@ -42,20 +40,46 @@ A desktop application for voice cloning and text-to-speech using GPT-SoVITS tech
 
 ## Installation
 
-### 1. Clone the Repository
+### Quick Install (Windows - Recommended)
+
+**Easy 2-step installation:**
+
+1. **Clone the Repository**
+   ```bash
+   git clone https://github.com/WreckedMech117/MyVoice.git
+   cd MyVoice
+   ```
+
+2. **Run Installation Script**
+   ```bash
+   install_myvoice.bat
+   ```
+
+This automated script will:
+- Create Python virtual environment
+- Download and install FFmpeg (~150MB)
+- Install all Python dependencies including PyTorch
+- Install MyVoice package
+
+### Manual Installation (Advanced Users / Linux / Mac)
+
+<details>
+<summary>Click to expand manual installation steps</summary>
+
+#### 1. Clone the Repository
 
 ```bash
 git clone https://github.com/WreckedMech117/MyVoice.git
 cd MyVoice
 ```
 
-### 2. Create Virtual Environment
+#### 2. Create Virtual Environment
 
 ```bash
 python -m venv .venv
 ```
 
-### 3. Activate Virtual Environment
+#### 3. Activate Virtual Environment
 
 **Windows:**
 ```bash
@@ -67,13 +91,42 @@ python -m venv .venv
 source .venv/bin/activate
 ```
 
-### 4. Install Dependencies
+#### 4. Setup FFmpeg (Required for Whisper)
+
+**Windows:**
+```bash
+python setup_ffmpeg.py
+```
+
+**Linux/Mac:**
+```bash
+# Install via package manager
+# Ubuntu/Debian:
+sudo apt install ffmpeg
+
+# macOS:
+brew install ffmpeg
+```
+
+#### 5. Install Dependencies
 
 ```bash
+# Install PyTorch CPU version first (faster)
+pip install torch==2.0.1 --index-url https://download.pytorch.org/whl/cpu
+
+# Install remaining dependencies
 pip install -r requirements.txt
 ```
 
-### 5. Setup GPT-SoVITS
+#### 6. Install MyVoice Package
+
+```bash
+pip install -e .
+```
+
+</details>
+
+### Setup GPT-SoVITS
 
 Download and setup [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) separately. By default, MyVoice expects it running at `http://127.0.0.1:9880`.
 
@@ -81,12 +134,18 @@ Download and setup [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) separate
 
 ### Running MyVoice
 
+**Windows (Easy Method):**
 ```bash
+run_myvoice.bat
+```
+
+**Or using Python:**
+```bash
+# Make sure virtual environment is activated first
 python -m myvoice.main
 ```
 
-Or if installed via pip:
-
+**Or if installed:**
 ```bash
 myvoice
 ```
@@ -147,10 +206,14 @@ MyVoice/
 │       ├── services/      # Business logic services
 │       ├── models/        # Data models
 │       └── utils/         # Utility functions
-├── ffmpeg/                # FFmpeg binaries for audio processing
+├── ffmpeg/                # FFmpeg binaries (auto-downloaded)
 ├── voice_files/           # Voice profile samples
 ├── logs/                  # Application logs
 ├── config/                # Configuration files
+├── install_myvoice.bat    # Complete installation script (Windows)
+├── run_myvoice.bat        # Application launcher (Windows)
+├── setup_ffmpeg.py        # FFmpeg setup script
+├── setup_ffmpeg.bat       # Windows FFmpeg installer
 ├── requirements.txt       # Python dependencies
 ├── setup.py               # Package configuration
 ├── LICENSE                # License file
@@ -174,16 +237,13 @@ MyVoice/
 
 ## Configuration
 
-Application settings are stored in:
-- **Windows**: `%APPDATA%\MyVoice\settings.json`
-- **Linux**: `~/.config/MyVoice/settings.json`
-- **Mac**: `~/Library/Application Support/MyVoice/settings.json`
+Application settings and data are stored locally in the project directory:
+- **Settings**: `config/settings.json`
+- **Logs**: `logs/myvoice.log`
+- **Whisper Models**: `whisper_models/` (downloaded on first use)
+- **Voice Profiles**: `voice_files/`
 
-## Logs
-
-Application logs are written to:
-- **Location**: `logs/myvoice.log`
-- **Rotation**: Automatic when file exceeds size limit
+This makes the application portable - you can move the entire folder and your settings come with it!
 
 ## Troubleshooting
 

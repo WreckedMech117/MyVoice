@@ -194,14 +194,9 @@ class WhisperService(BaseService):
                     self.logger.info(f"Using bundled Whisper models from: {bundled_model_dir}")
                     return bundled_model_dir
 
-            # Fallback: use user cache directory (should not happen in production)
-            self.logger.warning("Bundled Whisper models not found, falling back to cache directory")
-            if sys.platform == "win32":
-                cache_dir = os.path.join(os.environ.get("LOCALAPPDATA", os.environ.get("TEMP", "")), "whisper")
-            else:
-                cache_dir = os.path.expanduser("~/.cache/whisper")
-
-            cache_path = Path(cache_dir)
+            # Fallback: use local whisper_models directory
+            self.logger.warning("Bundled Whisper models not found, using local directory")
+            cache_path = Path("whisper_models")
             cache_path.mkdir(parents=True, exist_ok=True)
             return cache_path
 

@@ -142,14 +142,11 @@ class MyVoiceApp(QObject):
             # Create necessary directories
             self._ensure_directories()
 
-            # Initialize Configuration Service with %LOCALAPPDATA% path
+            # Initialize Configuration Service with local config directory
             from myvoice.services.configuration_service import ConfigurationManager
-            import os
-            if sys.platform == "win32":
-                appdata = os.environ.get('LOCALAPPDATA', os.path.expanduser('~'))
-                config_path = Path(appdata) / "MyVoice" / "config" / "settings.json"
-            else:
-                config_path = Path.home() / ".local" / "share" / "MyVoice" / "config" / "settings.json"
+
+            # Use local config directory (relative to project root)
+            config_path = Path("config") / "settings.json"
 
             self._config_manager = ConfigurationManager(config_file=config_path)
             self.register_service("config", self._config_manager)
@@ -280,21 +277,12 @@ class MyVoiceApp(QObject):
             return False
 
     def _ensure_directories(self):
-        """Create necessary application directories in %LOCALAPPDATA%."""
-        import os
-
-        # Use %LOCALAPPDATA% for user data (Windows best practice)
-        if sys.platform == "win32":
-            appdata = os.environ.get('LOCALAPPDATA', os.path.expanduser('~'))
-            base_dir = Path(appdata) / "MyVoice"
-        else:
-            # Unix: use ~/.local/share/MyVoice
-            base_dir = Path.home() / ".local" / "share" / "MyVoice"
-
+        """Create necessary application directories in local project folder."""
+        # Use local directories relative to project root
         directories = [
-            base_dir / "config",
-            base_dir / "logs",
-            base_dir / "voice_files"
+            Path("config"),
+            Path("logs"),
+            Path("voice_files")
         ]
 
         for directory in directories:

@@ -79,8 +79,9 @@ config/*.json
 *.zip
 *.7z
 *.exe
-!ffmpeg/**/*.exe
-!src/install_files/.gitkeep
+
+# FFmpeg (downloaded by setup script)
+ffmpeg/
 
 # Temp files
 *.tmp

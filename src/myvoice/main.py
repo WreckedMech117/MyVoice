@@ -140,17 +140,8 @@ def create_splash_screen() -> QSplashScreen:
 
 def setup_logging():
     """Configure application logging."""
-    import os
-
-    # Use %LOCALAPPDATA% for logs (Windows best practice)
-    # This ensures logs can be written even from Program Files
-    if sys.platform == "win32":
-        appdata = os.environ.get('LOCALAPPDATA', os.path.expanduser('~'))
-        log_dir = Path(appdata) / "MyVoice" / "logs"
-    else:
-        # Unix: use ~/.local/share/MyVoice/logs
-        log_dir = Path.home() / ".local" / "share" / "MyVoice" / "logs"
-
+    # Use local logs directory relative to project root
+    log_dir = Path("logs")
     log_dir.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
