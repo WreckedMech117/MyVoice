@@ -1,0 +1,279 @@
+/*
+Minimal Dark Theme - Testing Basic Properties
+*/
+
+/* Root styling */
+QWidget {
+    background-color: #0f172a;
+    color: #f8fafc;
+    font-family: 'Segoe UI Emoji', 'Segoe UI', Arial, sans-serif;
+    font-size: 9pt;
+}
+
+/* Main windows */
+QMainWindow {
+    background-color: #020617;
+    border: 1px solid #334155;
+    border-radius: 8px;
+}
+
+/* Custom Title Bar - Frameless Window */
+QWidget[objectName="custom_title_bar"] {
+    background-color: #0f172a;
+    border-bottom: 1px solid #334155;
+    min-height: 28px;
+    max-height: 28px;
+}
+
+QLabel[objectName="title_label"] {
+    color: #f8fafc;
+    font-weight: 600;
+    font-size: 9pt;
+    padding-left: 8px;
+    background: transparent;
+}
+
+/* Window Control Buttons */
+QPushButton[objectName="minimize_button"],
+QPushButton[objectName="maximize_button"],
+QPushButton[objectName="close_button"] {
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    min-width: 32px;
+    max-width: 32px;
+    min-height: 24px;
+    max-height: 24px;
+    color: #cbd5e1;
+    font-size: 14px;
+    padding: 0px;
+}
+
+QPushButton[objectName="minimize_button"]:hover,
+QPushButton[objectName="maximize_button"]:hover {
+    background-color: #1e293b;
+}
+
+QPushButton[objectName="minimize_button"]:pressed,
+QPushButton[objectName="maximize_button"]:pressed {
+    background-color: #334155;
+}
+
+QPushButton[objectName="close_button"]:hover {
+    background-color: #dc2626;
+    color: white;
+}
+
+QPushButton[objectName="close_button"]:pressed {
+    background-color: #b91c1c;
+    color: white;
+}
+
+/* Buttons with dark blue and green highlights */
+QPushButton {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1e40af, stop:1 #1e3a8a);
+    color: #ffffff;
+    border: none;
+    border-radius: 8px;
+    padding: 12px 20px;
+    font-weight: bold;
+}
+
+QPushButton:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #10b981, stop:1 #059669);
+}
+
+QPushButton:pressed {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #047857, stop:1 #065f46);
+}
+
+/* Dialog styling */
+QDialog {
+    background-color: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 12px;
+}
+
+/* Tab styling */
+QTabWidget::pane {
+    border: 2px solid #404040;
+    border-radius: 8px;
+    background-color: #262626;
+}
+
+QTabBar::tab {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #323232, stop:1 #262626);
+    color: #a3a3a3;
+    border: 1px solid #404040;
+    padding: 12px 24px;
+    border-radius: 6px;
+    margin: 2px;
+}
+
+QTabBar::tab:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #404040, stop:1 #323232);
+    color: #e5e5e5;
+}
+
+QTabBar::tab:selected {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #10b981, stop:1 #059669);
+    color: #ffffff;
+    border-color: #10b981;
+}
+
+/* Input fields */
+QLineEdit, QTextEdit, QComboBox {
+    background-color: #1e293b;
+    border: 2px solid #334155;
+    border-radius: 6px;
+    padding: 8px 12px;
+    color: #f8fafc;
+}
+
+QLineEdit:focus, QTextEdit:focus, QComboBox:focus {
+    border-color: #10b981;
+}
+
+/* Labels */
+QLabel {
+    color: #e5e5e5;
+    background: transparent;
+}
+
+QLabel[class="title"] {
+    color: #ffffff;
+    font-size: 12pt;
+    font-weight: bold;
+}
+
+QLabel[class="caption"] {
+    color: #a3a3a3;
+    font-size: 8pt;
+}
+
+/* Status indicators */
+QLabel[class="caption"][status="success"] {
+    color: #10b981;
+}
+
+QLabel[class="caption"][status="error"] {
+    color: #ef4444;
+}
+
+/* Icon buttons - settings, refresh, transcription */
+QPushButton[objectName="settings_button"] {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #374151, stop:1 #1f2937);
+    color: #e5e7eb;
+    border: 1px solid #4b5563;
+    border-radius: 6px;
+    font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
+    font-size: 14px;
+}
+
+QPushButton[objectName="settings_button"]:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #10b981, stop:1 #059669);
+    color: #ffffff;
+    border-color: #10b981;
+}
+
+/* Voice selector icon buttons */
+QPushButton[objectName="refresh_button"] {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #374151, stop:1 #1f2937);
+    color: #e5e7eb;
+    border: 1px solid #4b5563;
+    border-radius: 6px;
+    font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
+    font-size: 14px;
+}
+
+QPushButton[objectName="refresh_button"]:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #10b981, stop:1 #059669);
+    color: #ffffff;
+    border-color: #10b981;
+}
+
+QToolButton[objectName="transcription_button"] {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #374151, stop:1 #1f2937);
+    color: #e5e7eb;
+    border: 1px solid #4b5563;
+    border-radius: 6px;
+    font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
+    font-size: 14px;
+}
+
+QToolButton[objectName="transcription_button"]:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #10b981, stop:1 #059669);
+    color: #ffffff;
+    border-color: #10b981;
+}
+
+/* Settings dialog refresh buttons with reduced padding */
+QPushButton[objectName="settings_refresh_button"] {
+    padding: 8px 12px;
+}
+
+/* Menu styling - Dropdown menus */
+QMenu {
+    background-color: #1e293b;
+    border: 2px solid #334155;
+    border-radius: 8px;
+    padding: 4px;
+    color: #f8fafc;
+}
+
+QMenu::item {
+    background-color: transparent;
+    padding: 8px 24px;
+    border-radius: 4px;
+    color: #f8fafc;
+}
+
+QMenu::item:hover {
+    background-color: #10b981;
+    color: #ffffff;
+}
+
+QMenu::item:selected {
+    background-color: #059669;
+    color: #ffffff;
+}
+
+QMenu::separator {
+    height: 1px;
+    background-color: #334155;
+    margin: 4px 8px;
+}
+
+/* Table and List Widget alternating row colors - Dark Blue and Dark Green */
+QTableWidget, QListWidget {
+    background-color: #1e293b;
+    alternate-background-color: #064e3b;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    color: #f8fafc;
+    gridline-color: #334155;
+}
+
+QTableWidget::item, QListWidget::item {
+    padding: 8px;
+    border: none;
+}
+
+QTableWidget::item:selected, QListWidget::item:selected {
+    background-color: #10b981;
+    color: #ffffff;
+}
+
+QTableWidget::item:hover, QListWidget::item:hover {
+    background-color: #047857;
+    color: #ffffff;
+}
+
+/* Table Headers */
+QHeaderView::section {
+    background-color: #0f172a;
+    color: #f8fafc;
+    padding: 8px;
+    border: 1px solid #334155;
+    font-weight: bold;
+}

@@ -1,0 +1,94 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer
+installer_output/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# MyVoice Specific
+# GPT-SoVITS (external dependency - not included in repo)
+GPT-SoVITS/
+GPT-SoVITS.7z
+
+# Bundled Python (for installer only)
+python310/
+
+# Build artifacts
+build_tools/installer_output/
+dist/
+
+# Audio cache and generated files
+whisper_models/
+*.wav.bak
+
+# Config (keep templates, ignore user configs)
+config/*.json
+!config/*.json.example
+
+# Third-party installers
+*.zip
+*.7z
+*.exe
+!ffmpeg/**/*.exe
+!src/install_files/.gitkeep
+
+# Temp files
+*.tmp
+nul
+backup/
+testingdata/
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini

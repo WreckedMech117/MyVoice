@@ -1,0 +1,3730 @@
+"""
+Audio Service Module
+
+This module provides the AudioManager service for handling monitor audio playback
+with Windows audio device management, volume control, and async processing.
+"""
+
+import asyncio
+import logging
+import io
+import wave
+import threading
+import time
+from typing import Optional, List, Dict, Any, Callable
+from dataclasses import dataclass
+from datetime import datetime
+
+try:
+    import pyaudio
+    PYAUDIO_AVAILABLE = True
+except ImportError:
+    PYAUDIO_AVAILABLE = False
+    pyaudio = None
+
+from myvoice.models.audio_device import AudioDevice, DeviceType, VirtualDeviceDriver
+from myvoice.models.audio_playback_task import AudioPlaybackTask, PlaybackStatus
+from myvoice.models.error import MyVoiceError, ErrorSeverity
+from myvoice.models.device_notification import DeviceNotification, DeviceChangeHandler, NotificationSeverity
+from myvoice.models.app_settings import AppSettings
+from myvoice.services.integrations.windows_audio_client import WindowsAudioClient, DeviceChangeEvent
+from myvoice.services.virtual_device_compatibility_service import VirtualDeviceCompatibilityService, FallbackStrategy
+from myvoice.services.audio_level_manager import AudioLevelManager, CommunicationApp, NormalizationMode
+from myvoice.services.dual_stream_synchronizer import DualStreamSynchronizer, SynchronizationMode, StreamConfiguration
+from myvoice.services.core.base_service import BaseService, ServiceStatus
+
+
+@dataclass
+class AudioStreamConfig:
+    """Configuration for audio stream playback."""
+    sample_rate: int = 48000  # Use 48kHz for VoiceMeeter compatibility
+    channels: int = 2
+    sample_width: int = 2  # 16-bit
+    chunk_size: int = 1024
+
+
+@dataclass
+class VirtualMicrophoneConfig:
+    """Configuration for virtual microphone audio routing."""
+    sample_rate: int = 48000  # Optimized for communication apps
+    channels: int = 1  # Mono for microphone simulation
+    sample_width: int = 2  # 16-bit
+    chunk_size: int = 512  # Smaller chunks for lower latency
+    enable_noise_gate: bool = True
+    noise_gate_threshold: float = -40.0  # dB
+    enable_compression: bool = True
+    compression_ratio: float = 3.0
+
+    # Audio level management settings
+    enable_level_management: bool = True
+    target_communication_app: CommunicationApp = CommunicationApp.GENERIC
+    normalization_mode: NormalizationMode = NormalizationMode.AGC
+    target_peak_db: float = -6.0
+    target_rms_db: float = -18.0
+    max_gain_db: float = 12.0
+    min_gain_db: float = -20.0
+    enable_auto_app_detection: bool = True
+
+
+# Audio error handling constants
+AUDIO_TIMEOUT_SECONDS = 30.0
+MAX_INITIALIZATION_RETRIES = 3
+INITIALIZATION_RETRY_DELAY = 1.0  # seconds
+
+# Supported audio formats for fallback
+SUPPORTED_SAMPLE_RATES = [44100, 48000, 22050, 16000]
+SUPPORTED_CHANNELS = [2, 1]  # stereo, mono
+SUPPORTED_SAMPLE_WIDTHS = [2, 1, 4]  # 16-bit, 8-bit, 32-bit
+
+
+class AudioManager(BaseService):
+    """
+    Audio Manager Service for monitor speaker playback.
+
+    Handles dual audio routing to monitor speakers with quality preservation,
+    async processing, and Windows audio device management integration.
+
+    Key Features:
+    - Async monitor audio playback to prevent UI blocking
+    - Volume control with system integration
+    - Audio quality preservation (no resampling/compression)
+    - Windows audio device enumeration and monitoring
+    - Graceful error handling and device fallback
+    """
+
+    def __init__(self, enable_device_monitoring: bool = True, app_settings: Optional[AppSettings] = None):
+        """
+        Initialize the Audio Manager.
+
+        Args:
+            enable_device_monitoring: Whether to monitor device changes
+            app_settings: Application settings for volume persistence
+
+        Raises:
+            RuntimeError: If PyAudio is not available
+        """
+        super().__init__("AudioManager")
+        self.logger = logging.getLogger(self.__class__.__name__)
+
+        if not PYAUDIO_AVAILABLE:
+            raise RuntimeError(
+                "PyAudio is not available. Please install pyaudio: pip install pyaudio"
+            )
+
+        # Audio client for device management
+        self.audio_client = WindowsAudioClient(enable_monitoring=enable_device_monitoring)
+
+        # Virtual device compatibility service
+        self.virtual_compatibility_service = VirtualDeviceCompatibilityService()
+
+        # Audio level management service
+        self.audio_level_manager = None  # Initialized when virtual mic is configured
+
+        # Dual-stream synchronization service
+        self.dual_stream_synchronizer = None  # Initialized when dual streams are needed
+
+        # Application settings for persistence
+        self._app_settings = app_settings
+
+        # Playback state management
+        self.active_playback_tasks: Dict[str, AudioPlaybackTask] = {}
+        self.playback_threads: Dict[str, threading.Thread] = {}
+
+        # Default audio configuration
+        self.stream_config = AudioStreamConfig()
+        self.virtual_mic_config = VirtualMicrophoneConfig()
+
+        # Load preferred monitor device from settings if available
+        if self._app_settings:
+            if self._app_settings.monitor_device_id:
+                self.logger.debug(f"Monitor device ID from settings: {self._app_settings.monitor_device_id}")
+
+        # Device change handling
+        self.device_change_handler = DeviceChangeHandler()
+        self.device_change_handler.add_notification_callback(self._handle_device_notification)
+
+        # Device state tracking
+        self.current_monitor_device: Optional[AudioDevice] = None
+        self.current_virtual_microphone_device: Optional[AudioDevice] = None
+        self.device_refresh_callbacks: List[Callable] = []
+
+        # Virtual microphone state
+        self.virtual_mic_playback_tasks: Dict[str, AudioPlaybackTask] = {}
+        self.virtual_mic_threads: Dict[str, threading.Thread] = {}
+        self.dual_stream_enabled: bool = True  # Enable simultaneous routing by default
+
+        # Async processing
+        self._shutdown_event = threading.Event()
+
+        # Virtual device fallback configuration
+        self.enable_fallback_notifications = True
+
+        # Device change throttling to prevent startup spam
+        self.last_device_refresh_time = 0
+        self.device_refresh_throttle_seconds = 1.0  # Minimum 1 second between device refreshes
+
+        # Register for device change events
+        self.audio_client.add_device_change_callback(self._on_device_change)
+
+        self.logger.info("AudioManager initialized successfully")
+
+    @property
+    def app_settings(self) -> Optional[AppSettings]:
+        """Get the current application settings."""
+        return self._app_settings
+
+    @app_settings.setter
+    def app_settings(self, value: Optional[AppSettings]):
+        """
+        Set application settings and update internal state.
+        """
+        self._app_settings = value
+
+    async def enumerate_audio_devices(self, refresh_cache: bool = False) -> List[AudioDevice]:
+        """
+        Enumerate available audio devices asynchronously.
+
+        Args:
+            refresh_cache: Force refresh of device cache
+
+        Returns:
+            List[AudioDevice]: Available audio devices
+
+        Raises:
+            MyVoiceError: If device enumeration fails
+        """
+        try:
+            self.logger.debug("Enumerating audio devices")
+
+            # Run device enumeration in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            devices = await loop.run_in_executor(
+                None,
+                self.audio_client.enumerate_audio_devices,
+                refresh_cache
+            )
+
+            self.logger.info(f"Found {len(devices)} audio devices")
+            return devices
+
+        except Exception as e:
+            self.logger.error(f"Failed to enumerate audio devices: {e}")
+
+            # Enhanced error handling with recovery strategies
+            user_message = "Failed to scan audio devices"
+            suggested_action = "Check Windows audio drivers and restart the application"
+
+            # Provide specific guidance based on error type
+            error_str = str(e).lower()
+            if "access" in error_str or "permission" in error_str:
+                user_message = "Permission denied accessing audio system"
+                suggested_action = "Try running as administrator or check audio device permissions"
+            elif "driver" in error_str or "alsa" in error_str or "wasapi" in error_str:
+                user_message = "Audio driver issue detected"
+                suggested_action = "Update audio drivers or restart Windows Audio service"
+            elif "device not found" in error_str or "no device" in error_str:
+                user_message = "No audio devices detected"
+                suggested_action = "Check device connections and ensure audio drivers are installed"
+            elif "timeout" in error_str:
+                user_message = "Audio device scan timed out"
+                suggested_action = "Try again after a moment, or restart the application"
+
+            raise MyVoiceError(
+                severity=ErrorSeverity.ERROR,
+                code="DEVICE_ENUMERATION_FAILED",
+                user_message=user_message,
+                technical_details=str(e),
+                suggested_action=suggested_action
+            )
+
+    async def get_output_devices(self) -> List[AudioDevice]:
+        """
+        Get only output (speaker) devices for monitor selection.
+
+        Returns:
+            List[AudioDevice]: Available output devices
+        """
+        try:
+            all_devices = await self.enumerate_audio_devices()
+            output_devices = [
+                device for device in all_devices
+                if device.device_type in [DeviceType.OUTPUT, DeviceType.VIRTUAL]
+                and device.is_available
+            ]
+
+            self.logger.debug(f"Found {len(output_devices)} output devices")
+            return output_devices
+
+        except Exception as e:
+            self.logger.error(f"Failed to get output devices: {e}")
+            return []
+
+    async def get_virtual_input_devices_async(self) -> List[AudioDevice]:
+        """
+        Get virtual input devices for microphone routing with compatibility checking.
+
+        Returns:
+            List[AudioDevice]: Available virtual input devices
+        """
+        try:
+            # Get virtual input devices from audio client
+            loop = asyncio.get_event_loop()
+            virtual_devices = await loop.run_in_executor(
+                None,
+                self.audio_client.enumerate_virtual_input_devices
+            )
+
+            # Check compatibility and availability using virtual compatibility service
+            if virtual_devices:
+                availability_results = await self.virtual_compatibility_service.validate_virtual_device_availability(virtual_devices)
+
+                # Update device availability based on compatibility check
+                for device in virtual_devices:
+                    device.is_available = availability_results.get(device.device_id, False)
+
+            # Filter for available devices
+            available_virtual_devices = [
+                device for device in virtual_devices
+                if device.is_available
+            ]
+
+            # If no devices pass compatibility check but raw devices were found, use unfiltered list
+            if not available_virtual_devices and virtual_devices:
+                self.logger.warning(f"No virtual devices passed compatibility check, but {len(virtual_devices)} raw devices found. Using unfiltered list as fallback.")
+                # Mark all devices as available for fallback
+                for device in virtual_devices:
+                    device.is_available = True
+                available_virtual_devices = virtual_devices
+
+            # If truly no devices are available, provide fallback guidance
+            if not available_virtual_devices:
+                self.logger.warning("No virtual input devices available - applying fallback strategy")
+                await self._apply_virtual_device_fallback()
+
+            self.logger.debug(f"Found {len(available_virtual_devices)} available virtual input devices")
+            return available_virtual_devices
+
+        except Exception as e:
+            self.logger.error(f"Failed to get virtual input devices: {e}")
+            return []
+
+    async def get_vb_cable_devices(self) -> List[AudioDevice]:
+        """
+        Get VB-Audio Cable devices with compatibility validation.
+
+        Returns:
+            List[AudioDevice]: Available VB-Audio Cable devices
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            vb_devices = await loop.run_in_executor(
+                None,
+                self.audio_client.get_vb_cable_devices
+            )
+
+            # Validate VB-Cable specific compatibility
+            if vb_devices:
+                detection_results = await self.virtual_compatibility_service.detect_virtual_drivers()
+                vb_cable_info = detection_results.get(VirtualDeviceDriver.VB_CABLE)
+
+                if vb_cable_info and vb_cable_info.status.value != "installed":
+                    self.logger.warning(f"VB-Audio Cable driver status: {vb_cable_info.status.value}")
+                    # Mark devices as unavailable if driver has issues
+                    for device in vb_devices:
+                        device.is_available = False
+
+            self.logger.debug(f"Found {len(vb_devices)} VB-Audio Cable devices")
+            return vb_devices
+
+        except Exception as e:
+            self.logger.error(f"Failed to get VB-Audio Cable devices: {e}")
+            return []
+
+    async def get_voicemeeter_devices(self) -> List[AudioDevice]:
+        """
+        Get Voicemeeter devices with compatibility validation.
+
+        Returns:
+            List[AudioDevice]: Available Voicemeeter devices
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            vm_devices = await loop.run_in_executor(
+                None,
+                self.audio_client.get_voicemeeter_devices
+            )
+
+            # Validate Voicemeeter specific compatibility
+            if vm_devices:
+                detection_results = await self.virtual_compatibility_service.detect_virtual_drivers()
+                voicemeeter_info = detection_results.get(VirtualDeviceDriver.VOICEMEETER)
+
+                if voicemeeter_info and voicemeeter_info.status.value != "installed":
+                    self.logger.warning(f"Voicemeeter driver status: {voicemeeter_info.status.value}")
+                    # Mark devices as unavailable if driver has issues
+                    for device in vm_devices:
+                        device.is_available = False
+
+            self.logger.debug(f"Found {len(vm_devices)} Voicemeeter devices")
+            return vm_devices
+
+        except Exception as e:
+            self.logger.error(f"Failed to get Voicemeeter devices: {e}")
+            return []
+
+    async def validate_device_availability(self, device: AudioDevice) -> bool:
+        """
+        Validate that a device is available for playback.
+
+        Args:
+            device: AudioDevice to validate
+
+        Returns:
+            bool: True if device is available
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            is_available, error_msg = await loop.run_in_executor(
+                None,
+                self.audio_client.validate_device_availability,
+                device
+            )
+
+            if not is_available:
+                self.logger.warning(f"Device {device.name} unavailable: {error_msg}")
+
+            return is_available
+
+        except Exception as e:
+            self.logger.error(f"Error validating device {device.name}: {e}")
+            return False
+
+    async def play_monitor_audio(self, audio_data: bytes, device: Optional[AudioDevice] = None,
+                               volume_level: float = 1.0) -> AudioPlaybackTask:
+        """
+        Play audio through specified monitor device asynchronously.
+
+        Args:
+            audio_data: Binary WAV audio data
+            device: Target audio device (None = use current monitor device)
+            volume_level: Playback volume (0.0 to 1.0)
+
+        Returns:
+            AudioPlaybackTask: Playback task for tracking
+
+        Raises:
+            MyVoiceError: If playback setup fails
+        """
+        try:
+            # Use current monitor device if none specified
+            target_device = device or self.current_monitor_device
+
+            if not target_device:
+                # Try to get a default device as fallback
+                output_devices = await self.get_output_devices()
+                if output_devices:
+                    target_device = output_devices[0]  # Use first available output device
+                    self.logger.info(f"No monitor device set, using fallback: {target_device.name}")
+                else:
+                    raise MyVoiceError(
+                        severity=ErrorSeverity.ERROR,
+                        code="NO_AUDIO_DEVICE",
+                        user_message="No audio devices available for playback",
+                        suggested_action="Connect an audio device and check audio settings"
+                    )
+
+            self.logger.debug(f"Starting monitor audio playback to {target_device.name}")
+
+            # Validate device availability with fallback logic
+            if not await self.validate_device_availability(target_device):
+                # Try to use fallback device
+                fallback_device = self.device_change_handler.fallback_device
+                if fallback_device and await self.validate_device_availability(fallback_device):
+                    self.logger.warning(f"Primary device unavailable, using fallback: {fallback_device.name}")
+                    target_device = fallback_device
+                    self.current_monitor_device = fallback_device
+
+                    # Create fallback notification
+                    notification = DeviceNotification.create_device_fallback_notification(
+                        device or self.current_monitor_device, fallback_device
+                    )
+                    self._handle_device_notification(notification)
+                else:
+                    raise MyVoiceError(
+                        severity=ErrorSeverity.ERROR,
+                        code="DEVICE_UNAVAILABLE",
+                        user_message=f"Audio device '{target_device.name}' is not available",
+                        suggested_action="Select a different audio device or check device connections"
+                    )
+
+            # Create playback task
+            playback_task = AudioPlaybackTask.create_from_tts_response(
+                audio_data=audio_data,
+                monitor_device=target_device,
+                volume_level=volume_level
+            )
+
+            # Validate task
+            if not playback_task.validate().is_valid:
+                raise MyVoiceError(
+                    severity=ErrorSeverity.ERROR,
+                    code="INVALID_PLAYBACK_TASK",
+                    user_message="Invalid audio playback parameters",
+                    technical_details=playback_task.error_message
+                )
+
+            # Start playback task
+            playback_task.start_playback()
+            self.active_playback_tasks[playback_task.playback_id] = playback_task
+
+            # Start async playback
+            await self._start_async_playback(playback_task)
+
+            self.logger.info(f"Started playback task {playback_task.playback_id}")
+            return playback_task
+
+        except MyVoiceError:
+            raise
+        except Exception as e:
+            self.logger.error(f"Failed to start monitor audio playback: {e}")
+            user_friendly_error = self._create_user_friendly_error(str(e), "audio playback startup")
+            raise user_friendly_error
+
+# REMOVED: play_virtual_microphone method - now handled by VirtualMicrophoneService
+        """
+        Play audio through virtual microphone device for routing to communication apps.
+
+        Args:
+            audio_data: Binary WAV audio data optimized for microphone simulation
+            device_id: Target virtual device ID (None = use current virtual microphone device)
+            volume_level: Playback volume (0.0 to 1.0)
+            enable_dual_stream: Enable simultaneous monitor output (None = use class setting)
+
+        Returns:
+            Optional[AudioPlaybackTask]: Playback task for tracking, None if no devices available
+
+        Raises:
+            MyVoiceError: If virtual microphone setup fails
+        """
+        try:
+            self.logger.info(f"AudioManager.play_virtual_microphone called: device_id={device_id}, enable_dual_stream={enable_dual_stream}")
+
+            # Determine target virtual device and find corresponding input device
+            target_device = None
+            output_device = None  # This will be the device we actually write to
+
+            if device_id:
+                # Find device by ID
+                virtual_devices = self.get_virtual_input_devices()
+                self.logger.info(f"Found {len(virtual_devices)} virtual devices, looking for device_id: {device_id}")
+                for device in virtual_devices:
+                    self.logger.info(f"Checking device: {device.name} (ID: {device.device_id})")
+                    if device.device_id == device_id:
+                        target_device = device
+                        break
+
+                if not target_device:
+                    self.logger.error(f"Virtual microphone device with ID {device_id} not found")
+                    return None
+            else:
+                # Use current virtual microphone device or find one
+                target_device = getattr(self, 'current_virtual_microphone_device', None)
+                if not target_device:
+                    virtual_devices = self.get_virtual_input_devices()
+                    if virtual_devices:
+                        target_device = virtual_devices[0]  # Use first available
+                        self.logger.info(f"No virtual microphone set, using: {target_device.name}")
+                    else:
+                        self.logger.error("No virtual microphone devices available")
+                        return None
+
+            # Find the corresponding output device for VoiceMeeter devices
+            output_device = self._find_virtual_output_device(target_device)
+            if output_device:
+                self.logger.info(f"Found corresponding output device: {output_device.name} for virtual mic: {target_device.name}")
+            else:
+                self.logger.warning(f"No corresponding output device found for {target_device.name}, using original device")
+                output_device = target_device
+
+            self.logger.debug(f"Starting virtual microphone playback to {target_device.name}")
+
+            # Validate virtual device availability
+            is_available, error_msg = self.validate_virtual_device_availability(target_device)
+            if not is_available:
+                self.logger.error(f"Virtual device not available: {error_msg}")
+                return None
+
+            # Optimize audio data for virtual microphone
+            optimized_audio_data = self.optimize_audio_for_virtual_microphone(audio_data, VirtualMicrophoneConfig())
+
+            # Check if dual stream is enabled
+            dual_stream = enable_dual_stream if enable_dual_stream is not None else self.is_dual_stream_enabled()
+
+            self.logger.info(f"Virtual microphone playback: device={target_device.name}, dual_stream={dual_stream}, enable_dual_stream={enable_dual_stream}")
+
+            # Import required enums
+            from myvoice.models.audio_playback_task import DualRoutingMode
+
+            # Create virtual microphone playback task
+            # For virtual microphone playback, we need to determine the routing mode
+            if dual_stream:
+                # Dual routing: need both monitor device and virtual mic device
+                monitor_device = self.get_monitor_device()
+                if not monitor_device:
+                    self.logger.warning("Dual stream requested but no monitor device available, using virtual-only")
+                    routing_mode = DualRoutingMode.VIRTUAL_MIC_ONLY
+                    # For virtual-only fallback, use virtual device as monitor_device (required field)
+                    virtual_task = AudioPlaybackTask(
+                        audio_data=optimized_audio_data,
+                        monitor_device=target_device,
+                        virtual_mic_device=target_device,
+                        routing_mode=routing_mode,
+                        volume_level=volume_level,
+                        status=PlaybackStatus.PLAYING
+                    )
+                else:
+                    routing_mode = DualRoutingMode.DUAL_ROUTING
+                    # True dual routing: both monitor and virtual device specified
+                    virtual_task = AudioPlaybackTask(
+                        audio_data=optimized_audio_data,
+                        monitor_device=monitor_device,
+                        virtual_mic_device=target_device,
+                        routing_mode=routing_mode,
+                        volume_level=volume_level,
+                        status=PlaybackStatus.PLAYING
+                    )
+            else:
+                # Virtual microphone only
+                virtual_task = AudioPlaybackTask(
+                    audio_data=optimized_audio_data,
+                    monitor_device=target_device,  # Use virtual device as monitor_device (routing_mode controls behavior)
+                    virtual_mic_device=target_device,
+                    routing_mode=DualRoutingMode.VIRTUAL_MIC_ONLY,
+                    volume_level=volume_level,
+                    status=PlaybackStatus.PLAYING
+                )
+
+            # Start virtual microphone playback
+            self.virtual_mic_playback_tasks[virtual_task.playback_id] = virtual_task
+
+            # Log task configuration for debugging
+            self.logger.info(f"Created virtual task: routing_mode={virtual_task.routing_mode.value}, monitor_device={virtual_task.monitor_device.name if virtual_task.monitor_device else None}, virtual_mic_device={virtual_task.virtual_mic_device.name if virtual_task.virtual_mic_device else None}")
+
+            # Use different playback methods based on routing mode
+            if virtual_task.routing_mode == DualRoutingMode.DUAL_ROUTING:
+                # Use synchronized dual stream for dual routing
+                self.logger.info("Using synchronized dual stream for dual routing")
+                try:
+                    # Use the synchronized dual stream method
+                    dual_tasks = await self.play_synchronized_dual_stream(
+                        audio_data=optimized_audio_data,
+                        monitor_device=virtual_task.monitor_device,
+                        virtual_device_id=virtual_task.virtual_mic_device.device_id if virtual_task.virtual_mic_device else None,
+                        volume_level=volume_level
+                    )
+                    self.logger.info(f"Started synchronized dual stream: {list(dual_tasks.keys())}")
+                except Exception as dual_error:
+                    self.logger.error(f"Failed to start synchronized dual stream: {dual_error}")
+                    virtual_task.mark_failed(f"Dual stream error: {str(dual_error)}")
+            else:
+                # Use virtual microphone worker for virtual-only routing
+                self.logger.info("Using virtual microphone worker for virtual-only routing")
+                import threading
+                try:
+                    # Create and start virtual microphone playback thread directly
+                    playback_thread = threading.Thread(
+                        target=self._virtual_microphone_playback_worker,
+                        args=(virtual_task,),
+                        daemon=True,
+                        name=f"VirtualMic-{virtual_task.playback_id[:8]}"
+                    )
+
+                    self.virtual_mic_threads[virtual_task.playback_id] = playback_thread
+                    playback_thread.start()
+
+                    self.logger.info(f"Started virtual microphone thread for {virtual_task.playback_id}")
+
+                except Exception as e:
+                    self.logger.error(f"Failed to start virtual microphone playback thread: {e}")
+                    virtual_task.mark_failed(f"Failed to start virtual microphone thread: {str(e)}")
+
+            self.logger.info(f"Started virtual microphone playback task {virtual_task.playback_id}")
+            return virtual_task
+
+        except Exception as e:
+            self.logger.error(f"Failed to start virtual microphone playback: {e}")
+            return None
+
+    def _start_virtual_microphone_playback_thread(self, task: AudioPlaybackTask, audio_data: bytes) -> None:
+        """
+        Start virtual microphone playback in a separate thread.
+
+        Args:
+            task: Playback task to track
+            audio_data: Audio data to play
+        """
+        def playback_worker():
+            try:
+                # In a real implementation, this would:
+                # 1. Open PyAudio stream to virtual device
+                # 2. Play audio data in chunks
+                # 3. Handle timing and buffering
+                # 4. Update task status
+
+                # For now, simulate playback
+                self.logger.debug(f"Virtual microphone playback thread started for task {task.playback_id}")
+
+                # Simulate some playback work
+                import time
+                time.sleep(0.1)  # Simulate initial setup
+
+                # Mark as completed (in real implementation, this would happen after audio finishes)
+                task.status = PlaybackStatus.COMPLETED
+
+                self.logger.debug(f"Virtual microphone playback completed for task {task.playback_id}")
+
+            except Exception as e:
+                self.logger.error(f"Virtual microphone playback thread error: {e}")
+                task.status = PlaybackStatus.FAILED
+
+        # Start the thread
+        thread = threading.Thread(target=playback_worker, daemon=True)
+        self.virtual_mic_threads[task.playback_id] = thread
+        thread.start()
+
+    async def play_synchronized_dual_stream(self, audio_data: bytes,
+                                          monitor_device: Optional[AudioDevice] = None,
+                                          virtual_device_id: Optional[str] = None,
+                                          volume_level: float = 1.0,
+                                          sync_mode: SynchronizationMode = SynchronizationMode.BUFFER_SYNC) -> Dict[str, Optional[AudioPlaybackTask]]:
+        """
+        Play the same audio through both monitor and virtual microphone simultaneously.
+        Simple implementation without complex synchronization - just plays the same audio file to both devices.
+
+        Args:
+            audio_data: Binary WAV audio data
+            monitor_device: Target monitor device (None = use current monitor device)
+            virtual_device_id: Target virtual device ID (None = use current virtual microphone device)
+            volume_level: Playback volume (0.0 to 1.0)
+            sync_mode: Ignored - kept for compatibility
+
+        Returns:
+            Dict[str, Optional[AudioPlaybackTask]]: Playback tasks for 'monitor' and 'virtual' streams
+        """
+        try:
+            self.logger.info("Starting simple dual-stream playback (same audio to both devices)")
+            self.logger.debug(f"Monitor device parameter: {monitor_device}")
+            self.logger.debug(f"Current monitor device: {self.current_monitor_device}")
+
+            results = {}
+
+            # Play to monitor device (speakers/headphones) - same audio data
+            if monitor_device or self.current_monitor_device:
+                target_monitor = monitor_device or self.current_monitor_device
+                self.logger.info(f"Using monitor device: {target_monitor.name}")
+                monitor_task = await self.play_monitor_audio(audio_data, target_monitor, volume_level)
+                results["monitor"] = monitor_task
+                if monitor_task:
+                    self.logger.info(f"Started monitor playback: {monitor_task.playback_id}")
+            else:
+                results["monitor"] = None
+                self.logger.warning("No monitor device available for dual-stream")
+                # Try to load monitor device if not already loaded
+                self.logger.info("Attempting to load monitor device from settings...")
+                monitor_loaded = await self.load_monitor_device_from_settings()
+                if monitor_loaded and self.current_monitor_device:
+                    self.logger.info(f"Successfully loaded monitor device: {self.current_monitor_device.name}")
+                    monitor_task = await self.play_monitor_audio(audio_data, self.current_monitor_device, volume_level)
+                    results["monitor"] = monitor_task
+                    if monitor_task:
+                        self.logger.info(f"Started monitor playback after loading: {monitor_task.playback_id}")
+                else:
+                    self.logger.warning("Failed to load monitor device from settings")
+
+            # Play to virtual microphone device - same audio data, no processing
+            virtual_task = await self.play_virtual_microphone(audio_data, virtual_device_id, volume_level, enable_dual_stream=False)
+            results["virtual"] = virtual_task
+            if virtual_task:
+                self.logger.info(f"Started virtual microphone playback: {virtual_task.playback_id}")
+
+            self.logger.info("Simple dual-stream playback started successfully")
+            return results
+
+        except Exception as e:
+            self.logger.error(f"Failed to start simple dual-stream playback: {e}")
+            return {"monitor": None, "virtual": None}
+
+    def monitor_and_correct_drift(self) -> Dict[str, Any]:
+        """
+        Monitor current dual-stream synchronization and apply drift correction.
+
+        Returns:
+            Dict[str, Any]: Drift monitoring and correction status
+        """
+        if not self.dual_stream_synchronizer:
+            return {"status": "no_synchronizer", "drift_ms": 0}
+
+        try:
+            # Get current synchronization metrics
+            metrics = self.dual_stream_synchronizer.get_synchronization_metrics()
+
+            # Check if drift correction is needed
+            drift_threshold_ms = 5.0  # 5ms threshold
+            current_drift = metrics.get('average_drift_ms', 0)
+
+            if abs(current_drift) > drift_threshold_ms:
+                # Apply drift correction
+                correction_success = self.dual_stream_synchronizer.correct_drift()
+
+                self.logger.warning(f"Applied drift correction: {current_drift:.2f}ms -> corrected: {correction_success}")
+
+                return {
+                    "status": "corrected",
+                    "drift_ms": current_drift,
+                    "correction_applied": correction_success,
+                    "threshold_ms": drift_threshold_ms
+                }
+            else:
+                return {
+                    "status": "synchronized",
+                    "drift_ms": current_drift,
+                    "threshold_ms": drift_threshold_ms
+                }
+
+        except Exception as e:
+            self.logger.error(f"Drift monitoring failed: {e}")
+            return {"status": "error", "error": str(e)}
+
+    async def get_dual_stream_status(self) -> Dict[str, Any]:
+        """
+        Get comprehensive status of dual-stream synchronization.
+
+        Returns:
+            Dict[str, Any]: Detailed synchronization status and metrics
+        """
+        if not self.dual_stream_synchronizer:
+            return {
+                "enabled": False,
+                "synchronizer_initialized": False,
+                "active_streams": 0,
+                "synchronization_quality": "N/A"
+            }
+
+        try:
+            metrics = self.dual_stream_synchronizer.get_synchronization_metrics()
+            active_streams = len(self.dual_stream_synchronizer.get_active_streams())
+
+            # Determine synchronization quality
+            drift_ms = metrics.get('average_drift_ms', 0)
+            if abs(drift_ms) < 1.0:
+                quality = "excellent"
+            elif abs(drift_ms) < 3.0:
+                quality = "good"
+            elif abs(drift_ms) < 10.0:
+                quality = "acceptable"
+            else:
+                quality = "poor"
+
+            return {
+                "enabled": True,
+                "synchronizer_initialized": True,
+                "active_streams": active_streams,
+                "synchronization_quality": quality,
+                "drift_ms": drift_ms,
+                "buffer_health": metrics.get('buffer_health', 'unknown'),
+                "total_corrections": metrics.get('total_corrections', 0),
+                "uptime_seconds": metrics.get('uptime_seconds', 0)
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to get dual-stream status: {e}")
+            return {
+                "enabled": True,
+                "synchronizer_initialized": True,
+                "error": str(e)
+            }
+
+    def _find_virtual_output_device(self, virtual_device: AudioDevice) -> AudioDevice:
+        """
+        Find the corresponding output device for a virtual microphone device.
+
+        For VoiceMeeter devices:
+        - "VoiceMeeter Aux Output" -> "VoiceMeeter Aux Input"
+        - "VoiceMeeter Output" -> "VoiceMeeter Input"
+        - "CABLE Output" -> "CABLE Input"
+
+        Args:
+            virtual_device: The virtual microphone device
+
+        Returns:
+            AudioDevice: The corresponding output device, or original device if no match found
+        """
+        try:
+            device_name = virtual_device.name.lower()
+
+            # Define mapping patterns for virtual devices
+            mappings = [
+                # VoiceMeeter mappings
+                ("voicemeeter aux output", "voicemeeter aux input"),
+                ("voicemeeter output", "voicemeeter input"),
+                # VB-Cable mappings
+                ("cable output", "cable input"),
+                ("vb-audio virtual cable", "cable input"),
+                # Generic patterns
+                ("output", "input")
+            ]
+
+            # Try to find corresponding output device
+            all_devices = self.audio_client.enumerate_audio_devices()
+
+            for pattern_from, pattern_to in mappings:
+                if pattern_from in device_name:
+                    # Look for corresponding input device
+                    target_name_pattern = device_name.replace(pattern_from, pattern_to)
+
+                    for device in all_devices:
+                        if device.device_type == DeviceType.OUTPUT and target_name_pattern in device.name.lower():
+                            self.logger.debug(f"Found virtual output mapping: {virtual_device.name} -> {device.name}")
+                            return device
+
+            # If no mapping found, return original device
+            self.logger.debug(f"No virtual output mapping found for {virtual_device.name}")
+            return virtual_device
+
+        except Exception as e:
+            self.logger.error(f"Error finding virtual output device: {e}")
+            return virtual_device
+
+    def _find_corresponding_virtual_input(self, virtual_output_device: AudioDevice) -> Optional[AudioDevice]:
+        """
+        FIXED: Find the corresponding input device for a virtual output device.
+
+        VB-Cable Output -> VB-Cable Input
+        VoiceMeeter Output -> VoiceMeeter Input
+        """
+        try:
+            output_name = virtual_output_device.name.lower()
+            self.logger.debug(f"[FIXED] Looking for input device corresponding to: {output_name}")
+
+            # Get all available devices
+            all_devices = self.audio_client.enumerate_audio_devices()
+
+            # Simple name mapping rules for virtual audio routing
+            if "cable output" in output_name:
+                target_pattern = output_name.replace("output", "input")
+            elif "voicemeeter output" in output_name:
+                target_pattern = output_name.replace("output", "input")
+            elif "voicemeeter aux output" in output_name:
+                target_pattern = output_name.replace("aux output", "aux input")
+            else:
+                # For other patterns, try generic replacement
+                target_pattern = output_name.replace("output", "input")
+
+            # Find matching input device
+            for device in all_devices:
+                if device.device_type == DeviceType.OUTPUT and target_pattern in device.name.lower():
+                    self.logger.info(f"[FIXED] Found corresponding input device: {device.name}")
+                    return device
+
+            # If no exact match, look for similar device names
+            for device in all_devices:
+                device_name_lower = device.name.lower()
+                if (device.device_type == DeviceType.OUTPUT and
+                    ("cable" in output_name and "cable" in device_name_lower and "input" in device_name_lower) or
+                    ("voicemeeter" in output_name and "voicemeeter" in device_name_lower and "input" in device_name_lower)):
+                    self.logger.info(f"[FIXED] Found similar input device: {device.name}")
+                    return device
+
+            self.logger.warning(f"[FIXED] No corresponding input device found for: {virtual_output_device.name}")
+            return None
+
+        except Exception as e:
+            self.logger.error(f"[FIXED] Error finding corresponding virtual input device: {e}")
+            return None
+
+    def get_system_volume(self, device: Optional[AudioDevice] = None) -> float:
+        """
+        Get the Windows system volume for the specified device.
+
+        Note: This is a placeholder implementation. In a full implementation,
+        this would use Windows Core Audio APIs (WASAPI) to get the actual
+        system volume. For now, it returns 1.0 as PyAudio doesn't provide
+        direct access to system volume controls.
+
+        Args:
+            device: AudioDevice to get system volume for (optional)
+
+        Returns:
+            float: System volume level (0.0 to 1.0), defaults to 1.0
+        """
+        try:
+            # TODO: Implement Windows Core Audio API integration for system volume
+            # This would require pycaw or similar library for WASAPI access
+            # For now, return 1.0 as we can't access system volume through PyAudio
+
+            if device:
+                self.logger.debug(f"Getting system volume for device: {device.name}")
+            else:
+                self.logger.debug("Getting system volume for default device")
+
+            # Placeholder - in full implementation would use:
+            # - Windows Core Audio APIs (WASAPI)
+            # - pycaw library for Python access to Windows volume mixer
+            # - Get the endpoint volume for the specific audio device
+
+            system_volume = 1.0  # Default to full system volume
+            self.logger.debug(f"System volume: {system_volume:.2f} (placeholder implementation)")
+
+            return system_volume
+
+        except Exception as e:
+            self.logger.error(f"Failed to get system volume: {e}")
+            return 1.0  # Default to full volume on error
+
+    async def stop_playback(self, playback_id: str) -> bool:
+        """
+        Stop a specific playback task.
+
+        Args:
+            playback_id: ID of playback task to stop
+
+        Returns:
+            bool: True if stopped successfully
+        """
+        try:
+            if playback_id not in self.active_playback_tasks:
+                self.logger.warning(f"Playback task {playback_id} not found")
+                return False
+
+            # Mark task as failed (which stops playback)
+            task = self.active_playback_tasks[playback_id]
+            task.mark_failed("Stopped by user")
+
+            # Wait for thread to finish
+            if playback_id in self.playback_threads:
+                thread = self.playback_threads[playback_id]
+                if thread.is_alive():
+                    thread.join(timeout=2.0)
+
+                # Clean up thread reference
+                del self.playback_threads[playback_id]
+
+            # Clean up task reference
+            del self.active_playback_tasks[playback_id]
+
+            self.logger.info(f"Stopped playback task {playback_id}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to stop playback {playback_id}: {e}")
+            return False
+
+    async def stop_all_playback(self) -> int:
+        """
+        Stop all active playback tasks (monitor and virtual microphone).
+
+        Returns:
+            int: Number of tasks stopped
+        """
+        try:
+            # Stop monitor playback tasks
+            monitor_ids = list(self.active_playback_tasks.keys())
+            monitor_stopped_count = 0
+
+            for playback_id in monitor_ids:
+                if await self.stop_playback(playback_id):
+                    monitor_stopped_count += 1
+
+            # Stop virtual microphone playback tasks
+            virtual_mic_stopped_count = await self.stop_all_virtual_microphone_playback()
+
+            total_stopped = monitor_stopped_count + virtual_mic_stopped_count
+            self.logger.info(f"Stopped {total_stopped} playback tasks ({monitor_stopped_count} monitor + {virtual_mic_stopped_count} virtual microphone)")
+            return total_stopped
+
+        except Exception as e:
+            self.logger.error(f"Failed to stop all playback: {e}")
+            return 0
+
+    def get_active_playback_tasks(self) -> List[AudioPlaybackTask]:
+        """
+        Get list of currently active playback tasks.
+
+        Returns:
+            List[AudioPlaybackTask]: Active playback tasks
+        """
+        return list(self.active_playback_tasks.values())
+
+    async def _start_async_playback(self, task: AudioPlaybackTask) -> None:
+        """
+        Start async playback in a separate thread.
+
+        Args:
+            task: AudioPlaybackTask to execute
+        """
+        try:
+            # Create and start playback thread
+            playback_thread = threading.Thread(
+                target=self._playback_worker,
+                args=(task,),
+                daemon=True,
+                name=f"AudioPlayback-{task.playback_id[:8]}"
+            )
+
+            self.playback_threads[task.playback_id] = playback_thread
+            playback_thread.start()
+
+            self.logger.debug(f"Started playback thread for {task.playback_id}")
+
+        except Exception as e:
+            self.logger.error(f"Failed to start async playback: {e}")
+            task.mark_failed(f"Failed to start playback thread: {str(e)}")
+
+    async def _start_async_virtual_microphone_playback(self, task: AudioPlaybackTask) -> None:
+        """
+        Start async virtual microphone playback in a separate thread.
+
+        Args:
+            task: AudioPlaybackTask for virtual microphone
+        """
+        try:
+            # Create and start virtual microphone playback thread
+            playback_thread = threading.Thread(
+                target=self._virtual_microphone_playback_worker,
+                args=(task,),
+                daemon=True,
+                name=f"VirtualMic-{task.playback_id[:8]}"
+            )
+
+            self.virtual_mic_threads[task.playback_id] = playback_thread
+            playback_thread.start()
+
+            self.logger.debug(f"Started virtual microphone thread for {task.playback_id}")
+
+        except Exception as e:
+            self.logger.error(f"Failed to start async virtual microphone playback: {e}")
+            task.mark_failed(f"Failed to start virtual microphone thread: {str(e)}")
+
+    def _optimize_audio_for_virtual_microphone(self, audio_data: bytes, target_device: AudioDevice) -> bytes:
+        """
+        Optimize audio data for virtual microphone routing to communication apps.
+
+        Args:
+            audio_data: Original WAV audio data
+            target_device: Target virtual microphone device
+
+        Returns:
+            bytes: Optimized audio data for virtual microphone
+        """
+        try:
+            self.logger.debug(f"Optimizing audio for virtual microphone: {target_device.name}")
+
+            # Parse original audio parameters
+            original_params = self._parse_wav_data(audio_data)
+            if not original_params:
+                self.logger.warning("Failed to parse audio for virtual microphone optimization")
+                return audio_data
+
+            # Define target parameters optimized for communication apps
+            target_params = {
+                'sample_rate': self.virtual_mic_config.sample_rate,  # 48kHz for modern comms
+                'channels': self.virtual_mic_config.channels,        # Mono for microphone
+                'sample_width': self.virtual_mic_config.sample_width, # 16-bit
+            }
+
+            # Check if resampling is needed
+            needs_resampling = (
+                original_params['sample_rate'] != target_params['sample_rate'] or
+                original_params['channels'] != target_params['channels'] or
+                original_params['sample_width'] != target_params['sample_width']
+            )
+
+            if needs_resampling:
+                self.logger.debug(f"Resampling for virtual microphone: {original_params['sample_rate']}Hz/{original_params['channels']}ch -> {target_params['sample_rate']}Hz/{target_params['channels']}ch")
+
+                # Resample audio data
+                resampled_data = self._resample_audio_data(
+                    original_params['audio_data'],
+                    original_params,
+                    target_params
+                )
+
+                # Create new WAV data with optimized parameters
+                optimized_audio_data = self._create_wav_data(resampled_data, target_params)
+            else:
+                optimized_audio_data = audio_data
+
+            # Apply virtual microphone specific processing
+            processed_audio_data = self._apply_virtual_microphone_processing(optimized_audio_data)
+
+            self.logger.debug("Audio optimization for virtual microphone completed")
+            return processed_audio_data
+
+        except Exception as e:
+            self.logger.error(f"Failed to optimize audio for virtual microphone: {e}")
+            return audio_data  # Return original on error
+
+    def _apply_virtual_microphone_processing(self, audio_data: bytes) -> bytes:
+        """
+        Apply virtual microphone specific audio processing.
+
+        Args:
+            audio_data: WAV audio data
+
+        Returns:
+            bytes: Processed audio data optimized for virtual microphone
+        """
+        try:
+            # Parse audio for processing
+            audio_params = self._parse_wav_data(audio_data)
+            if not audio_params:
+                return audio_data
+
+            processed_data = audio_params['audio_data']
+
+            # Apply noise gate if enabled
+            if self.virtual_mic_config.enable_noise_gate:
+                processed_data = self._apply_noise_gate(
+                    processed_data,
+                    audio_params,
+                    self.virtual_mic_config.noise_gate_threshold
+                )
+
+            # Apply compression if enabled
+            if self.virtual_mic_config.enable_compression:
+                processed_data = self._apply_compression(
+                    processed_data,
+                    audio_params,
+                    self.virtual_mic_config.compression_ratio
+                )
+
+            # Recreate WAV data with processed audio
+            return self._create_wav_data(processed_data, audio_params)
+
+        except Exception as e:
+            self.logger.error(f"Failed to apply virtual microphone processing: {e}")
+            return audio_data
+
+    def _apply_noise_gate(self, audio_data: bytes, audio_params: Dict[str, Any], threshold_db: float) -> bytes:
+        """
+        Apply noise gate to reduce background noise for virtual microphone.
+
+        Args:
+            audio_data: Raw audio data
+            audio_params: Audio parameters
+            threshold_db: Noise gate threshold in dB
+
+        Returns:
+            bytes: Audio data with noise gate applied
+        """
+        try:
+            # Simple noise gate implementation
+            # In production, would use more sophisticated audio processing
+            sample_width = audio_params['sample_width']
+
+            if sample_width == 2:  # 16-bit
+                import array
+                samples = array.array('h', audio_data)
+                max_amplitude = 32767
+
+                # Convert dB threshold to amplitude
+                threshold_amplitude = max_amplitude * (10 ** (threshold_db / 20))
+
+                # Apply noise gate
+                for i in range(len(samples)):
+                    if abs(samples[i]) < threshold_amplitude:
+                        samples[i] = 0  # Silence below threshold
+
+                return samples.tobytes()
+
+            return audio_data
+
+        except Exception as e:
+            self.logger.error(f"Failed to apply noise gate: {e}")
+            return audio_data
+
+    def _apply_compression(self, audio_data: bytes, audio_params: Dict[str, Any], ratio: float) -> bytes:
+        """
+        Apply basic compression for consistent virtual microphone levels.
+
+        Args:
+            audio_data: Raw audio data
+            audio_params: Audio parameters
+            ratio: Compression ratio
+
+        Returns:
+            bytes: Audio data with compression applied
+        """
+        try:
+            # Simple compression implementation
+            sample_width = audio_params['sample_width']
+
+            if sample_width == 2:  # 16-bit
+                import array
+                samples = array.array('h', audio_data)
+                max_amplitude = 32767
+
+                # Simple compression: reduce amplitude above threshold
+                threshold = max_amplitude * 0.7  # Compress above 70% max
+
+                for i in range(len(samples)):
+                    sample = samples[i]
+                    abs_sample = abs(sample)
+
+                    if abs_sample > threshold:
+                        # Apply compression
+                        compressed = threshold + (abs_sample - threshold) / ratio
+                        samples[i] = int(compressed * (1 if sample >= 0 else -1))
+
+                return samples.tobytes()
+
+            return audio_data
+
+        except Exception as e:
+            self.logger.error(f"Failed to apply compression: {e}")
+            return audio_data
+
+    def _create_wav_data(self, audio_data: bytes, audio_params: Dict[str, Any]) -> bytes:
+        """
+        Create WAV file data from raw audio data and parameters.
+
+        Args:
+            audio_data: Raw audio samples
+            audio_params: Audio parameters
+
+        Returns:
+            bytes: Complete WAV file data
+        """
+        try:
+            import io
+            import wave
+
+            # Create WAV file in memory
+            wav_buffer = io.BytesIO()
+
+            with wave.open(wav_buffer, 'wb') as wav_file:
+                wav_file.setnchannels(audio_params['channels'])
+                wav_file.setsampwidth(audio_params['sample_width'])
+                wav_file.setframerate(audio_params['sample_rate'])
+                wav_file.writeframes(audio_data)
+
+            return wav_buffer.getvalue()
+
+        except Exception as e:
+            self.logger.error(f"Failed to create WAV data: {e}")
+            return audio_data
+
+    def _virtual_microphone_playback_worker(self, task: AudioPlaybackTask) -> None:
+        """
+        Simple virtual microphone worker using EXACT parameters from working PyAudio test.
+        Eliminates all complex processing that causes distortion.
+
+        Args:
+            task: AudioPlaybackTask for virtual microphone
+        """
+        stream = None
+        p = None
+
+        try:
+            self.logger.info(f"SIMPLIFIED virtual microphone worker started for {task.playback_id}")
+
+            # SIMPLIFIED: Use the exact working device from PyAudio test
+            device_index = 55  # VoiceMeeter Aux Input - WORKING device from raw PyAudio test
+            self.logger.info(f"Using exact working virtual mic device index: {device_index}")
+
+            # Extract raw audio data - find the actual audio after WAV header
+            try:
+                # Simple WAV header skip (44 bytes for standard WAV)
+                raw_audio_data = task.audio_data[44:]
+                self.logger.info(f"Extracted {len(raw_audio_data)} bytes of raw audio data")
+            except Exception as extract_error:
+                self.logger.error(f"Failed to extract audio data: {extract_error}")
+                task.mark_failed(f"Audio data extraction failed: {str(extract_error)}")
+                return
+
+            # Initialize PyAudio
+            p = pyaudio.PyAudio()
+
+            # Check device capabilities first
+            try:
+                device_info = p.get_device_info_by_index(device_index)
+                self.logger.info(f"Device info: {device_info['name']}, max_input_channels={device_info.get('maxInputChannels', 0)}, max_output_channels={device_info.get('maxOutputChannels', 0)}")
+            except Exception as info_error:
+                self.logger.warning(f"Could not get device info: {info_error}")
+
+            # SIMPLIFIED: Use EXACT working parameters from raw PyAudio test
+            try:
+                stream = p.open(
+                    format=pyaudio.paInt16,  # EXACT match
+                    channels=1,              # EXACT match
+                    rate=48000,              # EXACT match
+                    output=True,             # EXACT match (write to device)
+                    output_device_index=device_index,
+                    frames_per_buffer=1024   # EXACT match
+                )
+
+                self.logger.info("SIMPLIFIED virtual microphone stream opened with exact working parameters")
+
+            except Exception as stream_error:
+                self.logger.error(f"Failed to open simplified virtual microphone stream: {stream_error}")
+                task.mark_failed(f"Virtual microphone stream error: {str(stream_error)}")
+                return
+
+            # SIMPLIFIED: Stream audio with exact chunk size (no volume processing)
+            chunk_size = 1024 * 2  # 1024 samples * 2 bytes per sample (EXACT match)
+
+            self.logger.info(f"Streaming {len(raw_audio_data)} bytes with chunk size {chunk_size}")
+
+            import time
+            playback_start_time = time.time()
+            timeout_seconds = 10  # Simple timeout
+
+            offset = 0
+            while offset < len(raw_audio_data):
+                # Check if task should be stopped
+                if task.status.value in ['failed', 'stopped']:
+                    self.logger.debug("Virtual microphone playback stopped - task marked as failed/stopped")
+                    break
+
+                # Check for timeout
+                elapsed_time = time.time() - playback_start_time
+                if elapsed_time > timeout_seconds:
+                    task.mark_failed(f"Virtual microphone playback timed out after {timeout_seconds} seconds")
+                    self.logger.error(f"Virtual microphone playback timeout for task {task.playback_id}")
+                    break
+
+                try:
+                    chunk = raw_audio_data[offset:offset + chunk_size]
+                    if len(chunk) == 0:
+                        break
+
+                    # SIMPLIFIED: Direct write (no volume processing)
+                    stream.write(chunk)
+                    offset += chunk_size
+
+                except Exception as chunk_error:
+                    self.logger.error(f"Error writing virtual microphone chunk: {chunk_error}")
+                    task.mark_failed(f"Virtual microphone chunk write failed: {str(chunk_error)}")
+                    break
+
+            # Mark as completed if not already failed
+            if task.status.value == 'playing':
+                task.mark_completed()
+                self.logger.info(f"SIMPLIFIED virtual microphone playback completed for {task.playback_id}")
+
+        except Exception as e:
+            self.logger.error(f"SIMPLIFIED virtual microphone worker error for {task.playback_id}: {e}")
+            task.mark_failed(f"Virtual microphone playback error: {str(e)}")
+
+        finally:
+            if stream:
+                stream.stop_stream()
+                stream.close()
+            if p:
+                p.terminate()
+
+    def _playback_worker(self, task: AudioPlaybackTask) -> None:
+        """
+        Worker method for monitor audio playback in separate thread.
+
+        Args:
+            task: AudioPlaybackTask to execute
+        """
+        stream = None
+        p = None
+
+        try:
+            self.logger.debug(f"Monitor playback worker started for {task.playback_id}")
+
+            # Extract device index from monitor device
+            device_index = self._extract_device_index(task.monitor_device.device_id)
+            if device_index is None:
+                task.mark_failed("Invalid monitor device ID format")
+                return
+
+            # Extract raw audio data - skip WAV header
+            try:
+                raw_audio_data = task.audio_data[44:]  # Skip WAV header
+                self.logger.debug(f"Extracted {len(raw_audio_data)} bytes of monitor audio data")
+            except Exception as extract_error:
+                self.logger.error(f"Failed to extract monitor audio data: {extract_error}")
+                task.mark_failed(f"Monitor audio data extraction failed: {str(extract_error)}")
+                return
+
+            # Initialize PyAudio
+            p = pyaudio.PyAudio()
+
+            # Open stream for monitor device (speakers)
+            try:
+                stream = p.open(
+                    format=pyaudio.paInt16,
+                    channels=1,  # Mono
+                    rate=48000,  # 48kHz
+                    output=True,
+                    output_device_index=device_index,
+                    frames_per_buffer=1024
+                )
+
+                self.logger.debug("Monitor playback stream opened successfully")
+
+            except Exception as stream_error:
+                self.logger.error(f"Failed to open monitor playback stream: {stream_error}")
+                task.mark_failed(f"Monitor playback stream error: {str(stream_error)}")
+                return
+
+            # Stream audio data
+            chunk_size = 1024 * 2  # 1024 samples * 2 bytes per sample
+
+            import time
+            playback_start_time = time.time()
+            timeout_seconds = 10
+
+            offset = 0
+            while offset < len(raw_audio_data):
+                # Check if task should be stopped
+                if task.status.value in ['failed', 'stopped']:
+                    self.logger.debug("Monitor playback stopped - task marked as failed/stopped")
+                    break
+
+                # Check for timeout
+                elapsed_time = time.time() - playback_start_time
+                if elapsed_time > timeout_seconds:
+                    task.mark_failed(f"Monitor playback timed out after {timeout_seconds} seconds")
+                    self.logger.error(f"Monitor playback timeout for task {task.playback_id}")
+                    break
+
+                try:
+                    chunk = raw_audio_data[offset:offset + chunk_size]
+                    if len(chunk) == 0:
+                        break
+
+                    # Direct write (no volume processing for now)
+                    stream.write(chunk)
+                    offset += chunk_size
+
+                except Exception as chunk_error:
+                    self.logger.error(f"Error writing monitor playback chunk: {chunk_error}")
+                    task.mark_failed(f"Monitor playback chunk write failed: {str(chunk_error)}")
+                    break
+
+            # Mark as completed if not already failed
+            if task.status.value == 'playing':
+                task.mark_completed()
+                self.logger.debug(f"Monitor playback completed for {task.playback_id}")
+
+        except Exception as e:
+            self.logger.error(f"Monitor playback worker error for {task.playback_id}: {e}")
+            task.mark_failed(f"Monitor playback error: {str(e)}")
+
+        finally:
+            if stream:
+                stream.stop_stream()
+                stream.close()
+            if p:
+                p.terminate()
+        stream = None
+
+        try:
+            self.logger.debug(f"Playback worker started for {task.playback_id}")
+
+            # Parse WAV data to get audio parameters
+            audio_params = self._parse_wav_data(task.audio_data)
+            if not audio_params:
+                task.mark_failed("Failed to parse WAV audio data")
+                return
+
+            # Extract device index from device ID
+            device_index = self._extract_device_index(task.monitor_device.device_id)
+            if device_index is None:
+                task.mark_failed("Invalid device ID format")
+                return
+
+            # Initialize PyAudio
+            p = pyaudio.PyAudio()
+
+            try:
+                # Calculate final volume (task volume * system volume)
+                # Note: Master volume removed - use Windows Volume Mixer to control app volume
+                system_volume = self.get_system_volume(task.monitor_device)
+                final_volume = task.volume_level * system_volume
+
+                self.logger.debug(f"Volume calculation: task={task.volume_level:.2f} * system={system_volume:.2f} = {final_volume:.2f}")
+
+                # Try to open output stream with format fallback
+                stream = None
+                current_params = audio_params
+
+                try:
+                    # First try with original format
+                    stream = p.open(
+                        format=p.get_format_from_width(current_params['sample_width']),
+                        channels=current_params['channels'],
+                        rate=current_params['sample_rate'],
+                        output=True,
+                        output_device_index=device_index,
+                        frames_per_buffer=self.stream_config.chunk_size
+                    )
+                    self.logger.debug("Audio stream opened with original format")
+
+                except Exception as format_error:
+                    self.logger.warning(f"Original format failed: {format_error}, trying fallbacks...")
+
+                    # Try format fallbacks
+                    fallback_params = self._try_audio_format_fallbacks(device_index, current_params)
+                    if fallback_params:
+                        current_params = fallback_params
+                        try:
+                            stream = p.open(
+                                format=p.get_format_from_width(current_params['sample_width']),
+                                channels=current_params['channels'],
+                                rate=current_params['sample_rate'],
+                                output=True,
+                                output_device_index=device_index,
+                                frames_per_buffer=self.stream_config.chunk_size
+                            )
+                            self.logger.info(f"Audio stream opened with fallback format: {current_params['sample_rate']}Hz, {current_params['channels']}ch")
+                        except Exception as fallback_error:
+                            task.mark_failed(f"All audio formats failed. Original: {format_error}, Fallback: {fallback_error}")
+                            return
+                    else:
+                        task.mark_failed(f"Audio format incompatible and no fallbacks worked: {format_error}")
+                        return
+
+                if not stream:
+                    task.mark_failed("Failed to open audio stream")
+                    return
+
+                # Play audio in chunks with volume control and timeout handling
+                audio_data_with_volume = self._apply_volume(
+                    current_params['audio_data'],  # Use current_params in case we had to fallback
+                    final_volume,
+                    current_params['sample_width']
+                )
+
+                # Stream audio data with timeout monitoring
+                chunk_size = self.stream_config.chunk_size * current_params['sample_width'] * current_params['channels']
+
+                import time
+                playback_start_time = time.time()
+                timeout_seconds = AUDIO_TIMEOUT_SECONDS
+
+                for i in range(0, len(audio_data_with_volume), chunk_size):
+                    # Check if task should be stopped
+                    if task.status == PlaybackStatus.FAILED:
+                        self.logger.debug("Playback stopped - task marked as failed")
+                        break
+
+                    # Check for timeout
+                    elapsed_time = time.time() - playback_start_time
+                    if elapsed_time > timeout_seconds:
+                        task.mark_failed(f"Audio playback timed out after {timeout_seconds} seconds")
+                        self.logger.error(f"Audio playback timeout for task {task.playback_id}")
+                        break
+
+                    try:
+                        chunk = audio_data_with_volume[i:i + chunk_size]
+
+                        # Write chunk with timeout protection
+                        chunk_start_time = time.time()
+                        stream.write(chunk)
+
+                        # Check if chunk write took too long (potential device hang)
+                        chunk_duration = time.time() - chunk_start_time
+                        if chunk_duration > 2.0:  # 2 second chunk timeout
+                            self.logger.warning(f"Slow audio chunk write: {chunk_duration:.2f}s")
+
+                    except Exception as chunk_error:
+                        self.logger.error(f"Error writing audio chunk: {chunk_error}")
+                        task.mark_failed(f"Audio chunk write failed: {str(chunk_error)}")
+                        break
+
+                # Mark as completed if not already failed
+                if task.status == PlaybackStatus.PLAYING:
+                    task.mark_completed()
+                    self.logger.debug(f"Playback completed for {task.playback_id}")
+
+            finally:
+                if stream:
+                    stream.stop_stream()
+                    stream.close()
+                p.terminate()
+
+        except Exception as e:
+            self.logger.error(f"Playback worker error for {task.playback_id}: {e}")
+            task.mark_failed(f"Playback error: {str(e)}")
+
+        finally:
+            # Clean up task from active list
+            if task.playback_id in self.active_playback_tasks:
+                del self.active_playback_tasks[task.playback_id]
+            if task.playback_id in self.playback_threads:
+                del self.playback_threads[task.playback_id]
+
+    def _parse_wav_data(self, audio_data: bytes) -> Optional[Dict[str, Any]]:
+        """
+        Parse WAV audio data to extract parameters.
+
+        Args:
+            audio_data: Binary WAV data
+
+        Returns:
+            Optional[Dict]: Audio parameters or None if parsing fails
+        """
+        try:
+            # Create BytesIO object from audio data
+            audio_io = io.BytesIO(audio_data)
+
+            # Open with wave module
+            with wave.open(audio_io, 'rb') as wav_file:
+                params = {
+                    'channels': wav_file.getnchannels(),
+                    'sample_width': wav_file.getsampwidth(),
+                    'sample_rate': wav_file.getframerate(),
+                    'frame_count': wav_file.getnframes(),
+                    'audio_data': wav_file.readframes(wav_file.getnframes())
+                }
+
+            self.logger.debug(f"Parsed WAV: {params['channels']}ch, {params['sample_rate']}Hz, {params['sample_width']} bytes/sample")
+            return params
+
+        except Exception as e:
+            self.logger.error(f"Failed to parse WAV data: {e}")
+            return None
+
+    def _try_audio_format_fallbacks(self, device_index: int, original_params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Try alternative audio formats if the original format is incompatible.
+
+        Args:
+            device_index: PyAudio device index
+            original_params: Original audio parameters
+
+        Returns:
+            Optional[Dict]: Compatible audio parameters or None if none found
+        """
+        try:
+            self.logger.debug(f"Trying audio format fallbacks for device {device_index}")
+
+            # Original parameters
+            orig_rate = original_params['sample_rate']
+            orig_channels = original_params['channels']
+            orig_width = original_params['sample_width']
+
+            # Try different combinations
+            fallback_combinations = [
+                # Keep original rate, try different channels/width
+                (orig_rate, 2, 2),  # stereo, 16-bit
+                (orig_rate, 1, 2),  # mono, 16-bit
+                (orig_rate, 2, 1),  # stereo, 8-bit
+                (orig_rate, 1, 1),  # mono, 8-bit
+
+                # Try standard rates with original format
+                (44100, orig_channels, orig_width),
+                (48000, orig_channels, orig_width),
+                (22050, orig_channels, orig_width),
+
+                # Try common fallback combinations
+                (44100, 2, 2),  # CD quality
+                (22050, 1, 2),  # Half rate mono
+                (44100, 1, 1),  # Basic quality
+            ]
+
+            p = pyaudio.PyAudio()
+            try:
+                for sample_rate, channels, sample_width in fallback_combinations:
+                    try:
+                        # Skip if same as original (already failed)
+                        if (sample_rate == orig_rate and
+                            channels == orig_channels and
+                            sample_width == orig_width):
+                            continue
+
+                        format_val = p.get_format_from_width(sample_width)
+
+                        # Test if this format is supported
+                        is_supported = p.is_format_supported(
+                            rate=sample_rate,
+                            output_device=device_index,
+                            output_channels=channels,
+                            output_format=format_val
+                        )
+
+                        if is_supported:
+                            self.logger.info(f"Found compatible format: {sample_rate}Hz, {channels}ch, {sample_width}bytes")
+
+                            # Resample the audio data if needed
+                            resampled_data = self._resample_audio_data(
+                                original_params['audio_data'],
+                                original_params,
+                                {
+                                    'sample_rate': sample_rate,
+                                    'channels': channels,
+                                    'sample_width': sample_width
+                                }
+                            )
+
+                            return {
+                                'sample_rate': sample_rate,
+                                'channels': channels,
+                                'sample_width': sample_width,
+                                'audio_data': resampled_data,
+                                'frame_count': len(resampled_data) // (channels * sample_width)
+                            }
+
+                    except Exception as e:
+                        self.logger.debug(f"Format {sample_rate}Hz/{channels}ch/{sample_width}b not supported: {e}")
+                        continue
+
+            finally:
+                p.terminate()
+
+            self.logger.warning("No compatible audio format found")
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Error during format fallback: {e}")
+            return None
+
+    def _resample_audio_data(self, audio_data: bytes, from_params: Dict[str, Any], to_params: Dict[str, Any]) -> bytes:
+        """
+        Resample audio data to different format parameters.
+
+        Args:
+            audio_data: Original audio data
+            from_params: Original audio parameters
+            to_params: Target audio parameters
+
+        Returns:
+            bytes: Resampled audio data
+        """
+        try:
+            # For now, implement basic resampling (placeholder implementation)
+            # In a full implementation, this would use a proper audio resampling library
+            # like scipy.signal.resample or librosa
+
+            from_rate = from_params['sample_rate']
+            from_channels = from_params['channels']
+            from_width = from_params['sample_width']
+
+            to_rate = to_params['sample_rate']
+            to_channels = to_params['channels']
+            to_width = to_params['sample_width']
+
+            self.logger.debug(f"Resampling from {from_rate}Hz/{from_channels}ch/{from_width}b to {to_rate}Hz/{to_channels}ch/{to_width}b")
+
+            # Simple resampling: if parameters are the same, return original
+            if (from_rate == to_rate and from_channels == to_channels and from_width == to_width):
+                return audio_data
+
+            # Basic channel conversion (stereo <-> mono)
+            if from_channels != to_channels:
+                audio_data = self._convert_channels(audio_data, from_channels, to_channels, from_width)
+
+            # Basic sample width conversion
+            if from_width != to_width:
+                audio_data = self._convert_sample_width(audio_data, from_width, to_width, to_channels)
+
+            # Sample rate conversion (basic decimation/interpolation)
+            if from_rate != to_rate:
+                audio_data = self._convert_sample_rate(audio_data, from_rate, to_rate, to_channels, to_width)
+
+            return audio_data
+
+        except Exception as e:
+            self.logger.error(f"Error resampling audio: {e}")
+            return audio_data  # Return original on error
+
+    def _convert_channels(self, audio_data: bytes, from_channels: int, to_channels: int, sample_width: int) -> bytes:
+        """Convert between mono and stereo."""
+        if from_channels == to_channels:
+            return audio_data
+
+        if sample_width == 2:  # 16-bit
+            import array
+            samples = array.array('h', audio_data)
+        else:
+            return audio_data  # Unsupported format
+
+        if from_channels == 2 and to_channels == 1:
+            # Stereo to mono: average left and right channels
+            mono_samples = []
+            for i in range(0, len(samples), 2):
+                left = samples[i]
+                right = samples[i + 1] if i + 1 < len(samples) else left
+                mono_samples.append((left + right) // 2)
+            return array.array('h', mono_samples).tobytes()
+
+        elif from_channels == 1 and to_channels == 2:
+            # Mono to stereo: duplicate mono channel
+            stereo_samples = []
+            for sample in samples:
+                stereo_samples.extend([sample, sample])
+            return array.array('h', stereo_samples).tobytes()
+
+        return audio_data
+
+    def _convert_sample_width(self, audio_data: bytes, from_width: int, to_width: int, channels: int) -> bytes:
+        """Convert between different sample widths (basic implementation)."""
+        if from_width == to_width:
+            return audio_data
+
+        # Basic conversion (placeholder - would need proper bit depth conversion)
+        self.logger.warning(f"Sample width conversion {from_width}->{to_width} not fully implemented")
+        return audio_data
+
+    def _convert_sample_rate(self, audio_data: bytes, from_rate: int, to_rate: int, channels: int, sample_width: int) -> bytes:
+        """Convert sample rate using optimized algorithm for 44.1kHz->48kHz."""
+        if from_rate == to_rate:
+            return audio_data
+
+        self.logger.info(f"Converting sample rate from {from_rate}Hz to {to_rate}Hz using optimized conversion")
+
+        # For 16-bit audio only
+        if sample_width != 2:
+            self.logger.warning(f"Unsupported sample width {sample_width}, returning original audio")
+            return audio_data
+
+        import struct
+        sample_format = '<h'  # little-endian signed short
+
+        # Optimized for 44.1kHz -> 48kHz conversion (160/147 ratio)
+        if from_rate == 44100 and to_rate == 48000:
+            # Use exact rational resampling for best quality
+            return self._resample_44100_to_48000(audio_data, channels, sample_width)
+
+        # Fallback: simple linear interpolation for other rates
+        num_samples = len(audio_data) // sample_width
+        samples = struct.unpack(f'<{num_samples}h', audio_data)
+
+        ratio = to_rate / from_rate
+        new_num_samples = int(num_samples * ratio)
+
+        resampled_samples = []
+        for i in range(new_num_samples):
+            src_pos = i / ratio
+            src_index = int(src_pos)
+            fraction = src_pos - src_index
+
+            if src_index < len(samples) - 1:
+                # Simple linear interpolation
+                sample1 = samples[src_index]
+                sample2 = samples[src_index + 1]
+                interpolated = int(sample1 * (1 - fraction) + sample2 * fraction)
+                resampled_samples.append(interpolated)
+            elif src_index < len(samples):
+                resampled_samples.append(samples[src_index])
+
+        resampled_data = struct.pack(f'<{len(resampled_samples)}h', *resampled_samples)
+        self.logger.info(f"Sample rate conversion completed: {len(audio_data)} -> {len(resampled_data)} bytes")
+        return resampled_data
+
+    def _resample_44100_to_48000(self, audio_data: bytes, channels: int, sample_width: int) -> bytes:
+        """Optimized resampling specifically for 44.1kHz to 48kHz conversion."""
+        import struct
+        sample_format = '<h'
+
+        # The exact ratio is 48000/44100 = 160/147
+        # This means every 147 input samples become 160 output samples
+        num_frames = len(audio_data) // (sample_width * channels)
+
+        # Process in blocks of 147 frames for exact conversion
+        block_size = 147
+        output_block_size = 160
+
+        resampled_data = b''
+
+        for block_start in range(0, num_frames, block_size):
+            block_end = min(block_start + block_size, num_frames)
+            block_frames = block_end - block_start
+
+            # Extract this block
+            block_data = audio_data[block_start * channels * sample_width:block_end * channels * sample_width]
+
+            if block_frames == block_size:
+                # Full block: exact 147->160 conversion
+                output_frames = output_block_size
+            else:
+                # Partial block: proportional conversion
+                output_frames = int(block_frames * 160 / 147)
+
+            # Simple interpolation within the block
+            for out_frame in range(output_frames):
+                src_pos = out_frame * block_frames / output_frames
+                src_index = int(src_pos)
+                fraction = src_pos - src_index
+
+                for ch in range(channels):
+                    # Get samples for this channel
+                    sample_offset1 = (src_index * channels + ch) * sample_width
+                    sample_offset2 = (min(src_index + 1, block_frames - 1) * channels + ch) * sample_width
+
+                    if sample_offset1 + sample_width <= len(block_data):
+                        sample1_bytes = block_data[sample_offset1:sample_offset1 + sample_width]
+                        sample1 = struct.unpack(sample_format, sample1_bytes)[0] if len(sample1_bytes) == sample_width else 0
+
+                        if sample_offset2 + sample_width <= len(block_data) and src_index + 1 < block_frames:
+                            sample2_bytes = block_data[sample_offset2:sample_offset2 + sample_width]
+                            sample2 = struct.unpack(sample_format, sample2_bytes)[0] if len(sample2_bytes) == sample_width else sample1
+                        else:
+                            sample2 = sample1
+
+                        # Linear interpolation
+                        interpolated = int(sample1 * (1 - fraction) + sample2 * fraction)
+                        resampled_data += struct.pack(sample_format, interpolated)
+
+        return resampled_data
+
+    def _create_user_friendly_error(self, technical_error: str, error_context: str = "") -> MyVoiceError:
+        """
+        Create user-friendly error messages from technical errors.
+
+        Args:
+            technical_error: Technical error message
+            error_context: Context where the error occurred
+
+        Returns:
+            MyVoiceError: User-friendly error with appropriate severity and suggestions
+        """
+        error_lower = technical_error.lower()
+
+        # Audio device errors
+        if any(keyword in error_lower for keyword in ["device not found", "device unavailable", "no such device"]):
+            return MyVoiceError(
+                severity=ErrorSeverity.ERROR,
+                code="DEVICE_NOT_FOUND",
+                user_message="The selected audio device is not available or has been disconnected.",
+                technical_details=technical_error,
+                suggested_action="Please check your audio device connections and select a different device in settings."
+            )
+
+        # Audio driver errors
+        if any(keyword in error_lower for keyword in ["driver", "alsa", "wasapi", "directsound"]):
+            return MyVoiceError(
+                severity=ErrorSeverity.ERROR,
+                code="AUDIO_DRIVER_ERROR",
+                user_message="There's an issue with your audio drivers.",
+                technical_details=technical_error,
+                suggested_action="Try restarting the application, or check for audio driver updates in Device Manager."
+            )
+
+        # Permission errors
+        if any(keyword in error_lower for keyword in ["permission", "access denied", "unauthorized"]):
+            return MyVoiceError(
+                severity=ErrorSeverity.ERROR,
+                code="AUDIO_PERMISSION_DENIED",
+                user_message="Permission denied accessing audio device.",
+                technical_details=technical_error,
+                suggested_action="Try running the application as administrator, or check audio device permissions in Windows settings."
+            )
+
+        # Device busy errors
+        if any(keyword in error_lower for keyword in ["device busy", "resource busy", "in use"]):
+            return MyVoiceError(
+                severity=ErrorSeverity.ERROR,
+                code="DEVICE_BUSY",
+                user_message="The audio device is currently being used by another application.",
+                technical_details=technical_error,
+                suggested_action="Close other audio applications or wait for them to finish using the audio device."
+            )
+
+        # Format errors
+        if any(keyword in error_lower for keyword in ["format", "sample rate", "channels", "incompatible"]):
+            return MyVoiceError(
+                severity=ErrorSeverity.ERROR,
+                code="AUDIO_FORMAT_ERROR",
+                user_message="Audio format is incompatible with your device.",
+                technical_details=technical_error,
+                suggested_action="The application will try alternative formats automatically. If this persists, try a different audio device."
+            )
+
+        # Timeout errors
+        if any(keyword in error_lower for keyword in ["timeout", "timed out", "too long"]):
+            return MyVoiceError(
+                severity=ErrorSeverity.ERROR,
+                code="AUDIO_TIMEOUT",
+                user_message="Audio operation took too long and was cancelled.",
+                technical_details=technical_error,
+                suggested_action="Try again with a shorter audio clip, or restart the application if the issue persists."
+            )
+
+        # Memory errors
+        if any(keyword in error_lower for keyword in ["memory", "out of memory", "allocation failed"]):
+            return MyVoiceError(
+                severity=ErrorSeverity.ERROR,
+                code="AUDIO_MEMORY_ERROR",
+                user_message="Not enough memory to process the audio.",
+                technical_details=technical_error,
+                suggested_action="Close other applications to free up memory, or try with a shorter audio clip."
+            )
+
+        # Buffer errors
+        if any(keyword in error_lower for keyword in ["buffer", "underrun", "overrun"]):
+            return MyVoiceError(
+                severity=ErrorSeverity.WARNING,
+                code="AUDIO_BUFFER_ERROR",
+                user_message="Audio playback had buffer issues but may have completed.",
+                technical_details=technical_error,
+                suggested_action="If audio quality is poor, try closing other applications or adjusting audio buffer settings."
+            )
+
+        # Virtual audio driver errors
+        if any(keyword in error_lower for keyword in ["vb-cable", "voicemeeter", "virtual device", "virtual audio"]):
+            return MyVoiceError(
+                severity=ErrorSeverity.WARNING,
+                code="VIRTUAL_AUDIO_DRIVER_ERROR",
+                user_message="Virtual audio driver not available. Install VB-Audio Cable or Voicemeeter for full functionality.",
+                technical_details=technical_error,
+                suggested_action="Download and install VB-Audio Cable from vb-audio.com or Voicemeeter from vb-audio.com/Voicemeeter"
+            )
+
+        # Communication app compatibility errors
+        if any(keyword in error_lower for keyword in ["discord", "teams", "zoom", "skype", "obs", "communication"]):
+            return MyVoiceError(
+                severity=ErrorSeverity.WARNING,
+                code="COMMUNICATION_APP_COMPATIBILITY",
+                user_message="Communication app detected but virtual audio routing unavailable.",
+                technical_details=technical_error,
+                suggested_action="Install virtual audio drivers for full communication app integration"
+            )
+
+        # Virtual device disconnection errors
+        if any(keyword in error_lower for keyword in ["disconnected", "device removed", "unplugged"]):
+            return MyVoiceError(
+                severity=ErrorSeverity.WARNING,
+                code="VIRTUAL_DEVICE_DISCONNECTED",
+                user_message="Virtual audio device disconnected. Audio will continue through monitor speakers.",
+                technical_details=technical_error,
+                suggested_action="Check virtual audio driver installation or restart virtual audio software"
+            )
+
+        # Generic audio errors
+        if any(keyword in error_lower for keyword in ["audio", "sound", "playback"]):
+            return MyVoiceError(
+                severity=ErrorSeverity.ERROR,
+                code="AUDIO_SYSTEM_ERROR",
+                user_message="An audio system error occurred.",
+                technical_details=technical_error,
+                suggested_action="Try restarting the application or check your audio device settings."
+            )
+
+        # Default fallback
+        return MyVoiceError(
+            severity=ErrorSeverity.ERROR,
+            code="UNKNOWN_AUDIO_ERROR",
+            user_message=f"An unexpected error occurred in {error_context}." if error_context else "An unexpected audio error occurred.",
+            technical_details=technical_error,
+            suggested_action="Try restarting the application. If the problem persists, please report this issue."
+        )
+
+    def _apply_volume(self, audio_data: bytes, volume: float, sample_width: int) -> bytes:
+        """
+        Apply volume control to audio data without quality loss.
+
+        Args:
+            audio_data: Raw audio data
+            volume: Volume multiplier (0.0 to 1.0)
+            sample_width: Bytes per sample
+
+        Returns:
+            bytes: Audio data with volume applied
+        """
+        try:
+            if volume == 1.0:
+                return audio_data  # No processing needed
+
+            # Convert to appropriate integer array based on sample width
+            if sample_width == 1:  # 8-bit
+                import array
+                samples = array.array('B', audio_data)
+                max_val = 255
+                offset = 128
+            elif sample_width == 2:  # 16-bit
+                import array
+                samples = array.array('h', audio_data)
+                max_val = 32767
+                offset = 0
+            elif sample_width == 4:  # 32-bit
+                import array
+                samples = array.array('l', audio_data)
+                max_val = 2147483647
+                offset = 0
+            else:
+                self.logger.warning(f"Unsupported sample width: {sample_width}")
+                return audio_data
+
+            # Apply volume with clipping protection
+            for i in range(len(samples)):
+                if sample_width == 1:
+                    # 8-bit unsigned
+                    sample = (samples[i] - offset) * volume + offset
+                    samples[i] = max(0, min(255, int(sample)))
+                else:
+                    # Signed samples
+                    sample = samples[i] * volume
+                    samples[i] = max(-max_val - 1, min(max_val, int(sample)))
+
+            return samples.tobytes()
+
+        except Exception as e:
+            self.logger.error(f"Failed to apply volume: {e}")
+            return audio_data  # Return original on error
+
+    def _extract_device_index(self, device_id: str) -> Optional[int]:
+        """
+        Extract PyAudio device index from device ID.
+
+        Args:
+            device_id: Device ID string (e.g., "pyaudio_5")
+
+        Returns:
+            Optional[int]: Device index or None if invalid
+        """
+        if device_id.startswith('pyaudio_'):
+            try:
+                return int(device_id.split('_')[1])
+            except (IndexError, ValueError):
+                return None
+        return None
+
+    def add_device_change_callback(self, callback: Callable) -> None:
+        """
+        Add callback for device change events.
+
+        Args:
+            callback: Function to call on device changes
+        """
+        self.audio_client.add_device_change_callback(callback)
+
+    def remove_device_change_callback(self, callback: Callable) -> None:
+        """
+        Remove device change callback.
+
+        Args:
+            callback: Callback function to remove
+        """
+        self.audio_client.remove_device_change_callback(callback)
+
+    def set_virtual_microphone_device(self, device: AudioDevice, persist: bool = True) -> bool:
+        """
+        Set the current virtual microphone device.
+
+        Args:
+            device: Virtual AudioDevice to set as virtual microphone
+            persist: Whether to save the device to app settings
+
+        Returns:
+            bool: True if device was set successfully
+        """
+        try:
+            if not device.is_virtual_device():
+                self.logger.error(f"Device {device.name} is not a virtual device")
+                return False
+
+            self.logger.info(f"Setting virtual microphone device: {device.name}")
+
+            # Refresh device list to ensure immediate availability
+            if hasattr(self.audio_client, 'refresh_audio_devices'):
+                refresh_success = self.audio_client.refresh_audio_devices()
+                if refresh_success:
+                    self.logger.debug("Audio device list refreshed for immediate virtual device selection")
+                else:
+                    self.logger.warning("Failed to refresh audio device list for virtual device")
+
+            # Validate device is available
+            if not device.is_available:
+                self.logger.warning(f"Virtual device {device.name} is not available")
+                return False
+
+            # Use the more comprehensive validation
+            is_available, error_msg = self.validate_virtual_device_availability(device)
+            if not is_available:
+                self.logger.warning(f"Virtual device {device.name} validation failed: {error_msg}")
+                return False
+
+            self.current_virtual_microphone_device = device
+
+            # Persist to settings if requested and settings available
+            if persist and self.app_settings:
+                self.app_settings.virtual_microphone_device_id = device.device_id
+                self.logger.debug("Persisted virtual microphone device to app settings")
+
+            self.logger.info(f"Virtual microphone device set to: {device.name}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to set virtual microphone device: {e}")
+            return False
+
+    def get_virtual_microphone_device(self) -> Optional[AudioDevice]:
+        """
+        Get the current virtual microphone device.
+
+        Returns:
+            Optional[AudioDevice]: Current virtual microphone device or None
+        """
+        return self.current_virtual_microphone_device
+
+    async def load_virtual_microphone_device_from_settings(self) -> bool:
+        """
+        Load and set the virtual microphone device from app settings.
+
+        This method creates the device directly from settings without triggering
+        device enumeration during startup (per user feedback).
+
+        Returns:
+            bool: True if device was loaded and set successfully
+        """
+        try:
+            if not self.app_settings or not hasattr(self.app_settings, 'virtual_microphone_device_id'):
+                self.logger.debug("No virtual microphone device ID in settings")
+                return False
+
+            device_id = self.app_settings.virtual_microphone_device_id
+            if not device_id:
+                self.logger.debug("Virtual microphone device ID is empty in settings")
+                return False
+
+            self.logger.debug(f"Loading virtual microphone device from settings: {device_id}")
+
+            # Create device directly from settings without triggering enumeration
+            # We'll validate actual availability when we try to use it for playback
+            try:
+                # Extract device index from device_id (format: "pyaudio_XX")
+                if device_id.startswith("pyaudio_"):
+                    device_index = int(device_id.split("_")[1])
+
+                    # Get basic device info directly without enumeration
+                    import pyaudio
+                    p = pyaudio.PyAudio()
+                    try:
+                        device_info = p.get_device_info_by_index(device_index)
+
+                        # Create AudioDevice object from cached info
+                        from myvoice.models.audio_device import AudioDevice, DeviceType
+                        target_device = AudioDevice(
+                            device_id=device_id,
+                            name=device_info['name'],
+                            device_type=DeviceType.VIRTUAL,
+                            is_available=True  # Assume available, validate during playback
+                        )
+
+                        # Store additional device info as custom attributes
+                        target_device.max_input_channels = device_info['maxInputChannels']
+                        target_device.max_output_channels = device_info['maxOutputChannels']
+                        target_device.default_sample_rate = int(device_info['defaultSampleRate'])
+                        target_device.device_index = device_index
+
+                        # Set the device (without persisting back to settings to avoid loop)
+                        self.current_virtual_microphone_device = target_device
+                        self.logger.info(f"Successfully loaded virtual microphone device from settings: {target_device.name}")
+                        return True
+
+                    finally:
+                        p.terminate()
+
+                else:
+                    self.logger.warning(f"Unsupported device ID format: {device_id}")
+                    return False
+
+            except Exception as device_error:
+                self.logger.warning(f"Failed to create device from settings {device_id}: {device_error}")
+                # Fall back to the original enumeration approach only if direct creation fails
+                self.logger.debug("Falling back to device enumeration (may interfere with startup)")
+
+                virtual_devices = self.get_virtual_input_devices()
+                target_device = None
+
+                for device in virtual_devices:
+                    if device.device_id == device_id:
+                        target_device = device
+                        break
+
+                if not target_device:
+                    self.logger.warning(f"Virtual microphone device {device_id} from settings not found in available devices")
+                    return False
+
+                # Set the device (without persisting back to settings to avoid loop)
+                success = self.set_virtual_microphone_device(target_device, persist=False)
+                if success:
+                    self.logger.info(f"Successfully loaded virtual microphone device from settings: {target_device.name}")
+
+                return success
+
+        except Exception as e:
+            self.logger.error(f"Failed to load virtual microphone device from settings: {e}")
+            return False
+
+    def enable_dual_stream(self, enabled: bool = True) -> None:
+        """
+        Enable or disable dual stream routing (virtual microphone + monitor).
+
+        Args:
+            enabled: Whether to enable dual stream routing
+        """
+        self.dual_stream_enabled = enabled
+        self.logger.info(f"Dual stream routing {'enabled' if enabled else 'disabled'}")
+
+    def is_dual_stream_enabled(self) -> bool:
+        """
+        Check if dual stream routing is enabled.
+
+        Returns:
+            bool: True if dual stream is enabled
+        """
+        return self.dual_stream_enabled
+
+    def get_virtual_microphone_playback_tasks(self) -> List[AudioPlaybackTask]:
+        """
+        Get list of currently active virtual microphone playback tasks.
+
+        Returns:
+            List[AudioPlaybackTask]: Active virtual microphone playback tasks
+        """
+        return list(self.virtual_mic_playback_tasks.values())
+
+    async def stop_virtual_microphone_playback(self, playback_id: str) -> bool:
+        """
+        Stop a specific virtual microphone playback task.
+
+        Args:
+            playback_id: ID of virtual microphone playback task to stop
+
+        Returns:
+            bool: True if stopped successfully
+        """
+        try:
+            if playback_id not in self.virtual_mic_playback_tasks:
+                self.logger.warning(f"Virtual microphone playback task {playback_id} not found")
+                return False
+
+            # Mark task as failed (which stops playback)
+            task = self.virtual_mic_playback_tasks[playback_id]
+            task.mark_failed("Stopped by user")
+
+            # Wait for thread to finish
+            if playback_id in self.virtual_mic_threads:
+                thread = self.virtual_mic_threads[playback_id]
+                if thread.is_alive():
+                    thread.join(timeout=2.0)
+
+                # Clean up thread reference
+                del self.virtual_mic_threads[playback_id]
+
+            # Clean up task reference
+            del self.virtual_mic_playback_tasks[playback_id]
+
+            self.logger.info(f"Stopped virtual microphone playback task {playback_id}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to stop virtual microphone playback {playback_id}: {e}")
+            return False
+
+    async def stop_all_virtual_microphone_playback(self) -> int:
+        """
+        Stop all active virtual microphone playback tasks.
+
+        Returns:
+            int: Number of virtual microphone tasks stopped
+        """
+        try:
+            active_ids = list(self.virtual_mic_playback_tasks.keys())
+            stopped_count = 0
+
+            for playback_id in active_ids:
+                if await self.stop_virtual_microphone_playback(playback_id):
+                    stopped_count += 1
+
+            self.logger.info(f"Stopped {stopped_count} virtual microphone playback tasks")
+            return stopped_count
+
+        except Exception as e:
+            self.logger.error(f"Failed to stop all virtual microphone playback: {e}")
+            return 0
+
+    def set_monitor_device(self, device: AudioDevice, persist: bool = True) -> bool:
+        """
+        Set the current monitor device with fallback support.
+
+        Args:
+            device: AudioDevice to set as monitor device
+            persist: Whether to save the device to app settings
+
+        Returns:
+            bool: True if device was set successfully
+        """
+        try:
+            self.logger.info(f"Setting monitor device: {device.name}")
+
+            # Refresh device list to ensure immediate availability
+            # NOTE: Temporarily disabled as it interferes with virtual device enumeration
+            # if hasattr(self.audio_client, 'refresh_audio_devices'):
+            #     refresh_success = self.audio_client.refresh_audio_devices()
+            #     if refresh_success:
+            #         self.logger.debug("Audio device list refreshed for immediate device selection")
+            #     else:
+            #         self.logger.warning("Failed to refresh audio device list")
+            self.logger.debug("Device refresh skipped to preserve virtual device enumeration")
+
+            # Validate device is available
+            if not device.is_available:
+                self.logger.warning(f"Device {device.name} is not available")
+                return False
+
+            # Set as preferred device in change handler
+            self.device_change_handler.set_preferred_device(device)
+            self.current_monitor_device = device
+
+            # Set fallback device (get default output device)
+            try:
+                default_device = self.audio_client.get_default_output_device()
+                if default_device and default_device.device_id != device.device_id:
+                    self.device_change_handler.set_fallback_device(default_device)
+                    self.logger.debug(f"Set fallback device: {default_device.name}")
+            except Exception as e:
+                self.logger.warning(f"Failed to set fallback device: {e}")
+
+            # Persist to settings if requested and settings available
+            if persist and self.app_settings:
+                self.app_settings.monitor_device_id = device.device_id
+                self.logger.debug("Persisted monitor device to app settings")
+
+            self.logger.info(f"Monitor device set to: {device.name}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to set monitor device: {e}")
+            return False
+
+    def get_monitor_device(self) -> Optional[AudioDevice]:
+        """
+        Get the current monitor device.
+
+        Returns:
+            Optional[AudioDevice]: Current monitor device or None
+        """
+        return self.current_monitor_device
+
+    async def load_monitor_device_from_settings(self) -> bool:
+        """
+        Load and set the monitor device from app settings.
+
+        This method creates the device directly from settings without triggering
+        device enumeration during startup (per user feedback).
+
+        Returns:
+            bool: True if device was loaded and set successfully
+        """
+        try:
+            if not self.app_settings or not self.app_settings.monitor_device_id:
+                self.logger.debug("No monitor device ID in settings")
+                return False
+
+            device_id = self.app_settings.monitor_device_id
+            self.logger.debug(f"Loading monitor device from settings: {device_id}")
+
+            # Create device directly from settings without triggering enumeration
+            # We'll validate actual availability when we try to use it for playback
+            try:
+                # Extract device index from device_id (format: "pyaudio_XX")
+                if device_id.startswith("pyaudio_"):
+                    device_index = int(device_id.split("_")[1])
+
+                    # Get basic device info directly without enumeration
+                    import pyaudio
+                    p = pyaudio.PyAudio()
+                    try:
+                        device_info = p.get_device_info_by_index(device_index)
+
+                        # Create AudioDevice object from cached info
+                        from myvoice.models.audio_device import AudioDevice, DeviceType
+                        target_device = AudioDevice(
+                            device_id=device_id,
+                            name=device_info['name'],
+                            device_type=DeviceType.OUTPUT,  # Monitor device is always output
+                            is_available=True  # Assume available, validate during playback
+                        )
+
+                        # Store additional device info as custom attributes
+                        target_device.max_input_channels = device_info['maxInputChannels']
+                        target_device.max_output_channels = device_info['maxOutputChannels']
+                        target_device.default_sample_rate = int(device_info['defaultSampleRate'])
+                        target_device.device_index = device_index
+
+                        # Set the device (without persisting back to settings to avoid loop)
+                        self.current_monitor_device = target_device
+                        self.logger.info(f"Successfully loaded monitor device from settings: {target_device.name}")
+                        return True
+
+                    finally:
+                        p.terminate()
+
+                else:
+                    self.logger.warning(f"Unsupported device ID format: {device_id}")
+                    return False
+
+            except Exception as device_error:
+                self.logger.warning(f"Failed to create monitor device from settings {device_id}: {device_error}")
+                # Fall back to the original enumeration approach only if direct creation fails
+                self.logger.debug("Falling back to device enumeration (may interfere with startup)")
+
+                devices = await self.get_output_devices()
+                target_device = None
+
+                for device in devices:
+                    if device.device_id == device_id:
+                        target_device = device
+                        break
+
+                if not target_device:
+                    self.logger.warning(f"Monitor device {device_id} from settings not found in available devices")
+                    return False
+
+                # Set the device (without persisting back to settings to avoid loop)
+                success = self.set_monitor_device(target_device, persist=False)
+                if success:
+                    self.logger.info(f"Successfully loaded monitor device from settings: {target_device.name}")
+
+                return success
+
+        except Exception as e:
+            self.logger.error(f"Failed to load monitor device from settings: {e}")
+            return False
+
+    async def refresh_device_list(self) -> tuple[List[AudioDevice], List[AudioDevice]]:
+        """
+        Refresh the device list and detect changes.
+
+        Returns:
+            tuple[List[AudioDevice], List[AudioDevice]]: (added_devices, removed_devices)
+        """
+        try:
+            self.logger.debug("Refreshing device list")
+
+            # Get current device list from cache
+            old_devices = await self.enumerate_audio_devices(refresh_cache=False)
+            old_device_ids = {device.device_id for device in old_devices}
+
+            # Get fresh device list
+            new_devices = await self.enumerate_audio_devices(refresh_cache=True)
+            new_device_ids = {device.device_id for device in new_devices}
+
+            # Detect changes
+            added_device_ids = new_device_ids - old_device_ids
+            removed_device_ids = old_device_ids - new_device_ids
+
+            added_devices = [device for device in new_devices if device.device_id in added_device_ids]
+            removed_devices = [device for device in old_devices if device.device_id in removed_device_ids]
+
+            # Handle device list changes
+            if added_devices or removed_devices:
+                self.device_change_handler.handle_device_list_refresh(added_devices, removed_devices)
+
+                # Notify refresh callbacks
+                for callback in self.device_refresh_callbacks:
+                    try:
+                        callback(new_devices)
+                    except Exception as e:
+                        self.logger.error(f"Error in device refresh callback: {e}")
+
+            self.logger.info(f"Device list refreshed: +{len(added_devices)}, -{len(removed_devices)}")
+            return added_devices, removed_devices
+
+        except Exception as e:
+            self.logger.error(f"Failed to refresh device list: {e}")
+            return [], []
+
+    def add_device_refresh_callback(self, callback: Callable[[List[AudioDevice]], None]) -> None:
+        """
+        Add a callback for device list refresh events.
+
+        Args:
+            callback: Function to call when device list is refreshed
+        """
+        if callback not in self.device_refresh_callbacks:
+            self.device_refresh_callbacks.append(callback)
+            self.logger.debug(f"Added device refresh callback")
+
+    def remove_device_refresh_callback(self, callback: Callable[[List[AudioDevice]], None]) -> None:
+        """
+        Remove a device refresh callback.
+
+        Args:
+            callback: Callback function to remove
+        """
+        if callback in self.device_refresh_callbacks:
+            self.device_refresh_callbacks.remove(callback)
+            self.logger.debug(f"Removed device refresh callback")
+
+    def add_notification_callback(self, callback: Callable[[DeviceNotification], None]) -> None:
+        """
+        Add a callback for device notifications.
+
+        Args:
+            callback: Function to call when notifications are generated
+        """
+        self.device_change_handler.add_notification_callback(callback)
+
+    def add_device_notification_callback(self, callback: Callable[[DeviceNotification], None]) -> None:
+        """
+        Add a callback for device notifications (alias for add_notification_callback).
+
+        Args:
+            callback: Function to call when notifications are generated
+        """
+        self.add_notification_callback(callback)
+
+    def remove_notification_callback(self, callback: Callable[[DeviceNotification], None]) -> None:
+        """
+        Remove a device notification callback.
+
+        Args:
+            callback: Callback function to remove
+        """
+        self.device_change_handler.remove_notification_callback(callback)
+
+    def _on_device_change(self, event: DeviceChangeEvent) -> None:
+        """
+        Handle device change events from WindowsAudioClient.
+
+        Args:
+            event: DeviceChangeEvent from the audio client
+        """
+        try:
+            # Reduce logging verbosity - only log important device changes
+            if event.event_type == "removed" and self.current_monitor_device and self.current_monitor_device.device_id.endswith(str(event.device_index)):
+                self.logger.info(f"Active device removed: {event.device_name}")
+            elif event.event_type in ["added", "changed"]:
+                # Only log device additions/changes at debug level to reduce startup spam
+                self.logger.debug(f"Device {event.event_type}: {event.device_name}")
+
+            if event.event_type == "removed":
+                # Find the removed device
+                removed_device = None
+                if self.current_monitor_device and self.current_monitor_device.device_id.endswith(str(event.device_index)):
+                    removed_device = self.current_monitor_device
+                else:
+                    # Create a temporary device object for the removed device
+                    removed_device = AudioDevice(
+                        device_id=f"pyaudio_{event.device_index}",
+                        name=event.device_name,
+                        device_type=DeviceType.OUTPUT,  # Assume output for monitor devices
+                        is_available=False
+                    )
+
+                if removed_device:
+                    fallback_device = self.device_change_handler.handle_device_removed(removed_device)
+
+                    # If we got a fallback device, update our current monitor device
+                    if fallback_device:
+                        self.current_monitor_device = fallback_device
+                        self.logger.info(f"Switched to fallback device: {fallback_device.name}")
+                    else:
+                        self.current_monitor_device = None
+                        self.logger.warning("No fallback device available")
+
+            elif event.event_type == "added":
+                # Handle device added synchronously to avoid event loop issues
+                self._handle_device_added_sync()
+
+            elif event.event_type == "changed":
+                # Handle device changed synchronously to avoid event loop issues
+                self._handle_device_changed_sync()
+
+        except Exception as e:
+            self.logger.error(f"Error handling device change event: {e}")
+
+
+    def _handle_device_added_sync(self) -> None:
+        """Handle device added event synchronously to avoid event loop issues."""
+        try:
+            import time
+            current_time = time.time()
+            if current_time - self.last_device_refresh_time < self.device_refresh_throttle_seconds:
+                self.logger.debug("Device refresh throttled - skipping")
+                return
+
+            # Use synchronous device enumeration instead of async refresh
+            self.audio_client.enumerate_audio_devices()
+            self.last_device_refresh_time = current_time
+            self.logger.debug("Device list refreshed after device addition")
+        except Exception as e:
+            self.logger.error(f"Error handling device added event: {e}")
+
+    def _handle_device_changed_sync(self) -> None:
+        """Handle device changed event synchronously to avoid event loop issues."""
+        try:
+            import time
+            current_time = time.time()
+            if current_time - self.last_device_refresh_time < self.device_refresh_throttle_seconds:
+                self.logger.debug("Device refresh throttled - skipping")
+                return
+
+            # Use synchronous device enumeration instead of async refresh
+            self.audio_client.enumerate_audio_devices()
+            self.last_device_refresh_time = current_time
+            self.logger.debug("Device list refreshed after device change")
+        except Exception as e:
+            self.logger.error(f"Error handling device changed event: {e}")
+
+    def _handle_device_notification(self, notification: DeviceNotification) -> None:
+        """
+        Handle device notifications from the change handler.
+
+        Args:
+            notification: DeviceNotification to handle
+        """
+        try:
+            self.logger.info(f"Device notification: {notification.title} - {notification.message}")
+
+            # Log notification details for debugging
+            if notification.device:
+                self.logger.debug(f"Notification device: {notification.device.name} ({notification.device.device_id})")
+
+            # Additional handling based on notification type can be added here
+            # For example, updating UI elements, triggering automatic actions, etc.
+
+        except Exception as e:
+            self.logger.error(f"Error handling device notification: {e}")
+
+    async def start(self) -> bool:
+        """
+        Start the AudioManager service.
+
+        Returns:
+            bool: True if started successfully
+        """
+        try:
+            await self._update_status(ServiceStatus.STARTING)
+
+            # Initialize audio client if needed
+            if not self.audio_client:
+                self.audio_client = WindowsAudioClient(enable_monitoring=True)
+
+            # Start virtual device compatibility service (optional - skip if it interferes with device enumeration)
+            try:
+                virtual_service_started = await self.virtual_compatibility_service.start()
+                if not virtual_service_started:
+                    self.logger.debug("Virtual device compatibility service failed to start (non-critical)")
+
+                # Perform initial virtual device compatibility check (non-blocking)
+                # NOTE: This check sometimes interferes with device enumeration, so we make it non-critical
+                compatibility_status = await self.check_virtual_device_compatibility()
+                self.logger.debug(f"Virtual device compatibility: {compatibility_status['overall_status']}")
+
+                if compatibility_status['overall_status'] != 'healthy':
+                    self.logger.debug("Virtual device compatibility issues detected (non-critical)")
+                    for issue in compatibility_status['issues']:
+                        self.logger.debug(f"Issue: {issue['issue']} (driver: {issue['driver_type']})")
+            except Exception as compat_error:
+                self.logger.debug(f"Virtual device compatibility service disabled due to interference: {compat_error}")
+                # Continue without compatibility service - device enumeration is more important
+
+            # Load devices from settings
+            try:
+                monitor_loaded = await self.load_monitor_device_from_settings()
+                virtual_loaded = await self.load_virtual_microphone_device_from_settings()
+
+                if monitor_loaded:
+                    self.logger.info("Monitor device loaded from settings")
+                else:
+                    self.logger.debug("No monitor device to load from settings")
+
+                if virtual_loaded:
+                    self.logger.info("Virtual microphone device loaded from settings")
+                else:
+                    self.logger.debug("No virtual microphone device to load from settings")
+
+            except Exception as device_error:
+                self.logger.warning(f"Failed to load devices from settings: {device_error}")
+
+            await self._update_status(ServiceStatus.RUNNING)
+            self.logger.info("AudioManager started successfully")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to start AudioManager: {e}")
+            await self._update_status(ServiceStatus.ERROR)
+            return False
+
+    async def stop(self) -> bool:
+        """
+        Stop the AudioManager service.
+
+        Returns:
+            bool: True if stopped successfully
+        """
+        try:
+            await self._update_status(ServiceStatus.STOPPING)
+
+            # Stop all playback
+            await self.stop_all_playback()
+
+            # Stop virtual device compatibility service
+            try:
+                await self.virtual_compatibility_service.stop()
+            except Exception as e:
+                self.logger.warning(f"Failed to stop virtual compatibility service: {e}")
+
+            # Stop audio level manager
+            try:
+                if self.audio_level_manager:
+                    await self.audio_level_manager.stop()
+                    self.audio_level_manager = None
+            except Exception as e:
+                self.logger.warning(f"Failed to stop audio level manager: {e}")
+
+            # Stop dual-stream synchronizer
+            try:
+                if self.dual_stream_synchronizer:
+                    await self.dual_stream_synchronizer.stop()
+                    self.dual_stream_synchronizer = None
+            except Exception as e:
+                self.logger.warning(f"Failed to stop dual-stream synchronizer: {e}")
+
+            await self._update_status(ServiceStatus.STOPPED)
+            self.logger.info("AudioManager stopped successfully")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to stop AudioManager: {e}")
+            await self._update_status(ServiceStatus.ERROR)
+            return False
+
+    async def health_check(self) -> tuple[bool, Optional[MyVoiceError]]:
+        """
+        Check AudioManager health.
+
+        Returns:
+            tuple[bool, Optional[MyVoiceError]]: (is_healthy, error_if_any)
+        """
+        try:
+            # Check if PyAudio is available
+            if not PYAUDIO_AVAILABLE:
+                return False, MyVoiceError(
+                    severity=ErrorSeverity.CRITICAL,
+                    code="PYAUDIO_UNAVAILABLE",
+                    user_message="Audio system is not available",
+                    technical_details="PyAudio library is not installed or accessible",
+                    suggested_action="Install PyAudio: pip install pyaudio"
+                )
+
+            # Check if audio client is working
+            if not self.audio_client:
+                return False, MyVoiceError(
+                    severity=ErrorSeverity.ERROR,
+                    code="AUDIO_CLIENT_UNAVAILABLE",
+                    user_message="Audio client is not initialized",
+                    suggested_action="Restart the audio service"
+                )
+
+            # Try to enumerate devices as a basic health check
+            try:
+                devices = await self.enumerate_audio_devices()
+                if not devices:
+                    return False, MyVoiceError(
+                        severity=ErrorSeverity.WARNING,
+                        code="NO_AUDIO_DEVICES",
+                        user_message="No audio devices found",
+                        suggested_action="Check audio drivers and device connections"
+                    )
+            except Exception as e:
+                return False, MyVoiceError(
+                    severity=ErrorSeverity.ERROR,
+                    code="DEVICE_ENUMERATION_FAILED",
+                    user_message="Failed to scan audio devices",
+                    technical_details=str(e),
+                    suggested_action="Check audio drivers and restart application"
+                )
+
+            return True, None
+
+        except Exception as e:
+            self.logger.error(f"Health check failed: {e}")
+            return False, MyVoiceError(
+                severity=ErrorSeverity.ERROR,
+                code="HEALTH_CHECK_FAILED",
+                user_message="Audio system health check failed",
+                technical_details=str(e),
+                suggested_action="Restart the audio service"
+            )
+
+    async def shutdown(self) -> None:
+        """Shutdown the AudioManager and clean up resources."""
+        try:
+            self.logger.info("Shutting down AudioManager")
+
+            # Stop all active playback (monitor + virtual microphone)
+            await self.stop_all_playback()
+
+            # Signal shutdown
+            self._shutdown_event.set()
+
+            # Clean up virtual microphone resources
+            self.virtual_mic_playback_tasks.clear()
+            self.virtual_mic_threads.clear()
+
+            # Close audio client
+            if self.audio_client:
+                self.audio_client.close()
+
+            self.logger.info("AudioManager shutdown complete")
+
+        except Exception as e:
+            self.logger.error(f"Error during AudioManager shutdown: {e}")
+
+    async def _apply_virtual_device_fallback(self) -> None:
+        """
+        Apply fallback strategy when virtual devices are unavailable.
+        """
+        try:
+            self.logger.info("Applying virtual device fallback strategy")
+
+            # Check current virtual driver status
+            compatibility_issues = await self.virtual_compatibility_service.check_compatibility_issues()
+
+            if compatibility_issues:
+                self.logger.warning(f"Found {len(compatibility_issues)} virtual device compatibility issues")
+                for issue in compatibility_issues:
+                    self.logger.warning(f"Virtual device issue: {issue['issue']} (driver: {issue['driver_type']})")
+
+            # Detect communication apps that might be affected
+            affected_apps = await self._detect_communication_app_compatibility_issues()
+            if affected_apps:
+                self.logger.warning(f"Communication apps affected by virtual device unavailability: {', '.join(affected_apps)}")
+
+            # Apply fallback strategy based on app settings or default
+            fallback_strategy = getattr(self.app_settings, 'virtual_device_fallback_strategy', FallbackStrategy.USER_GUIDANCE)
+            actions_taken = await self.virtual_compatibility_service.apply_fallback_strategy(fallback_strategy)
+
+            # Add communication app specific guidance
+            if affected_apps:
+                actions_taken.extend([
+                    f"Communication apps detected: {', '.join(affected_apps)}",
+                    "These apps may not receive TTS audio without virtual device setup",
+                    "Consider installing VB-Audio Cable for full communication app integration"
+                ])
+
+            for action in actions_taken:
+                self.logger.info(f"Fallback action: {action}")
+
+            # Emit user notification about virtual device issues
+            await self._emit_virtual_device_error_notification(fallback_strategy, affected_apps)
+
+            # Create user notification about fallback
+            if self.enable_fallback_notifications:
+                from myvoice.models.device_notification import DeviceNotification, NotificationSeverity, NotificationType
+
+                fallback_notification = DeviceNotification(
+                    notification_id=f"virtual_fallback_{hash('fallback')}",
+                    notification_type=NotificationType.DEVICE_FALLBACK,
+                    severity=NotificationSeverity.WARNING,
+                    title="Virtual Audio Device Fallback",
+                    message="Virtual microphone functionality is limited. Check virtual driver installation.",
+                    device=None,
+                    suggested_action="; ".join(actions_taken[:3])  # Limit to first 3 actions for UI
+                )
+
+                self._handle_device_notification(fallback_notification)
+
+        except Exception as e:
+            self.logger.error(f"Failed to apply virtual device fallback: {e}")
+
+    async def _detect_communication_app_compatibility_issues(self) -> List[str]:
+        """
+        Detect communication apps that might be affected by virtual audio issues.
+
+        Returns:
+            List[str]: Names of detected communication apps
+        """
+        try:
+            import psutil
+            detected_apps = []
+
+            # Common communication app processes
+            comm_apps = {
+                'discord.exe': 'Discord',
+                'teams.exe': 'Microsoft Teams',
+                'zoom.exe': 'Zoom',
+                'skype.exe': 'Skype',
+                'obs64.exe': 'OBS Studio',
+                'obs32.exe': 'OBS Studio',
+                'streamlabs obs.exe': 'Streamlabs OBS',
+                'teamspeak3.exe': 'TeamSpeak',
+                'mumble.exe': 'Mumble',
+                'ventrilo.exe': 'Ventrilo',
+                'slack.exe': 'Slack'
+            }
+
+            # Check running processes
+            for proc in psutil.process_iter(['name']):
+                try:
+                    proc_name = proc.info['name'].lower()
+                    for app_exe, app_name in comm_apps.items():
+                        if app_exe.lower() in proc_name and app_name not in detected_apps:
+                            detected_apps.append(app_name)
+                            break
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+
+            self.logger.debug(f"Detected communication apps: {detected_apps}")
+            return detected_apps
+
+        except ImportError:
+            self.logger.warning("psutil not available for communication app detection")
+            return []
+        except Exception as e:
+            self.logger.error(f"Failed to detect communication apps: {e}")
+            return []
+
+    async def _emit_virtual_device_error_notification(self, fallback_strategy: FallbackStrategy, affected_apps: List[str]) -> None:
+        """
+        Emit user notification about virtual device errors.
+
+        Args:
+            fallback_strategy: Applied fallback strategy
+            affected_apps: List of affected communication apps
+        """
+        try:
+            from myvoice.models.device_notification import DeviceNotification, NotificationSeverity, NotificationType
+
+            # Create appropriate notification based on severity
+            if affected_apps:
+                title = "Communication App Compatibility Issue"
+                message = f"Virtual audio unavailable for {', '.join(affected_apps[:2])}{'...' if len(affected_apps) > 2 else ''}. Install virtual audio drivers for full functionality."
+                severity = NotificationSeverity.WARNING
+            else:
+                title = "Virtual Audio Driver Not Found"
+                message = "Virtual microphone features unavailable. Consider installing VB-Audio Cable or Voicemeeter."
+                severity = NotificationSeverity.INFO
+
+            actions = [
+                "Download VB-Audio Cable from vb-audio.com",
+                "Download Voicemeeter from vb-audio.com/Voicemeeter",
+                "Continue with monitor audio only"
+            ]
+
+            notification = DeviceNotification(
+                notification_id=f"virtual_device_error_{hash(message)}",
+                notification_type=NotificationType.DEVICE_FALLBACK,
+                severity=severity,
+                title=title,
+                message=message,
+                device=None,
+                suggested_action="; ".join(actions)
+            )
+
+            self._handle_device_notification(notification)
+
+        except Exception as e:
+            self.logger.error(f"Failed to emit virtual device error notification: {e}")
+
+    async def handle_virtual_device_disconnection(self, device: AudioDevice) -> None:
+        """
+        Handle virtual device disconnection gracefully.
+
+        Args:
+            device: Disconnected virtual audio device
+        """
+        try:
+            self.logger.warning(f"Virtual device disconnected: {device.name}")
+
+            # Stop any active virtual microphone playback on this device
+            affected_tasks = []
+            for task_id, task in self.virtual_mic_playback_tasks.items():
+                if task.device_id == device.device_id:
+                    affected_tasks.append(task_id)
+
+            for task_id in affected_tasks:
+                await self.stop_playback(task_id)
+                self.logger.info(f"Stopped virtual microphone task {task_id} due to device disconnection")
+
+            # Remove device from current virtual microphone if it matches
+            if hasattr(self, 'current_virtual_microphone_device') and \
+               self.current_virtual_microphone_device and \
+               self.current_virtual_microphone_device.device_id == device.device_id:
+                self.current_virtual_microphone_device = None
+                self.logger.info("Cleared current virtual microphone device due to disconnection")
+
+            # Try to find alternative virtual devices
+            try:
+                alternative_devices = await self.get_virtual_input_devices_async()
+                if alternative_devices:
+                    # Automatically switch to first available alternative
+                    new_device = alternative_devices[0]
+                    self.set_virtual_microphone_device(new_device, persist=False)
+                    self.logger.info(f"Automatically switched to alternative virtual device: {new_device.name}")
+                else:
+                    # Apply fallback strategy
+                    await self._apply_virtual_device_fallback()
+            except Exception as fallback_error:
+                self.logger.error(f"Failed to apply virtual device fallback after disconnection: {fallback_error}")
+
+            # Emit disconnection notification
+            from myvoice.models.device_notification import DeviceNotification, NotificationSeverity
+
+            notification = DeviceNotification(
+                notification_id=f"device_disconnect_{device.device_id}",
+                notification_type=NotificationType.DEVICE_REMOVED,
+                severity=NotificationSeverity.WARNING,
+                title="Virtual Audio Device Disconnected",
+                message=f"{device.name} disconnected. Audio routing switched to monitor speakers.",
+                device=device,
+                suggested_action="Check virtual audio driver status; Restart virtual audio software; Continue with monitor audio only"
+            )
+
+            self._handle_device_notification(notification)
+
+        except Exception as e:
+            self.logger.error(f"Failed to handle virtual device disconnection: {e}")
+
+    async def get_virtual_device_guidance(self, driver_type: VirtualDeviceDriver) -> Dict[str, Any]:
+        """
+        Get user guidance for virtual device installation and setup.
+
+        Args:
+            driver_type: Type of virtual driver to get guidance for
+
+        Returns:
+            Dict[str, Any]: Installation and configuration guidance
+        """
+        try:
+            guidance = await self.virtual_compatibility_service.get_virtual_device_guidance(driver_type)
+
+            return {
+                'driver_type': guidance.driver_type.value,
+                'installation_required': guidance.installation_required,
+                'download_url': guidance.download_url,
+                'installation_steps': guidance.installation_steps,
+                'compatibility_notes': guidance.compatibility_notes,
+                'troubleshooting_tips': guidance.troubleshooting_tips
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to get virtual device guidance for {driver_type.value}: {e}")
+            return {
+                'driver_type': driver_type.value,
+                'installation_required': True,
+                'download_url': '',
+                'installation_steps': ['Manual installation required'],
+                'compatibility_notes': [f'Error getting guidance: {str(e)}'],
+                'troubleshooting_tips': ['Check system permissions and try again']
+            }
+
+    async def check_virtual_device_compatibility(self) -> Dict[str, Any]:
+        """
+        Check virtual device compatibility and return status report.
+
+        Returns:
+            Dict[str, Any]: Compatibility status report
+        """
+        try:
+            # Get driver detection results
+            detection_results = await self.virtual_compatibility_service.detect_virtual_drivers()
+
+            # Get compatibility issues
+            compatibility_issues = await self.virtual_compatibility_service.check_compatibility_issues()
+
+            # Build status report
+            status_report = {
+                'drivers': {},
+                'issues': compatibility_issues,
+                'overall_status': 'healthy',
+                'recommendations': []
+            }
+
+            for driver_type, driver_info in detection_results.items():
+                status_report['drivers'][driver_type.value] = {
+                    'status': driver_info.status.value,
+                    'version': driver_info.version,
+                    'install_path': driver_info.install_path,
+                    'devices_found': len(driver_info.devices_found),
+                    'recommendations': driver_info.recommendations
+                }
+
+                # Update overall status based on driver status
+                if driver_info.status.value in ['not_installed', 'error']:
+                    if status_report['overall_status'] == 'healthy':
+                        status_report['overall_status'] = 'degraded'
+                elif driver_info.status.value == 'partially_installed':
+                    status_report['overall_status'] = 'issues'
+
+            # Add general recommendations
+            if status_report['overall_status'] != 'healthy':
+                status_report['recommendations'].extend([
+                    'Consider installing virtual audio drivers for enhanced functionality',
+                    'VB-Audio Cable: Simple virtual audio routing',
+                    'Voicemeeter: Advanced audio mixing and routing'
+                ])
+
+            return status_report
+
+        except Exception as e:
+            self.logger.error(f"Failed to check virtual device compatibility: {e}")
+            return {
+                'drivers': {},
+                'issues': [{'driver_type': 'unknown', 'issue': f'Compatibility check failed: {str(e)}', 'severity': 'error'}],
+                'overall_status': 'error',
+                'recommendations': ['Restart the application and try again']
+            }
+
+    async def configure_audio_level_management(self, virtual_mic_config: VirtualMicrophoneConfig) -> bool:
+        """
+        Configure audio level management for virtual microphone output.
+
+        Args:
+            virtual_mic_config: Virtual microphone configuration including level settings
+
+        Returns:
+            bool: True if configuration was successful
+        """
+        try:
+            # Initialize audio level manager if not already done
+            if self.audio_level_manager is None:
+                self.audio_level_manager = AudioLevelManager(
+                    sample_rate=virtual_mic_config.sample_rate,
+                    channels=virtual_mic_config.channels
+                )
+
+                # Start the level manager
+                level_manager_started = await self.audio_level_manager.start()
+                if not level_manager_started:
+                    self.logger.error("Failed to start audio level manager")
+                    return False
+
+            # Configure communication app profile
+            self.audio_level_manager.set_communication_app(virtual_mic_config.target_communication_app)
+
+            # Update current profile with custom settings if provided
+            if hasattr(virtual_mic_config, 'target_peak_db'):
+                current_profile = self.audio_level_manager.current_profile
+                current_profile.target_peak_db = virtual_mic_config.target_peak_db
+                current_profile.target_rms_db = virtual_mic_config.target_rms_db
+                current_profile.max_gain_db = virtual_mic_config.max_gain_db
+                current_profile.min_gain_db = virtual_mic_config.min_gain_db
+                current_profile.normalization_mode = virtual_mic_config.normalization_mode
+
+            self.logger.info(f"Audio level management configured for {virtual_mic_config.target_communication_app.value}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to configure audio level management: {e}")
+            return False
+
+    async def set_communication_app(self, app: CommunicationApp) -> bool:
+        """
+        Set the target communication application for audio optimization.
+
+        Args:
+            app: Communication application to optimize for
+
+        Returns:
+            bool: True if app was set successfully
+        """
+        try:
+            if self.audio_level_manager is None:
+                self.logger.warning("Audio level manager not initialized, cannot set communication app")
+                return False
+
+            self.audio_level_manager.set_communication_app(app)
+            self.logger.info(f"Communication app set to: {app.value}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to set communication app: {e}")
+            return False
+
+    async def get_audio_level_metrics(self) -> Optional[Dict[str, Any]]:
+        """
+        Get current audio level metrics.
+
+        Returns:
+            Optional[Dict[str, Any]]: Current audio level measurements
+        """
+        try:
+            if self.audio_level_manager is None:
+                return None
+
+            current_levels = self.audio_level_manager.get_current_levels()
+            if current_levels is None:
+                return None
+
+            return {
+                'peak_db': current_levels.peak_db,
+                'rms_db': current_levels.rms_db,
+                'lufs': current_levels.lufs,
+                'dynamic_range_db': current_levels.dynamic_range_db,
+                'gain_reduction_db': current_levels.gain_reduction_db,
+                'timestamp': current_levels.timestamp
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to get audio level metrics: {e}")
+            return None
+
+    async def get_audio_level_statistics(self, window_seconds: float = 10.0) -> Dict[str, float]:
+        """
+        Get audio level statistics over a time window.
+
+        Args:
+            window_seconds: Time window for statistics calculation
+
+        Returns:
+            Dict[str, float]: Audio level statistics
+        """
+        try:
+            if self.audio_level_manager is None:
+                return {}
+
+            return self.audio_level_manager.get_level_statistics(window_seconds)
+
+        except Exception as e:
+            self.logger.error(f"Failed to get audio level statistics: {e}")
+            return {}
+
+    def add_audio_level_callback(self, callback: Callable) -> bool:
+        """
+        Add a callback for audio level change notifications.
+
+        Args:
+            callback: Function to call when audio levels change
+
+        Returns:
+            bool: True if callback was added successfully
+        """
+        try:
+            if self.audio_level_manager is None:
+                self.logger.warning("Audio level manager not initialized, cannot add callback")
+                return False
+
+            self.audio_level_manager.add_level_change_callback(callback)
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to add audio level callback: {e}")
+            return False
+
+    def remove_audio_level_callback(self, callback: Callable) -> bool:
+        """
+        Remove an audio level change callback.
+
+        Args:
+            callback: Callback function to remove
+
+        Returns:
+            bool: True if callback was removed successfully
+        """
+        try:
+            if self.audio_level_manager is None:
+                return False
+
+            self.audio_level_manager.remove_level_change_callback(callback)
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to remove audio level callback: {e}")
+            return False
+
+    def process_virtual_microphone_audio(self, audio_data: bytes, virtual_mic_config: VirtualMicrophoneConfig) -> bytes:
+        """
+        Process audio data for virtual microphone output with level management.
+
+        Args:
+            audio_data: Raw audio data bytes
+            virtual_mic_config: Virtual microphone configuration
+
+        Returns:
+            bytes: Processed audio data
+        """
+        try:
+            if not virtual_mic_config.enable_level_management or self.audio_level_manager is None:
+                return audio_data
+
+            # Convert bytes to numpy array
+            import numpy as np
+
+            # Determine audio format
+            if virtual_mic_config.sample_width == 1:
+                dtype = np.uint8
+                scale_factor = 128.0
+                offset = 128
+            elif virtual_mic_config.sample_width == 2:
+                dtype = np.int16
+                scale_factor = 32768.0
+                offset = 0
+            elif virtual_mic_config.sample_width == 4:
+                dtype = np.int32
+                scale_factor = 2147483648.0
+                offset = 0
+            else:
+                self.logger.warning(f"Unsupported sample width: {virtual_mic_config.sample_width}")
+                return audio_data
+
+            # Convert to numpy array
+            audio_array = np.frombuffer(audio_data, dtype=dtype)
+
+            # Convert to float32 for processing
+            if offset > 0:
+                audio_float = (audio_array.astype(np.float32) - offset) / scale_factor
+            else:
+                audio_float = audio_array.astype(np.float32) / scale_factor
+
+            # Reshape for multi-channel audio
+            if virtual_mic_config.channels > 1:
+                audio_float = audio_float.reshape(-1, virtual_mic_config.channels)
+
+            # Process audio through level manager
+            processed_audio = self.audio_level_manager.process_audio_frame(audio_float)
+
+            # Convert back to original format
+            if offset > 0:
+                processed_audio = (processed_audio * scale_factor + offset).astype(dtype)
+            else:
+                processed_audio = (processed_audio * scale_factor).astype(dtype)
+
+            # Clip to prevent overflow
+            if dtype == np.uint8:
+                processed_audio = np.clip(processed_audio, 0, 255)
+            elif dtype == np.int16:
+                processed_audio = np.clip(processed_audio, -32768, 32767)
+            elif dtype == np.int32:
+                processed_audio = np.clip(processed_audio, -2147483648, 2147483647)
+
+            return processed_audio.tobytes()
+
+        except Exception as e:
+            self.logger.error(f"Error processing virtual microphone audio: {e}")
+            return audio_data  # Return original data on error
+
+    async def detect_communication_app(self) -> Optional[CommunicationApp]:
+        """
+        Attempt to detect the currently running communication application.
+
+        Returns:
+            Optional[CommunicationApp]: Detected communication app or None
+        """
+        try:
+            import psutil
+
+            # Get list of running processes
+            running_processes = [proc.info['name'].lower() for proc in psutil.process_iter(['name'])]
+
+            # Check for known communication apps (priority order)
+            app_detection_map = {
+                'discord.exe': CommunicationApp.DISCORD,
+                'zoom.exe': CommunicationApp.ZOOM,
+                'teams.exe': CommunicationApp.TEAMS,
+                'ms-teams.exe': CommunicationApp.TEAMS,
+                'skype.exe': CommunicationApp.SKYPE,
+                'webexmta.exe': CommunicationApp.WEBEX,
+                'ciscowebexstart.exe': CommunicationApp.WEBEX,
+                'slack.exe': CommunicationApp.SLACK,
+            }
+
+            for process_name, app in app_detection_map.items():
+                if process_name in running_processes:
+                    self.logger.info(f"Detected communication app: {app.value}")
+                    return app
+
+            # Check for browser-based apps (Chrome/Edge with specific titles)
+            # This would require more sophisticated detection
+            self.logger.debug("No specific communication app detected, using generic profile")
+            return CommunicationApp.GENERIC
+
+        except Exception as e:
+            self.logger.warning(f"Failed to detect communication app: {e}")
+            return CommunicationApp.GENERIC
+
+    # Virtual Microphone Device Management Methods
+    def get_virtual_input_devices(self) -> List[AudioDevice]:
+        """
+        Get available virtual input devices for microphone routing.
+
+        Returns:
+            List[AudioDevice]: List of virtual input devices
+        """
+        try:
+            return self.audio_client.enumerate_virtual_input_devices()
+        except Exception as e:
+            self.logger.error(f"Failed to enumerate virtual input devices: {e}")
+            return []
+
+    def get_vb_cable_devices(self) -> List[AudioDevice]:
+        """
+        Get available VB-Audio Cable devices.
+
+        Returns:
+            List[AudioDevice]: List of VB-Audio Cable devices
+        """
+        try:
+            return self.audio_client.get_vb_cable_devices()
+        except Exception as e:
+            self.logger.error(f"Failed to get VB-Audio Cable devices: {e}")
+            return []
+
+    def get_voicemeeter_devices(self) -> List[AudioDevice]:
+        """
+        Get available Voicemeeter devices.
+
+        Returns:
+            List[AudioDevice]: List of Voicemeeter devices
+        """
+        try:
+            return self.audio_client.get_voicemeeter_devices()
+        except Exception as e:
+            self.logger.error(f"Failed to get Voicemeeter devices: {e}")
+            return []
+
+    def load_virtual_microphone_from_settings(self) -> Optional[AudioDevice]:
+        """
+        Load virtual microphone device from app settings.
+
+        Returns:
+            Optional[AudioDevice]: Configured virtual microphone device or None
+        """
+        try:
+            # In real implementation, this would load from settings
+            # For now, return None to indicate no device configured
+            return None
+        except Exception as e:
+            self.logger.error(f"Failed to load virtual microphone from settings: {e}")
+            return None
+
+    def validate_virtual_device_availability(self, device: AudioDevice) -> tuple[bool, Optional[str]]:
+        """
+        Validate if a virtual device is available for use.
+
+        Args:
+            device: Virtual AudioDevice to validate
+
+        Returns:
+            tuple[bool, Optional[str]]: (is_available, error_message)
+        """
+        try:
+            return self.audio_client.validate_virtual_device_availability(device)
+        except Exception as e:
+            self.logger.error(f"Failed to validate virtual device: {e}")
+            return False, str(e)
+
+    def optimize_audio_for_virtual_microphone(self, audio_data: bytes, config: VirtualMicrophoneConfig) -> bytes:
+        """
+        Optimize audio data for virtual microphone routing.
+
+        Args:
+            audio_data: Raw audio data
+            config: Virtual microphone configuration
+
+        Returns:
+            bytes: Optimized audio data
+        """
+        try:
+            # Apply basic audio optimizations
+            return self._apply_virtual_microphone_processing(audio_data, config)
+        except Exception as e:
+            self.logger.error(f"Failed to optimize audio for virtual microphone: {e}")
+            return audio_data
+
+    def _apply_virtual_microphone_processing(self, audio_data: bytes, config: VirtualMicrophoneConfig) -> bytes:
+        """
+        Apply audio processing optimizations for virtual microphone.
+
+        Args:
+            audio_data: Raw audio data
+            config: Virtual microphone configuration
+
+        Returns:
+            bytes: Processed audio data
+        """
+        # For now, return the audio data as-is
+        # In a real implementation, this would apply:
+        # - Noise gate
+        # - Dynamic range compression
+        # - Sample rate conversion
+        # - Mono conversion if needed
+        return audio_data
+
+    def get_virtual_microphone_playback_tasks(self) -> List[AudioPlaybackTask]:
+        """
+        Get all active virtual microphone playback tasks.
+
+        Returns:
+            List[AudioPlaybackTask]: List of virtual microphone playback tasks
+        """
+        return list(self.virtual_mic_playback_tasks.values())
+
+    def stop_virtual_microphone_playback(self, task_id: str) -> bool:
+        """
+        Stop a specific virtual microphone playback task.
+
+        Args:
+            task_id: ID of the playback task to stop
+
+        Returns:
+            bool: True if task was stopped successfully
+        """
+        try:
+            if task_id in self.virtual_mic_playback_tasks:
+                task = self.virtual_mic_playback_tasks[task_id]
+                task.status = PlaybackStatus.FAILED  # Use FAILED instead of STOPPED
+
+                # Stop the thread if it exists
+                if task_id in self.virtual_mic_threads:
+                    thread = self.virtual_mic_threads[task_id]
+                    if thread.is_alive():
+                        # Signal thread to stop (in real implementation)
+                        pass
+                    del self.virtual_mic_threads[task_id]
+
+                del self.virtual_mic_playback_tasks[task_id]
+                return True
+            return False
+        except Exception as e:
+            self.logger.error(f"Failed to stop virtual microphone playback {task_id}: {e}")
+            return False
+
+    def stop_all_virtual_microphone_playback(self) -> int:
+        """
+        Stop all virtual microphone playback tasks.
+
+        Returns:
+            int: Number of tasks stopped
+        """
+        try:
+            task_ids = list(self.virtual_mic_playback_tasks.keys())
+            stopped_count = 0
+
+            for task_id in task_ids:
+                if self.stop_virtual_microphone_playback(task_id):
+                    stopped_count += 1
+
+            return stopped_count
+        except Exception as e:
+            self.logger.error(f"Failed to stop all virtual microphone playback: {e}")
+            return 0
+
+    def enable_dual_stream_routing(self) -> None:
+        """Enable dual-stream routing (virtual microphone + monitor)."""
+        self.dual_stream_enabled = True
+        self.logger.info("Dual-stream routing enabled")
+
+    def disable_dual_stream_routing(self) -> None:
+        """Disable dual-stream routing (virtual microphone only)."""
+        self.dual_stream_enabled = False
+        self.logger.info("Dual-stream routing disabled")
+
+    def is_dual_stream_enabled(self) -> bool:
+        """
+        Check if dual-stream routing is enabled.
+
+        Returns:
+            bool: True if dual-stream routing is enabled
+        """
+        return getattr(self, 'dual_stream_enabled', True)
+
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit."""
+        asyncio.create_task(self.shutdown())

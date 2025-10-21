@@ -1,0 +1,29 @@
+# MyVoice Application Dependencies
+# Python 3.10+ required
+
+# GUI Framework
+PyQt6>=6.6.0
+qasync>=0.27.0  # PyQt6 + asyncio integration
+
+# HTTP Client
+requests>=2.31.0
+
+# Speech Recognition
+openai-whisper>=20231117
+
+# Machine Learning (CPU-only for smaller package size)
+# NOTE: CPU-only PyTorch reduces package size by ~2-3GB vs CUDA version
+# GPT-SoVITS runs in its own isolated environment and is unaffected by this
+# To install: pip install torch==2.0.1 --index-url https://download.pytorch.org/whl/cpu
+torch==2.0.1
+numpy==1.24.3
+
+# Audio Processing
+# PyAudioWPatch is preferred on Windows for better WASAPI support and Windows 11 compatibility
+# It includes WASAPI loopback, better device detection, and context manager support
+# Falls back to standard PyAudio if PyAudioWPatch is not available
+PyAudioWPatch>=0.2.12.6; sys_platform == 'win32'
+pyaudio>=0.2.13; sys_platform != 'win32'
+
+# Windows COM Support (Windows only)
+pywin32>=306; sys_platform == 'win32'
