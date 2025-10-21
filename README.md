@@ -40,7 +40,13 @@ A desktop application for voice cloning and text-to-speech using GPT-SoVITS tech
 
 ## Installation
 
-### Quick Install (Windows - Recommended)
+**Recommended Windows Installer**
+
+Here is a proper windows installer that contains ffmpeg and auto downloads GPT-SoVITS. You will not have to run GPT-SoVITS seperately with this installer.
+The installer will also provide the VB-Cable installer if you do not already have it on your system:
+[MyVoice Windows Installer](https://mega.nz/file/M69wnBAY#FCwtRW0_RPfi5s0_0XsdnTNKjIOVGetXFQeUAaRnG2w)
+
+### Github Quick Install (Windows)
 
 **Easy 2-step installation:**
 
