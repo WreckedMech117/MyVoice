@@ -149,8 +149,8 @@ class TranscriptionCacheService(BaseService):
             # Save cache before stopping
             await self._save_cache()
 
-            # Shutdown thread pool
-            self._executor.shutdown(wait=True)
+            # Shutdown thread pool - QA Round 2 Item #8: Non-blocking shutdown
+            self._executor.shutdown(wait=False, cancel_futures=True)
 
             self.status = ServiceStatus.STOPPED
             self.logger.info("Transcription cache service stopped successfully")

@@ -170,10 +170,20 @@ class CustomTitleBar(QWidget):
             super().mouseDoubleClickEvent(event)
 
     def _on_minimize_clicked(self):
-        """Handle minimize button click."""
+        """
+        Handle minimize button click.
+
+        Story 7.2: If parent window has system tray enabled,
+        minimizes to tray instead of taskbar.
+        """
         if self._parent_window:
-            self._parent_window.showMinimized()
-            self.logger.debug("Window minimized")
+            # Story 7.2: Check if parent supports minimize to tray
+            if hasattr(self._parent_window, '_minimize_to_tray'):
+                self._parent_window._minimize_to_tray()
+                self.logger.debug("Window minimized to tray")
+            else:
+                self._parent_window.showMinimized()
+                self.logger.debug("Window minimized")
 
     def _on_maximize_clicked(self):
         """Handle maximize/restore button click."""

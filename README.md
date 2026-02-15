@@ -1,255 +1,230 @@
-# MyVoice - Voice Cloning Desktop Application
+# MyVoice V2 - Expressive Voice Communication for Everyone
 
-A desktop application for voice cloning and text-to-speech using GPT-SoVITS technology. MyVoice provides an intuitive PyQt6 interface for creating and using custom voice profiles with fast, localized audio processing.
+MyVoice is a Windows desktop application that enables mute individuals and content creators to communicate in voice chats using emotionally expressive text-to-speech. Powered by Qwen3-TTS technology, it works fully offline with no external service dependencies.
+
+## What's New in V2
+
+- **Embedded Qwen3-TTS** - No external service required, works completely offline
+- **Emotion Control** - 5 presets (Neutral, Happy, Sad, Angry, Flirtatious) + custom prompts
+- **Voice Design** - Create unique voices from text descriptions
+- **Improved Voice Cloning** - Clone voices from just 3 seconds of audio
+- **9 Bundled Voices** - Ready to use out of the box with full emotion support
+- **Quick Speak** - Save and trigger common phrases instantly
+- **Streaming TTS** - First audio in under 2 seconds
 
 ## Features
 
-- **Voice Cloning**: Create custom voice profiles from audio samples
-- **Real-time TTS**: Generate speech with custom voice profiles
+- **Emotion Presets**: Express yourself with 5 emotion buttons (F1-F5 shortcuts) or custom emotion prompts
+- **Voice Design**: Describe a voice in text ("elderly male, gravelly, speaks slowly") and create it
+- **Voice Cloning**: Clone any voice from a 3-second audio sample (WAV/MP3/M4A)
+- **9 Bundled Voices**: Pre-trained timbres (Vivian, Serena, Dylan, Eric, Ryan, Aiden, and more) with full emotion support
+- **Dual Audio Output**: Simultaneous playback to monitor speakers AND virtual microphone
+- **Quick Speak**: Configure common phrases for instant generation
+- **Virtual Microphone**: Route speech directly to Discord, Zoom, Teams, and other apps
 - **Audio Transcription**: Automatic transcription using OpenAI Whisper
-- **Virtual Microphone Support**: Route generated audio to communication apps
-- **Audio Device Management**: Comprehensive audio device control
-- **Modern UI**: Clean, responsive PyQt6 interface
+- **Always-On-Top Window**: Compact 400x188px interface stays visible during voice chats
+- **System Tray**: Minimize to tray, restore with one click
+- **Fully Offline**: After initial setup, no internet connection required
 
 ## System Requirements
 
-- **Operating System**: Windows 10/11 (64-bit)
-- **Memory**: 8GB RAM minimum (16GB recommended for large models)
-- **Storage**: 12GB free space (for dependencies, GPT-SoVITS with models, and cache)
+- **Operating System**: Windows 10 (1903+) or Windows 11 (64-bit)
 - **Python**: 3.10 or higher
+- **Memory**: 16GB RAM recommended (8GB minimum - may experience slower model switching)
+- **Storage**: 8GB free space
+  - Installation: ~2GB
+  - Qwen3-TTS models: ~3.4GB each (downloaded on first use, one model loaded at a time)
+  - Whisper models: ~1-3GB (downloaded on first use)
+- **Processor**: CPU-only supported (GPU optional for faster inference)
+- **Audio**: Audio output device required; microphone optional (for voice cloning)
 
-### Required External Software
+### Virtual Microphone Software (Required for Voice Chat)
 
-- **FFmpeg** - Audio processing for Whisper (auto-installed via setup script)
-  - Required for OpenAI Whisper audio transcription
-  - Installation handled by `setup_ffmpeg.bat` or `setup_ffmpeg.py`
+Choose ONE of the following:
 
-- **GPT-SoVITS** - Voice cloning engine (not included in this repository)
-  - Download and setup instructions: [GPT-SoVITS GitHub](https://github.com/RVC-Boss/GPT-SoVITS)
+- **VB-Audio Cable** (Simple - Recommended for beginners)
+  - Download: https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip
 
-- **VB-Audio Cable** (for Virtual Microphone - Simple)
-  - Download: [VBCABLE_Driver_Pack45.zip](https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip)
+- **VoiceMeeter Banana** (Advanced - Full audio routing control)
+  - Download: https://download.vb-audio.com/Download_CABLE/VoicemeeterSetup_v2119.zip
 
-  OR
-
-- **VoiceMeeter Banana** (for Virtual Microphone - Advanced with full audio control)
-  - Download: [VoicemeeterSetup](https://download.vb-audio.com/Download_CABLE/VoicemeeterSetup_v2119.zip)
+### Additional Requirements
 
 - **Microsoft Visual C++ Redistributable** (usually pre-installed)
-  - Download: [vc_redist.x64.exe](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+  - Download: https://aka.ms/vs/17/release/vc_redist.x64.exe
 
 ## Installation
 
-**Recommended Windows Installer**
-
-Here is a proper windows installer that contains ffmpeg and auto downloads GPT-SoVITS. You will not have to run GPT-SoVITS seperately with this installer.
-The installer will also provide the VB-Cable installer if you do not already have it on your system:
-[MyVoice Windows Installer](https://mega.nz/file/M69wnBAY#FCwtRW0_RPfi5s0_0XsdnTNKjIOVGetXFQeUAaRnG2w)
-
-### Github Quick Install (Windows)
-
-**Easy 2-step installation:**
-
-1. **Clone the Repository**
-   ```bash
-   git clone https://github.com/WreckedMech117/MyVoice.git
-   cd MyVoice
-   ```
-
-2. **Run Installation Script**
-   ```bash
-   install_myvoice.bat
-   ```
-
-This automated script will:
-- Create Python virtual environment
-- Download and install FFmpeg (~150MB)
-- Install all Python dependencies including PyTorch
-- Install MyVoice package
-
-### Manual Installation (Advanced Users / Linux / Mac)
-
-<details>
-<summary>Click to expand manual installation steps</summary>
-
-#### 1. Clone the Repository
+### 1. Clone the Repository
 
 ```bash
 git clone https://github.com/WreckedMech117/MyVoice.git
 cd MyVoice
 ```
 
-#### 2. Create Virtual Environment
+### 2. Create Virtual Environment
 
 ```bash
 python -m venv .venv
 ```
 
-#### 3. Activate Virtual Environment
+### 3. Activate Virtual Environment
 
-**Windows:**
 ```bash
 .venv\Scripts\activate
 ```
 
-**Linux/Mac:**
-```bash
-source .venv/bin/activate
-```
-
-#### 4. Setup FFmpeg (Required for Whisper)
-
-**Windows:**
-```bash
-python setup_ffmpeg.py
-```
-
-**Linux/Mac:**
-```bash
-# Install via package manager
-# Ubuntu/Debian:
-sudo apt install ffmpeg
-
-# macOS:
-brew install ffmpeg
-```
-
-#### 5. Install Dependencies
+### 4. Install Dependencies
 
 ```bash
-# Install PyTorch CPU version first (faster)
-pip install torch==2.0.1 --index-url https://download.pytorch.org/whl/cpu
+# Install PyTorch (CPU version - smaller download)
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# Or for GPU acceleration (CUDA 12.1):
+# pip install torch --index-url https://download.pytorch.org/whl/cu121
 
 # Install remaining dependencies
 pip install -r requirements.txt
 ```
 
-#### 6. Install MyVoice Package
+### 5. Install MyVoice Package
 
 ```bash
 pip install -e .
 ```
 
-</details>
-
-### Setup GPT-SoVITS
-
-Download and setup [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) separately. By default, MyVoice expects it running at `http://127.0.0.1:9880`.
-
 ## Usage
 
 ### Running MyVoice
 
-**Windows (Easy Method):**
+```bash
+# Make sure virtual environment is activated
+.venv\Scripts\activate
+
+# Run the application
+python -m myvoice.main
+```
+
+Or use the launcher script:
 ```bash
 run_myvoice.bat
 ```
 
-**Or using Python:**
-```bash
-# Make sure virtual environment is activated first
-python -m myvoice.main
-```
-
-**Or if installed:**
-```bash
-myvoice
-```
-
 ### First Time Setup
 
-1. **Start GPT-SoVITS Server**
-   - Ensure GPT-SoVITS is running (default: http://127.0.0.1:9880)
-   - Configure server URL in MyVoice Settings if needed
+1. **Launch MyVoice**
+   - A bundled voice is pre-selected - you can start speaking immediately!
 
-2. **Configure Audio Devices**
-   - Select your monitor speaker for audio output
-   - Select virtual microphone device:
-     - "CABLE Input" for VB-Audio Cable users
-     - "VoiceMeeter Input" or "VoiceMeeter Aux Input" for VoiceMeeter users
+2. **Configure Audio Devices** (Settings)
+   - **Monitor Speaker**: Select your headphones/speakers for self-monitoring
+   - **Virtual Microphone**: Select "CABLE Input" (VB-Audio) or "VoiceMeeter Input"
 
-3. **Create Voice Profile**
-   - Record or import audio sample (10 seconds maximum, WAV format)
-   - Use "Transcribe" to generate transcription
-   - Select and use your custom voice profile!
+3. **Configure Your Communication App**
+   - In Discord/Zoom/Teams: Set input device to "CABLE Output" or "VoiceMeeter Output"
+   - Test by generating speech - it should be heard in your voice chat
 
-### Creating Voice Profiles
+### Basic Text-to-Speech
 
-**Option 1: Using WAV + Text File**
-1. Place a `.wav` file (max 10 seconds) in the `voice_files/` folder
-2. Create a `.txt` file with the same name containing the transcription
-3. Profile will appear in the dropdown
+1. Type your message in the text input field
+2. Select an emotion preset or use F1-F5 shortcuts
+3. Click **Generate** or press Enter
+4. Audio plays through both your speakers and the virtual microphone
 
-**Option 2: Using Transcribe Button**
-1. Place a `.wav` file in `voice_files/` folder
-2. Use the "Transcribe" button in MyVoice
-3. Transcription will be generated automatically using Whisper
+### Voice Types
 
-### Text-to-Speech
+| Type | How to Create | Emotion Support | Best For |
+|------|---------------|-----------------|----------|
+| **Bundled** | Pre-installed (9 voices) | Full | Quick start, reliable quality |
+| **Designed** | Text description | Full | Custom characters, unique voices |
+| **Cloned** | 3-sec audio sample | None | Identity preservation |
 
-1. Select voice profile from dropdown
-2. Enter text in the input field
-3. Click **"Speak"** or use Quick Speak dialog
-4. Audio plays through selected monitor device
+> **Note**: Cloned voices preserve vocal identity but do NOT support emotion control. For expressive communication with a custom voice, use Voice Design.
 
-### Virtual Microphone
+### Voice Design (Creating Voices from Text)
 
-1. Enable virtual microphone in settings
-2. Test with "Test Virtual" button
-   - Note: You won't hear this test unless using VoiceMeeter
-3. Configure your communication app (Discord, Zoom, etc.) to use the virtual mic
-4. Generated speech routes to apps in real-time
+1. Open Settings > Voices > **Design Voice**
+2. Enter a description: "Young female, warm tone, slight British accent, speaks confidently"
+3. Click **Preview** to hear the voice
+4. Adjust description and preview until satisfied
+5. Click **Save** to add to your voice library
+
+### Voice Cloning (Preserving Your Identity)
+
+1. Open Settings > Voices > **Clone Voice**
+2. Select a WAV, MP3, or M4A file (minimum 3 seconds of clear speech)
+3. Click **Extract Embedding** to process
+4. Preview the cloned voice
+5. Click **Save Voice** to add to your library
+
+### Quick Speak (Common Phrases)
+
+1. Open Settings > Quick Speak
+2. Add frequently used phrases ("Hello!", "Be right back", "Good game!")
+3. Click the Quick Speak button in the main window to access your phrases
+4. Select a phrase - it generates immediately
+
+### Emotion Control
+
+- **Presets**: Click emoji buttons or use F1-F5 shortcuts
+  - F1: Neutral
+  - F2: Happy
+  - F3: Sad
+  - F4: Angry
+  - F5: Flirtatious
+- **Custom**: Settings > TTS > Custom Emotion for freeform emotion prompts
+- **Note**: Emotions only work with Bundled and Designed voices (not Cloned)
 
 ## Project Structure
 
 ```
 MyVoice/
 ├── src/
-│   └── myvoice/           # Application source code
-│       ├── main.py        # Entry point
-│       ├── app.py         # Application controller
-│       ├── ui/            # User interface components
-│       ├── services/      # Business logic services
-│       ├── models/        # Data models
-│       └── utils/         # Utility functions
-├── ffmpeg/                # FFmpeg binaries (auto-downloaded)
-├── voice_files/           # Voice profile samples
-├── logs/                  # Application logs
-├── config/                # Configuration files
-├── install_myvoice.bat    # Complete installation script (Windows)
-├── run_myvoice.bat        # Application launcher (Windows)
-├── setup_ffmpeg.py        # FFmpeg setup script
-├── setup_ffmpeg.bat       # Windows FFmpeg installer
-├── requirements.txt       # Python dependencies
-├── setup.py               # Package configuration
-├── LICENSE                # License file
-└── README.md              # This file
+│   └── myvoice/                # Application source code
+│       ├── main.py             # Entry point
+│       ├── app.py              # Application controller
+│       ├── ui/                 # User interface components
+│       │   ├── components/     # Reusable UI widgets
+│       │   └── dialogs/        # Dialog windows
+│       ├── services/           # Business logic services
+│       │   ├── qwen_tts_service.py      # Qwen3-TTS integration
+│       │   ├── audio_coordinator.py     # Dual audio routing
+│       │   ├── voice_profile_service.py # Voice library management
+│       │   └── ...             # Additional service modules
+│       ├── models/             # Data models
+│       └── utils/              # Utility functions
+├── voice_files/                # Voice samples and embeddings
+├── logs/                       # Application logs
+├── config/                     # Configuration files
+├── requirements.txt            # Python dependencies
+├── setup.py                    # Package configuration
+├── run_myvoice.bat             # Application launcher (Windows)
+└── README.md                   # This file
 ```
 
 ## Dependencies
 
 ### Core Dependencies
-- **PyQt6** (≥6.6.0) - GUI framework
-- **requests** (≥2.31.0) - HTTP client
-- **openai-whisper** (≥20231117) - Speech recognition
-- **torch** (≥2.0.0) - Machine learning framework
-- **pyaudio** (≥0.2.13) - Audio I/O
-- **numpy** (≥1.24.0) - Numerical processing
+- **PyQt6** (>=6.6.0) - GUI framework
+- **torch** (>=2.0.0) - Machine learning framework (Qwen3-TTS inference)
+- **qwen-tts** - Text-to-speech engine
+- **transformers** - Hugging Face model loading
+- **openai-whisper** (>=20231117) - Speech recognition
+- **pyaudio** / **PyAudioWPatch** - Audio I/O
+- **numpy** (>=1.24.0) - Numerical processing
+- **soundfile** - Audio file handling
 
 ### Development Dependencies
-- **pytest** (≥7.4.0) - Testing framework
-- **pytest-qt** (≥4.2.0) - PyQt testing
-- **pytest-asyncio** (≥0.21.0) - Async testing
+- **pytest** (>=7.4.0) - Testing framework
+- **pytest-qt** (>=4.2.0) - PyQt testing
+- **pytest-asyncio** (>=0.21.0) - Async testing
 
 ## Configuration
 
-Application settings and data are stored locally in the project directory:
-- **Settings**: `config/settings.json`
-- **Logs**: `logs/myvoice.log`
-- **Whisper Models**: `whisper_models/` (downloaded on first use)
-- **Voice Profiles**: `voice_files/`
+Application settings stored in:
+- **Windows**: `%LOCALAPPDATA%\MyVoice\settings.json`
 
-This makes the application portable - you can move the entire folder and your settings come with it!
+Voice library stored in:
+- **Windows**: `%LOCALAPPDATA%\MyVoice\voices\`
 
 ## Troubleshooting
 
@@ -257,90 +232,104 @@ This makes the application portable - you can move the entire folder and your se
 
 **PyAudio Installation Fails**
 - Install Microsoft Visual C++ Build Tools
-- Download: [Visual C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+- Download from: https://visualstudio.microsoft.com/visual-cpp-build-tools/
 
 **PyTorch Installation Slow**
 - PyTorch is ~2GB download
 - Ensure stable internet connection
-- Installation may take 5-10 minutes
 
-### Runtime Issues
+**Permission Errors**
+- Run installation as Administrator
+- Check antivirus isn't blocking
 
-**Application Won't Start**
-- Check `logs/myvoice.log` for errors
-- Ensure all dependencies are installed
-- Verify Python 3.10+ is being used
+### Model Loading Issues
+
+**"Loading voice model..." takes too long**
+- First load downloads ~3.4GB model (requires internet)
+- Subsequent loads are faster
+- Ensure 16GB RAM available for smooth operation
+
+**Model loading fails**
+- Check disk space (need ~8GB free)
+- Check `logs/myvoice.log` for specific errors
+- Try restarting the application
+
+### Audio Issues
 
 **No Audio Output**
 - Verify audio device selection in Settings
 - Check Windows audio settings
-- Ensure device isn't in use by another application
+- Ensure device isn't in use exclusively by another app
 
-**GPT-SoVITS Connection Failed**
-- Start GPT-SoVITS server before running MyVoice
-- Verify server URL in Settings (default: http://127.0.0.1:9880)
-- Check that firewall isn't blocking the connection
+**Virtual Microphone Not Working**
+- Verify VB-Audio Cable or VoiceMeeter is installed
+- In Settings, select "CABLE Input" as Virtual Mic
+- In your voice chat app, select "CABLE Output" as input device
+- Use "Test Virtual" button to verify routing
 
-**Transcription Fails**
-- Whisper downloads models on first use (~1-3GB)
-- Ensure internet connection is available
-- Models are cached for offline use after download
+**Audio Stuttering or Gaps**
+- Close other audio-intensive applications
+- Check CPU usage - TTS is computationally intensive
+- Try reducing system audio quality to 48kHz
 
-## Development
+### Voice Issues
 
-### Running Tests
+**Emotion Buttons Are Grayed Out**
+- This is expected for Cloned voices (model limitation)
+- Switch to a Bundled or Designed voice for emotion support
 
-```bash
-pytest
-```
+**Cloned Voice Doesn't Sound Right**
+- Use a clear, noise-free audio sample
+- Sample should be 3-10 seconds of natural speech
+- Avoid samples with music or background noise
 
-### Installing in Development Mode
+### Application Issues
 
-```bash
-pip install -e .
-```
+**Application Won't Start**
+- Check `logs/myvoice.log` for errors
+- Ensure all dependencies installed
+- Verify Python 3.10+ is being used
 
-### Installing Development Dependencies
-
-```bash
-pip install -e ".[dev]"
-```
+**Settings Not Saving**
+- Check write permissions on `%LOCALAPPDATA%\MyVoice\`
+- Try running as Administrator once to create directories
 
 ## FAQ
 
 **Q: Does this work with any communication app?**
-A: Yes, with apps that support virtual audio devices (Discord, Zoom, Teams, Skype, etc.)
+A: Yes! Any app that accepts virtual audio devices works - Discord, Zoom, Teams, Skype, OBS, and more.
 
-**Q: Can I use my own audio samples?**
-A: Yes! WAV format recommended. Samples should be 5-10 seconds of clear speech.
+**Q: What's the difference between Voice Design and Voice Cloning?**
+A:
+- **Voice Design**: Create a voice from a text description. Supports emotion control.
+- **Voice Cloning**: Copy a voice from an audio sample. Preserves identity but no emotion control.
 
-**Q: How much disk space do models need?**
-A: Whisper models: 1-3GB, PyTorch: ~2GB, GPT-SoVITS models: ~6GB. Total ~10-12GB.
+**Q: Why can't I use emotions with my cloned voice?**
+A: The Qwen3-TTS Base model (used for cloning) doesn't support the emotion instruction parameter. This is a model limitation. Use Bundled or Designed voices for emotional expression.
+
+**Q: Can I use my own audio samples for cloning?**
+A: Yes! WAV, MP3, or M4A formats. Minimum 3 seconds of clear speech recommended.
+
+**Q: How much disk space do I need?**
+A: ~8GB total: Installation (~2GB) + one Qwen3-TTS model (~3.4GB) + Whisper (~1-3GB). Only one TTS model loads at a time.
 
 **Q: Does this work offline?**
-A: After initial model downloads, transcription works offline. GPT-SoVITS must run locally.
+A: Yes! After initial model downloads, everything works fully offline. No internet required for daily use.
 
-**Q: Where is GPT-SoVITS included?**
-A: GPT-SoVITS is a separate dependency and not included in this repository. Download it separately from the [GPT-SoVITS GitHub](https://github.com/RVC-Boss/GPT-SoVITS).
+**Q: How do I get the best voice clone quality?**
+A: Use a clean audio sample (no background noise/music), 3-10 seconds of natural speech, recorded at reasonable quality.
 
 ## License
 
-See [LICENSE](LICENSE) file for details.
+See LICENSE file for details.
 
 ## Credits
 
-- **GPT-SoVITS**: Voice cloning technology
-- **OpenAI Whisper**: Speech recognition
-- **PyQt6**: GUI framework
+- **Qwen3-TTS**: Text-to-speech models (Base, CustomVoice, VoiceDesign)
+- **OpenAI Whisper**: Speech recognition and transcription
+- **PyQt6**: Cross-platform GUI framework
+- **VB-Audio / VoiceMeeter**: Virtual audio device software
 
 ## Version
 
-Current version: **1.0.0**
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Support
-
-For issues, questions, or suggestions, please open an issue on the [GitHub repository](https://github.com/WreckedMech117/MyVoice/issues).
+Current version: **2.0.0**

@@ -23,8 +23,8 @@ class AppSettings:
     Application settings model for persistent configuration.
 
     This model manages all application settings including voice profile selection,
-    UI preferences, directory paths, and system configuration. Settings are
-    automatically validated and can be serialized to/from JSON.
+    UI preferences, directory paths, system configuration, and training settings.
+    Settings are automatically validated and can be serialized to/from JSON.
 
     Attributes:
         selected_voice_profile: Currently selected voice profile name (optional)
@@ -37,12 +37,14 @@ class AppSettings:
         enable_audio_monitoring: Whether to monitor audio output for debugging
         monitor_device_id: Selected monitor/output device ID for audio playback
         virtual_microphone_device_id: Selected virtual microphone device ID for dual routing
-        tts_service_url: GPT-SoVITS service URL
+        tts_service_url: TTS service URL (legacy, unused with Qwen3-TTS)
         tts_service_timeout: TTS service request timeout in seconds
         max_voice_duration: Maximum allowed voice file duration in seconds
         recent_voice_profiles: List of recently used voice profile names
         window_geometry: Main window geometry settings
         advanced_settings: Dictionary for advanced/experimental settings
+        training_enabled: Whether training features are enabled
+        training_workspace_directory: Directory for training data and experiments
     """
 
     # Voice profile settings
@@ -62,6 +64,10 @@ class AppSettings:
     ui_theme: str = "dark"
     always_on_top: bool = True
     window_geometry: Optional[Dict[str, Any]] = None
+    window_transparency: float = 1.0  # Story 6.2: Window opacity (0.0-1.0, FR41)
+    # QA3-4: Default to False - X button should close app, not hide to tray
+    minimize_to_tray: bool = False  # Story 7.2: Minimize to system tray (FR38)
+    tray_notification_shown: bool = False  # Story 7.2: One-time tray notification flag
 
     # TTS service configuration
     tts_service_url: str = "http://localhost:9880"
@@ -79,6 +85,25 @@ class AppSettings:
     # Advanced settings
     advanced_settings: Dict[str, Any] = field(default_factory=dict)
 
+    # Training settings
+    training_enabled: bool = True
+    training_workspace_directory: str = "training_workspace"
+
+    # Custom emotion settings (Story 3.4: FR7)
+    custom_emotion_text: Optional[str] = None
+    custom_emotion_presets: List[str] = field(default_factory=lambda: [
+        "Rising Frustration",
+        "Growing Excitement",
+        "Trailing Off Sadly",
+        "Building Confidence",
+        "Hesitant and Uncertain",
+        "Warm and Reassuring",
+        "Cold and Distant",
+        "Playful Teasing",
+        "Sincere Apology",
+        "Dramatic Emphasis"
+    ])
+
     # Internal metadata
     _settings_version: str = field(default="1.0", init=False)
     _last_modified: Optional[float] = field(default=None, init=False)
@@ -88,6 +113,7 @@ class AppSettings:
         # Convert string paths to Path objects for validation
         self.voice_files_directory = str(Path(self.voice_files_directory))
         self.config_directory = str(Path(self.config_directory))
+        self.training_workspace_directory = str(Path(self.training_workspace_directory))
 
         # Validate settings
         validation_result = self.validate()
@@ -193,6 +219,31 @@ class AppSettings:
                     severity=ValidationStatus.INVALID
                 ))
 
+            # Validate window_transparency (Story 7.3: FR41)
+            # Valid range: 0.0-1.0, but UI enforces minimum 0.2 (20%)
+            if not isinstance(self.window_transparency, (int, float)):
+                issues.append(ValidationIssue(
+                    field="window_transparency",
+                    message="Window transparency must be a number",
+                    code="INVALID_TYPE",
+                    severity=ValidationStatus.INVALID
+                ))
+            elif self.window_transparency < 0.0 or self.window_transparency > 1.0:
+                issues.append(ValidationIssue(
+                    field="window_transparency",
+                    message="Window transparency must be between 0.0 and 1.0",
+                    code="INVALID_TRANSPARENCY_RANGE",
+                    severity=ValidationStatus.INVALID
+                ))
+            elif self.window_transparency < 0.2:
+                # Story 7.3: Warn about low transparency (will be clamped to 20% at runtime)
+                warnings.append(ValidationIssue(
+                    field="window_transparency",
+                    message="Window transparency below 20% will be clamped to 20% (minimum)",
+                    code="LOW_TRANSPARENCY",
+                    severity=ValidationStatus.WARNING
+                ))
+
             # Validate numeric settings
             if self.max_voice_duration <= 0:
                 issues.append(ValidationIssue(
@@ -293,6 +344,34 @@ class AppSettings:
                     severity=ValidationStatus.WARNING
                 ))
 
+            # Validate training settings
+            if not isinstance(self.training_enabled, bool):
+                issues.append(ValidationIssue(
+                    field="training_enabled",
+                    message="Training enabled must be a boolean value",
+                    code="INVALID_TYPE",
+                    severity=ValidationStatus.INVALID
+                ))
+
+            # Validate training workspace path
+            if not self.training_workspace_directory or not self.training_workspace_directory.strip():
+                issues.append(ValidationIssue(
+                    field="training_workspace_directory",
+                    message="Training workspace directory cannot be empty",
+                    code="EMPTY_PATH",
+                    severity=ValidationStatus.INVALID
+                ))
+            else:
+                try:
+                    Path(self.training_workspace_directory)
+                except Exception:
+                    issues.append(ValidationIssue(
+                        field="training_workspace_directory",
+                        message="Invalid path format for training_workspace_directory",
+                        code="INVALID_PATH",
+                        severity=ValidationStatus.INVALID
+                    ))
+
             # Determine overall status
             if issues:
                 status = ValidationStatus.INVALID
@@ -346,6 +425,9 @@ class AppSettings:
                 "ui_theme": self.ui_theme,
                 "always_on_top": self.always_on_top,
                 "window_geometry": self.window_geometry.copy() if self.window_geometry else None,
+                "window_transparency": self.window_transparency,
+                "minimize_to_tray": self.minimize_to_tray,
+                "tray_notification_shown": self.tray_notification_shown,
                 "tts_service_url": self.tts_service_url,
                 "tts_service_timeout": self.tts_service_timeout,
                 "enable_audio_monitoring": self.enable_audio_monitoring,
@@ -356,6 +438,10 @@ class AppSettings:
                 "virtual_microphone_device_name": self.virtual_microphone_device_name,
                 "virtual_microphone_device_host_api": self.virtual_microphone_device_host_api,
                 "advanced_settings": self.advanced_settings.copy(),
+                "training_enabled": self.training_enabled,
+                "training_workspace_directory": self.training_workspace_directory,
+                "custom_emotion_text": self.custom_emotion_text,
+                "custom_emotion_presets": self.custom_emotion_presets.copy(),
                 "_settings_version": self._settings_version,
                 "_last_modified": self._last_modified
             }
@@ -395,6 +481,9 @@ class AppSettings:
                 ui_theme=data.get("ui_theme", "dark"),
                 always_on_top=data.get("always_on_top", True),
                 window_geometry=data.get("window_geometry"),
+                window_transparency=data.get("window_transparency", 1.0),
+                minimize_to_tray=data.get("minimize_to_tray", True),
+                tray_notification_shown=data.get("tray_notification_shown", False),
                 tts_service_url=data.get("tts_service_url", "http://localhost:9880"),
                 tts_service_timeout=data.get("tts_service_timeout", 30),
                 enable_audio_monitoring=data.get("enable_audio_monitoring", True),
@@ -404,7 +493,22 @@ class AppSettings:
                 virtual_microphone_device_id=data.get("virtual_microphone_device_id"),
                 virtual_microphone_device_name=data.get("virtual_microphone_device_name"),
                 virtual_microphone_device_host_api=data.get("virtual_microphone_device_host_api"),
-                advanced_settings=data.get("advanced_settings", {})
+                advanced_settings=data.get("advanced_settings", {}),
+                training_enabled=data.get("training_enabled", True),
+                training_workspace_directory=data.get("training_workspace_directory", "training_workspace"),
+                custom_emotion_text=data.get("custom_emotion_text"),
+                custom_emotion_presets=data.get("custom_emotion_presets", [
+                    "Rising Frustration",
+                    "Growing Excitement",
+                    "Trailing Off Sadly",
+                    "Building Confidence",
+                    "Hesitant and Uncertain",
+                    "Warm and Reassuring",
+                    "Cold and Distant",
+                    "Playful Teasing",
+                    "Sincere Apology",
+                    "Dramatic Emphasis"
+                ])
             )
 
             # Restore internal metadata
@@ -474,6 +578,15 @@ class AppSettings:
         self._last_modified = time.time()
         logger.debug("Cleared recent voice profiles")
 
+    def get_training_workspace_path(self) -> Path:
+        """
+        Get the training workspace directory as a Path object.
+
+        Returns:
+            Path: Training workspace directory path
+        """
+        return Path(self.training_workspace_directory)
+
     def reset_to_defaults(self):
         """Reset all settings to their default values."""
         logger.info("Resetting settings to defaults")
@@ -485,11 +598,14 @@ class AppSettings:
         for field_name in [
             "selected_voice_profile", "voice_files_directory", "recent_voice_profiles",
             "max_voice_duration", "auto_refresh_interval", "config_directory",
-            "log_level", "ui_theme", "always_on_top", "window_geometry", "tts_service_url",
+            "log_level", "ui_theme", "always_on_top", "window_geometry",
+            "window_transparency", "tts_service_url",
             "tts_service_timeout", "enable_audio_monitoring", "monitor_device_id",
             "monitor_device_name", "monitor_device_host_api",
             "virtual_microphone_device_id", "virtual_microphone_device_name",
-            "virtual_microphone_device_host_api", "advanced_settings"
+            "virtual_microphone_device_host_api", "advanced_settings",
+            "training_enabled", "training_workspace_directory",
+            "custom_emotion_text", "custom_emotion_presets"
         ]:
             setattr(self, field_name, getattr(defaults, field_name))
 

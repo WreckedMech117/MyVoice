@@ -427,7 +427,7 @@ class BackgroundTranscriptionManager(BaseService):
                         transcription_text=voice_profile.transcription,
                         confidence=voice_profile.transcription_confidence,
                         model_name=getattr(voice_profile, 'transcription_model', 'whisper'),
-                        language='en'  # Default to English for now
+                        language='English'  # Default to English for now
                     ))
             else:
                 self._stats['failures'] += 1

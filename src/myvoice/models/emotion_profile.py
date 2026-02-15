@@ -2,7 +2,7 @@
 Emotion Profile Models
 
 This module contains data models for emotional voice synthesis configuration.
-It defines emotion intensity levels and their corresponding GPT-SoVITS parameters.
+It defines emotion intensity levels and their corresponding TTS parameters.
 """
 
 import logging
@@ -20,7 +20,7 @@ class EmotionIntensity(Enum):
     """
     Enumeration of emotion intensity levels for voice synthesis.
 
-    These levels map to specific GPT-SoVITS parameters to control
+    These levels map to specific TTS generation parameters to control
     emotional expression in generated speech.
     """
     SUBDUED = 0
@@ -35,7 +35,7 @@ class EmotionIntensity(Enum):
 @dataclass
 class EmotionParameters:
     """
-    GPT-SoVITS parameters for a specific emotion intensity level.
+    TTS generation parameters for a specific emotion intensity level.
 
     Attributes:
         temperature: Controls randomness in generation (0.1-2.0)
@@ -60,7 +60,7 @@ class EmotionParameters:
 
     def validate(self) -> ValidationResult:
         """
-        Validate emotion parameters for GPT-SoVITS compatibility.
+        Validate emotion parameters for TTS generation compatibility.
 
         Returns:
             ValidationResult: Detailed validation result
@@ -222,7 +222,7 @@ class EmotionProfile:
     """
     Complete emotion profile defining all intensity levels for voice synthesis.
 
-    This class provides the mapping between UI slider positions and GPT-SoVITS
+    This class provides the mapping between UI slider positions and TTS generation
     parameters for emotional voice synthesis control.
     """
 

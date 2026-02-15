@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import QWidget, QComboBox, QHBoxLayout, QPushButton, QLabel
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont, QAction
 
-from myvoice.models.voice_profile import VoiceProfile, TranscriptionStatus
+from myvoice.models.voice_profile import VoiceProfile, TranscriptionStatus, VoiceType
 from myvoice.services.voice_profile_service import VoiceProfileManager
 
 
@@ -158,10 +158,14 @@ class VoiceSelector(QWidget):
             else:
                 self._voice_combo.setEnabled(True)
 
-                # Sort profiles by name for consistent ordering
-                sorted_profiles = sorted(profiles.items(), key=lambda x: x[0].lower())
+                # Story 4.1: Sort profiles by voice type (bundled first), then by name
+                # Group order: BUNDLED (0) → DESIGNED (1) → CLONED (2)
+                sorted_profiles = sorted(
+                    profiles.items(),
+                    key=lambda x: (x[1].voice_type.sort_order, x[0].lower())
+                )
 
-                # Add each profile to dropdown with formatted display
+                # Add each profile to dropdown with formatted display (includes icon)
                 for profile_name, profile in sorted_profiles:
                     display_text = self._format_profile_display(profile)
                     self._voice_combo.addItem(display_text)
@@ -170,7 +174,7 @@ class VoiceSelector(QWidget):
                 # Try to restore previous selection or set to active profile
                 self._restore_selection()
 
-                self.logger.info(f"Populated {len(profiles)} voice profiles")
+                self.logger.info(f"Populated {len(profiles)} voice profiles (grouped by type)")
 
             self._update_voice_label()
             self._update_transcription_button_state()
@@ -188,19 +192,31 @@ class VoiceSelector(QWidget):
         """
         Format a voice profile for display in the dropdown.
 
+        Story 4.1: Voice Library & Selection (FR11)
+        - Displays icon based on voice type: 📦 bundled, 🎭 designed, 🎤 cloned
+        - Shows name and duration/type indicator
+
         Args:
             profile: VoiceProfile to format
 
         Returns:
-            str: Formatted display text
+            str: Formatted display text with icon
         """
-        # Basic format: "Profile Name (duration)"
-        if profile.duration:
-            duration_str = f"{profile.duration:.1f}s"
-        else:
-            duration_str = "unknown"
+        # Get voice type icon (Story 4.1: FR11)
+        icon = profile.voice_type.icon
 
-        return f"{profile.name} ({duration_str})"
+        # Format based on voice type
+        # Bundled voices show "bundled" since they have no audio file
+        # DESIGNED voices (future) may show description or "designed"
+        # CLONED voices show duration
+        if profile.voice_type == VoiceType.BUNDLED:
+            info_str = "bundled"
+        elif profile.duration:
+            info_str = f"{profile.duration:.1f}s"
+        else:
+            info_str = profile.voice_type.display_name.lower()
+
+        return f"{icon} {profile.name} ({info_str})"
 
     def _restore_selection(self):
         """Restore the previously selected profile or set to active profile."""
@@ -213,7 +229,8 @@ class VoiceSelector(QWidget):
             target_name = active_profile.name
             for i in range(self._voice_combo.count()):
                 item_text = self._voice_combo.itemText(i)
-                if item_text.startswith(f"{target_name} ("):
+                # Match profile name in display text (handles icon prefix: "📦 Ryan (unknown)")
+                if f" {target_name} (" in item_text or item_text.startswith(f"{target_name} ("):
                     self._voice_combo.setCurrentIndex(i)
                     self._current_selection = target_name
                     self.logger.debug(f"Restored selection to active profile: {target_name}")
@@ -222,10 +239,17 @@ class VoiceSelector(QWidget):
         # If no active profile but we have items, select the first one
         if self._voice_combo.count() > 0:
             self._voice_combo.setCurrentIndex(0)
-            # Extract profile name from first item
+            # Extract profile name from first item (handles icon prefix)
             first_item = self._voice_combo.itemText(0)
-            if " (" in first_item:
-                self._current_selection = first_item.split(" (")[0]
+            profile = self._profiles.get(first_item)
+            if profile:
+                self._current_selection = profile.name
+            elif " (" in first_item:
+                # Fallback: extract name between icon and duration
+                # Format: "📦 Name (duration)" -> extract "Name"
+                parts = first_item.split(" (")[0]  # "📦 Name"
+                name_parts = parts.split(" ", 1)  # ["📦", "Name"] or ["Name"]
+                self._current_selection = name_parts[-1] if name_parts else None
             else:
                 self._current_selection = None
         else:
@@ -368,9 +392,11 @@ class VoiceSelector(QWidget):
         self._is_updating = True
         try:
             # Find the voice in the combo box by matching the display text
+            # Handles icon prefix: "📦 Ryan (unknown)" for bundled voices
             for i in range(self._voice_combo.count()):
                 item_text = self._voice_combo.itemText(i)
-                if item_text.startswith(f"{voice_name} ("):
+                # Match with or without icon prefix
+                if f" {voice_name} (" in item_text or item_text.startswith(f"{voice_name} ("):
                     self._voice_combo.setCurrentIndex(i)
                     self._current_selection = voice_name
                     self.logger.debug(f"Set selected voice to: {voice_name}")

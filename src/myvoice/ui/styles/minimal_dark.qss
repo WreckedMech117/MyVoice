@@ -277,3 +277,132 @@ QHeaderView::section {
     border: 1px solid #334155;
     font-weight: bold;
 }
+
+/* Emotion Button Group - Story 3.1 */
+/* Individual emotion buttons - 28x28px with emoji */
+QPushButton[objectName^="emotion_button_"] {
+    background-color: #1e293b;
+    border: 2px solid #334155;
+    border-radius: 6px;
+    font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
+    font-size: 12pt;
+    padding: 0px;
+    min-width: 28px;
+    max-width: 28px;
+    min-height: 28px;
+    max-height: 28px;
+}
+
+QPushButton[objectName^="emotion_button_"]:hover {
+    background-color: #334155;
+    border-color: #475569;
+}
+
+QPushButton[objectName^="emotion_button_"]:checked {
+    background-color: rgba(16, 185, 129, 0.2);
+    border-color: #10b981;
+    border-width: 2px;
+}
+
+QPushButton[objectName^="emotion_button_"]:checked:hover {
+    background-color: rgba(16, 185, 129, 0.3);
+    border-color: #34d399;
+}
+
+QPushButton[objectName^="emotion_button_"]:disabled {
+    background-color: #1e293b;
+    border-color: #1e293b;
+    color: #64748b;
+}
+
+/* Custom emotion button */
+QPushButton[objectName="emotion_custom_button"] {
+    background-color: transparent;
+    border: none;
+    color: #10b981;
+    font-size: 8pt;
+    padding: 4px 8px;
+    min-width: 50px;
+    max-height: 28px;
+}
+
+QPushButton[objectName="emotion_custom_button"]:hover {
+    color: #34d399;
+    text-decoration: underline;
+}
+
+QPushButton[objectName="emotion_custom_button"]:disabled {
+    color: #64748b;
+}
+
+/* =========================================================================
+   Story 7.5: Accessibility - Focus Indicators (NFR20)
+   =========================================================================
+   2px solid focus outline for keyboard navigation visibility
+   Uses high-contrast accent color for visibility in dark theme
+   ========================================================================= */
+
+/* Global focus indicator for buttons */
+QPushButton:focus {
+    outline: none;
+    border: 2px solid #38bdf8 !important;
+    box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.3);
+}
+
+/* Focus indicator for text inputs */
+QTextEdit:focus,
+QLineEdit:focus {
+    border: 2px solid #38bdf8 !important;
+    outline: none;
+}
+
+/* Focus indicator for combo boxes */
+QComboBox:focus {
+    border: 2px solid #38bdf8 !important;
+    outline: none;
+}
+
+/* Focus indicator for emotion buttons (override checked state border) */
+QPushButton[objectName^="emotion_button_"]:focus {
+    border: 2px solid #38bdf8 !important;
+    outline: none;
+}
+
+/* Focus indicator for emotion buttons when both focused and checked */
+QPushButton[objectName^="emotion_button_"]:focus:checked {
+    border: 2px solid #38bdf8 !important;
+    background-color: rgba(16, 185, 129, 0.3);
+}
+
+/* Focus indicator for action buttons */
+QPushButton[objectName="quick_speak_button"]:focus,
+QPushButton[objectName="generate_button"]:focus,
+QPushButton[objectName="replay_button"]:focus,
+QPushButton[objectName="clear_button"]:focus,
+QPushButton[objectName="settings_button"]:focus {
+    border: 2px solid #38bdf8 !important;
+    outline: none;
+}
+
+/* Focus indicator for custom emotion button */
+QPushButton[objectName="emotion_custom_button"]:focus {
+    color: #38bdf8;
+    text-decoration: underline;
+    outline: none;
+}
+
+/* =========================================================================
+   Story 7.5: Accessibility - High Contrast Mode Support
+   =========================================================================
+   These styles provide enhanced visibility for users with high contrast needs
+   ========================================================================= */
+
+/* High contrast focus indicator (for use when system high contrast detected) */
+QWidget[high_contrast="true"] QPushButton:focus,
+QWidget[high_contrast="true"] QTextEdit:focus,
+QWidget[high_contrast="true"] QLineEdit:focus,
+QWidget[high_contrast="true"] QComboBox:focus {
+    border: 3px solid #ffffff !important;
+    background-color: #000000;
+    color: #ffffff;
+}

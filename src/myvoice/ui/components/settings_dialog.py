@@ -24,6 +24,8 @@ from myvoice.models.validation import ValidationResult
 from myvoice.ui.styles.theme_manager import get_theme_manager
 from myvoice.ui.components.quick_speak_settings_widget import QuickSpeakSettingsWidget
 from myvoice.ui.components.voice_selector import VoiceSelector
+from myvoice.ui.components.voice_library_widget import VoiceLibraryWidget
+from myvoice.ui.dialogs.voice_design_studio import VoiceDesignStudioDialog
 from myvoice.services.quick_speak_service import QuickSpeakService
 from myvoice.services.voice_profile_service import VoiceProfileManager
 
@@ -49,11 +51,14 @@ class SettingsDialog(QDialog):
     device_test_requested = pyqtSignal(str)  # device_id
     virtual_device_test_requested = pyqtSignal(str)  # device_id
     voice_directory_changed = pyqtSignal(str)  # new_directory_path
-    tts_health_check_requested = pyqtSignal()  # TTS health check requested
     voice_changed = pyqtSignal(str)  # voice_profile_name
     voice_refresh_requested = pyqtSignal()  # Voice profile refresh requested
     voice_transcription_requested = pyqtSignal(str)  # voice_profile_name - Transcription generation requested
     quick_speak_entries_changed = pyqtSignal()  # Quick Speak entries or profile changed
+    custom_emotion_applied = pyqtSignal(str)  # Custom emotion text applied (Story 3.4)
+    transparency_preview_requested = pyqtSignal(float)  # Story 7.3: Real-time transparency preview (opacity 0.0-1.0)
+    voice_created = pyqtSignal(object)  # VoiceProfile - emitted when voice is created (design/clone)
+    voice_deleted = pyqtSignal(str)  # voice_name - emitted when voice is deleted
 
     def __init__(self, settings: AppSettings, parent: Optional[QWidget] = None, quick_speak_service: Optional[QuickSpeakService] = None, audio_client=None):
         """
@@ -83,6 +88,12 @@ class SettingsDialog(QDialog):
         # Voice manager (will be set by parent)
         self.voice_manager: Optional[VoiceProfileManager] = None
         self.selected_voice_name: Optional[str] = None
+
+        # TTS service (will be set by parent for voice creation dialogs)
+        self.tts_service = None
+
+        # Whisper service for transcription (QA3 fix)
+        self.whisper_service = None
 
         # UI state
         self.device_refresh_in_progress = False
@@ -130,6 +141,9 @@ class SettingsDialog(QDialog):
 
         # Audio settings tab
         self._create_audio_tab()
+
+        # Voices tab (Story 4.2: Voice Design Creation Workflow)
+        self._create_voices_tab()
 
         # TTS settings tab
         self._create_tts_tab()
@@ -249,43 +263,170 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(virtual_mic_group)
 
+        # VB-Cable Credit
+        vb_cable_group = QGroupBox("Virtual Audio Cable")
+        vb_cable_layout = QVBoxLayout(vb_cable_group)
+
+        vb_credit_label = QLabel('MyVoice would not be possible without <a href="https://vb-audio.com/Cable/index.htm" style="color: #5DADE2;">VB-Cable</a>.')
+        vb_credit_label.setOpenExternalLinks(True)
+        vb_credit_label.setWordWrap(True)
+        vb_cable_layout.addWidget(vb_credit_label)
+
+        vb_donation_label = QLabel("VB-CABLE is a donationware, all participations are welcome.")
+        vb_donation_label.setWordWrap(True)
+        vb_donation_label.setStyleSheet("color: #888; font-style: italic;")
+        vb_cable_layout.addWidget(vb_donation_label)
+
+        layout.addWidget(vb_cable_group)
+
         layout.addStretch()
         self.tab_widget.addTab(audio_tab, "Audio")
+
+    def _create_voices_tab(self):
+        """
+        Create the Voices tab for voice creation and management.
+
+        Story 4.2: Voice Design Creation Workflow
+        - Enables users to create new custom voices using VoiceDesign model
+        - Shows voice library with bundled (📦), designed (🎭), and cloned (🎤) voices
+        - Provides buttons to design from description or clone from audio
+        - Allows selection of active voice and deletion of user-created voices
+        """
+        voices_tab = QWidget()
+        layout = QVBoxLayout(voices_tab)
+
+        # Voice Library Widget (provides full voice management UI)
+        self.voice_library_widget = VoiceLibraryWidget(voice_manager=None)
+
+        # Connect voice library signals
+        self.voice_library_widget.voice_selected.connect(self._on_library_voice_selected)
+        self.voice_library_widget.voice_deleted.connect(self._on_library_voice_deleted)
+        self.voice_library_widget.design_voice_requested.connect(self._on_design_voice_requested)
+        self.voice_library_widget.refresh_requested.connect(self._on_voice_refresh_requested)
+
+        layout.addWidget(self.voice_library_widget)
+
+        self.tab_widget.addTab(voices_tab, "Voices")
+
+    def _on_library_voice_selected(self, profile):
+        """
+        Handle voice selection from voice library widget.
+
+        Args:
+            profile: VoiceProfile that was selected
+        """
+        if profile:
+            self.selected_voice_name = profile.name
+            # Also update the voice selector in TTS tab if it exists
+            if hasattr(self, 'voice_selector') and self.voice_selector:
+                self.voice_selector.set_selected_voice(profile.name)
+            self.logger.debug(f"Voice selected from library: {profile.name}")
+
+    def _on_library_voice_deleted(self, voice_name: str):
+        """
+        Handle voice deletion from voice library widget.
+
+        Args:
+            voice_name: Name of the deleted voice
+        """
+        self.logger.info(f"Voice deleted from library: {voice_name}")
+        # Emit signal for parent to handle
+        self.voice_deleted.emit(voice_name)
+        # Refresh voice selector in TTS tab
+        if hasattr(self, 'voice_selector') and self.voice_selector:
+            self.voice_selector.populate_voices()
+
+    def _on_design_voice_requested(self):
+        """Handle request to open Voice Design Studio."""
+        self.logger.info("Voice Design Studio requested from library")
+        self._open_voice_design_studio()
+
+    def _open_voice_design_studio(self):
+        """
+        Open the Voice Design Studio dialog.
+
+        Voice Design Studio provides a unified interface for voice creation:
+        - From Description: Generate voices from text descriptions with 5 variations
+        - From Sample: Extract voice from audio samples with emotion support
+
+        Both paths produce identical .pt embedding files with full emotion support.
+        """
+        try:
+            # QA4: Request whisper service initialization if not available
+            # This triggers on-demand initialization in app.py so transcription works
+            if not self.whisper_service:
+                self.logger.debug("Whisper service not available, requesting initialization")
+                parent = self.parent()
+                if parent and hasattr(parent, 'whisper_init_requested'):
+                    parent.whisper_init_requested.emit()
+                    self.logger.debug("Emitted whisper_init_requested signal")
+
+            dialog = VoiceDesignStudioDialog(
+                tts_service=self.tts_service,
+                whisper_service=self.whisper_service,
+                parent=self
+            )
+
+            # Connect voice saved signal
+            dialog.voice_saved.connect(self._on_voice_saved_from_studio)
+
+            # Show dialog
+            dialog.exec()
+
+            # QA4-2: Trigger async rescan AFTER dialog closes
+            # This ensures voice manager rescans disk before UI refresh
+            # The signal triggers force_rescan() which then calls refresh_voice_list()
+            self.voice_refresh_requested.emit()
+
+        except Exception as e:
+            self.logger.exception(f"Error opening Voice Design Studio: {e}")
+            QMessageBox.warning(
+                self,
+                "Error",
+                f"Could not open Voice Design Studio: {str(e)}"
+            )
+
+    def _on_voice_saved_from_studio(self, voice_name: str):
+        """
+        Handle voice saved from Voice Design Studio.
+
+        Args:
+            voice_name: Name of the saved voice
+        """
+        # QA3-3: Just log the save - refresh happens after dialog closes
+        self.logger.info(f"Voice saved from studio: {voice_name}")
+
+    def _on_voice_created_from_dialog(self, profile):
+        """
+        Handle voice creation from design or clone dialog.
+
+        Args:
+            profile: VoiceProfile that was created
+        """
+        try:
+            self.logger.info(f"Voice created: {profile.name} (type={profile.voice_type.value})")
+
+            # Refresh the voice library
+            if hasattr(self, 'voice_library_widget') and self.voice_library_widget:
+                self.voice_library_widget.refresh_voices()
+
+            # Refresh the voice selector in TTS tab
+            if hasattr(self, 'voice_selector') and self.voice_selector:
+                self.voice_selector.populate_voices()
+
+            # Select the newly created voice
+            self.selected_voice_name = profile.name
+
+            # Emit signal for parent to handle
+            self.voice_created.emit(profile)
+
+        except Exception as e:
+            self.logger.exception(f"Error handling voice creation: {e}")
 
     def _create_tts_tab(self):
         """Create the TTS settings tab."""
         tts_tab = QWidget()
         layout = QVBoxLayout(tts_tab)
-
-        # TTS Service Group
-        service_group = QGroupBox("TTS Service Configuration")
-        service_layout = QFormLayout(service_group)
-
-        self.tts_url_edit = QLineEdit()
-        self.tts_url_edit.setPlaceholderText("http://localhost:9880")
-        service_layout.addRow("Service URL:", self.tts_url_edit)
-
-        self.tts_timeout_spin = QSpinBox()
-        self.tts_timeout_spin.setRange(5, 300)
-        self.tts_timeout_spin.setSuffix(" seconds")
-        service_layout.addRow("Request Timeout:", self.tts_timeout_spin)
-
-        # TTS Health Check Button
-        health_check_layout = QHBoxLayout()
-        self.tts_health_check_button = QPushButton("Check TTS Status")
-        self.tts_health_check_button.setMaximumWidth(150)
-        self.tts_health_check_button.clicked.connect(self._on_check_tts_health)
-        health_check_layout.addWidget(self.tts_health_check_button)
-        health_check_layout.addStretch()
-        service_layout.addRow("Connection:", health_check_layout)
-
-        # TTS Health Check Status Label
-        self.tts_health_status_label = QLabel("")
-        self.tts_health_status_label.setWordWrap(True)
-        self.tts_health_status_label.setProperty("class", "status-label")
-        service_layout.addRow("", self.tts_health_status_label)
-
-        layout.addWidget(service_group)
 
         # Voice Settings Group
         voice_group = QGroupBox("Voice Profile Settings")
@@ -319,17 +460,67 @@ class SettingsDialog(QDialog):
         self.directory_status_label.setProperty("class", "status-label")
         voice_layout.addRow("", self.directory_status_label)
 
-        self.max_duration_spin = QSpinBox()
-        self.max_duration_spin.setRange(1, 120)
-        self.max_duration_spin.setSuffix(" seconds")
-        voice_layout.addRow("Max Voice Duration:", self.max_duration_spin)
-
         self.refresh_interval_spin = QSpinBox()
         self.refresh_interval_spin.setRange(10, 300)
         self.refresh_interval_spin.setSuffix(" seconds")
         voice_layout.addRow("Auto-refresh Interval:", self.refresh_interval_spin)
 
         layout.addWidget(voice_group)
+
+        # Custom Emotion Group (Story 3.4: FR7)
+        emotion_group = QGroupBox("Custom Emotion")
+        emotion_layout = QVBoxLayout(emotion_group)
+
+        # Description label
+        emotion_desc = QLabel("Create custom emotions beyond the 5 presets. Select a dynamic expression or type your own.")
+        emotion_desc.setWordWrap(True)
+        emotion_desc.setProperty("class", "description-label")
+        emotion_layout.addWidget(emotion_desc)
+
+        # Note about bundled voices compatibility
+        emotion_note = QLabel("Note: Custom emotions will only work with bundled voices until the Qwen3-TTS model is updated (mid-2026).")
+        emotion_note.setWordWrap(True)
+        emotion_note.setProperty("class", "note-label")
+        emotion_note.setStyleSheet("color: #888; font-style: italic; margin-top: 4px;")
+        emotion_layout.addWidget(emotion_note)
+
+        # Dynamic expressions dropdown
+        expressions_layout = QHBoxLayout()
+        expressions_layout.addWidget(QLabel("Expression:"))
+        self.emotion_preset_combo = QComboBox()
+        self.emotion_preset_combo.setMinimumWidth(200)
+        self.emotion_preset_combo.addItem("(Select a preset...)")
+        # Presets will be loaded from settings
+        self.emotion_preset_combo.currentTextChanged.connect(self._on_emotion_preset_selected)
+        expressions_layout.addWidget(self.emotion_preset_combo, 1)
+        emotion_layout.addLayout(expressions_layout)
+
+        # Freeform text field
+        custom_text_layout = QHBoxLayout()
+        custom_text_layout.addWidget(QLabel("Custom Text:"))
+        self.custom_emotion_edit = QLineEdit()
+        self.custom_emotion_edit.setPlaceholderText("e.g., 'Speak with rising excitement and energy'")
+        self.custom_emotion_edit.textChanged.connect(self._on_custom_emotion_text_changed)
+        custom_text_layout.addWidget(self.custom_emotion_edit, 1)
+        emotion_layout.addLayout(custom_text_layout)
+
+        # Apply button
+        apply_layout = QHBoxLayout()
+        apply_layout.addStretch()
+        self.apply_emotion_button = QPushButton("Apply to Main Window")
+        self.apply_emotion_button.setEnabled(False)  # Disabled until text is entered
+        self.apply_emotion_button.setMaximumWidth(180)
+        self.apply_emotion_button.clicked.connect(self._on_apply_custom_emotion)
+        apply_layout.addWidget(self.apply_emotion_button)
+        emotion_layout.addLayout(apply_layout)
+
+        # Status label for feedback
+        self.emotion_status_label = QLabel("")
+        self.emotion_status_label.setWordWrap(True)
+        self.emotion_status_label.setProperty("class", "status-label")
+        emotion_layout.addWidget(self.emotion_status_label)
+
+        layout.addWidget(emotion_group)
 
         layout.addStretch()
         self.tab_widget.addTab(tts_tab, "TTS")
@@ -349,6 +540,24 @@ class SettingsDialog(QDialog):
 
         self.always_on_top_checkbox = QCheckBox("Keep window always on top")
         theme_layout.addRow(self.always_on_top_checkbox)
+
+        # Story 7.3: Window Transparency (FR41)
+        # Slider range: 20% to 100% (minimum 20% enforced - window never invisible)
+        transparency_layout = QHBoxLayout()
+        self.transparency_slider = QSlider(Qt.Orientation.Horizontal)
+        self.transparency_slider.setMinimum(20)  # 20% minimum - never fully invisible
+        self.transparency_slider.setMaximum(100)  # 100% fully opaque
+        self.transparency_slider.setValue(100)  # Default: fully opaque
+        self.transparency_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.transparency_slider.setTickInterval(10)
+        self.transparency_slider.valueChanged.connect(self._on_transparency_changed)
+
+        self.transparency_value_label = QLabel("100%")
+        self.transparency_value_label.setMinimumWidth(40)
+
+        transparency_layout.addWidget(self.transparency_slider)
+        transparency_layout.addWidget(self.transparency_value_label)
+        theme_layout.addRow("Window Transparency:", transparency_layout)
 
         layout.addWidget(theme_group)
 
@@ -374,15 +583,18 @@ class SettingsDialog(QDialog):
 
         self.tab_widget.addTab(self.quick_speak_widget, "Quick Speak")
 
+    def _mark_settings_modified(self):
+        """Mark settings as modified (for future save tracking)."""
+        # Currently settings are applied on OK, but this could be used
+        # for "Apply" button or real-time saving
+        pass
+
     def _load_current_settings(self):
         """Load current settings into UI controls."""
         try:
             # Audio settings - monitoring checkbox removed, was only for debugging
 
-            # TTS settings
-            self.tts_url_edit.setText(self.current_settings.tts_service_url)
-            self.tts_timeout_spin.setValue(self.current_settings.tts_service_timeout)
-            self.max_duration_spin.setValue(int(self.current_settings.max_voice_duration))
+            # Voice settings
             self.refresh_interval_spin.setValue(self.current_settings.auto_refresh_interval)
 
             # Voice directory settings
@@ -397,9 +609,22 @@ class SettingsDialog(QDialog):
 
             self.always_on_top_checkbox.setChecked(self.current_settings.always_on_top)
 
+            # Story 7.3: Window Transparency (FR41)
+            # Convert opacity (0.0-1.0) to percentage (20-100)
+            transparency_percent = int(self.current_settings.window_transparency * 100)
+            # Enforce minimum 20%
+            transparency_percent = max(20, min(100, transparency_percent))
+            self.transparency_slider.setValue(transparency_percent)
+            self.transparency_value_label.setText(f"{transparency_percent}%")
+
             log_level_index = self.log_level_combo.findText(self.current_settings.log_level)
             if log_level_index >= 0:
                 self.log_level_combo.setCurrentIndex(log_level_index)
+
+            # Custom emotion settings (Story 3.4)
+            self._load_custom_emotion_presets()
+            if self.current_settings.custom_emotion_text:
+                self.custom_emotion_edit.setText(self.current_settings.custom_emotion_text)
 
             self.logger.debug("Loaded current settings into UI")
 
@@ -453,10 +678,7 @@ class SettingsDialog(QDialog):
                 self.current_settings.virtual_microphone_device_name = None
                 self.current_settings.virtual_microphone_device_host_api = None
 
-            # TTS settings
-            self.current_settings.tts_service_url = self.tts_url_edit.text().strip()
-            self.current_settings.tts_service_timeout = self.tts_timeout_spin.value()
-            self.current_settings.max_voice_duration = float(self.max_duration_spin.value())
+            # Voice settings
             self.current_settings.auto_refresh_interval = self.refresh_interval_spin.value()
 
             # Voice directory settings
@@ -467,7 +689,16 @@ class SettingsDialog(QDialog):
             # UI settings
             self.current_settings.ui_theme = self.theme_combo.currentText()
             self.current_settings.always_on_top = self.always_on_top_checkbox.isChecked()
+
+            # Story 7.3: Window Transparency (FR41)
+            # Convert percentage (20-100) to opacity (0.2-1.0)
+            self.current_settings.window_transparency = self.transparency_slider.value() / 100.0
+
             self.current_settings.log_level = self.log_level_combo.currentText()
+
+            # Custom emotion settings (Story 3.4)
+            custom_text = self.custom_emotion_edit.text().strip()
+            self.current_settings.custom_emotion_text = custom_text if custom_text else None
 
             self.logger.debug("Saved UI values to current settings")
 
@@ -652,8 +883,14 @@ class SettingsDialog(QDialog):
             voice_manager: VoiceProfileManager instance
         """
         self.voice_manager = voice_manager
+
+        # Update voice selector in TTS tab
         self.voice_selector.voice_manager = voice_manager
         self.voice_selector.populate_voices()
+
+        # Update voice library widget in Voices tab
+        if hasattr(self, 'voice_library_widget') and self.voice_library_widget:
+            self.voice_library_widget.set_voice_manager(voice_manager)
 
         # Set current active voice
         if voice_manager:
@@ -661,6 +898,38 @@ class SettingsDialog(QDialog):
             if active_profile:
                 self.voice_selector.set_selected_voice(active_profile.name)
                 self.selected_voice_name = active_profile.name
+                # Also select in voice library
+                if hasattr(self, 'voice_library_widget') and self.voice_library_widget:
+                    self.voice_library_widget.select_voice(active_profile.name)
+
+    def set_tts_service(self, tts_service):
+        """
+        Set the TTS service for voice creation dialogs.
+
+        Args:
+            tts_service: QwenTTSService instance
+        """
+        self.tts_service = tts_service
+        tts_available = tts_service is not None
+
+        # Enable voice creation buttons based on TTS availability
+        if hasattr(self, 'voice_library_widget') and self.voice_library_widget:
+            self.voice_library_widget.set_tts_available(tts_available)
+            self.logger.info(f"Voice library buttons {'enabled' if tts_available else 'disabled'} (TTS {'available' if tts_available else 'not available'})")
+        else:
+            self.logger.warning("voice_library_widget not available when setting TTS service")
+
+        self.logger.debug(f"TTS service set for settings dialog: {'available' if tts_available else 'None'}")
+
+    def set_whisper_service(self, whisper_service):
+        """
+        Set the Whisper service for transcription in Voice Design Studio.
+
+        Args:
+            whisper_service: WhisperService instance for transcription
+        """
+        self.whisper_service = whisper_service
+        self.logger.debug(f"Whisper service set for settings dialog: {'available' if whisper_service else 'None'}")
 
     def _on_voice_selection_changed(self, voice_name: str):
         """
@@ -690,10 +959,14 @@ class SettingsDialog(QDialog):
         self.voice_transcription_requested.emit(voice_name)
 
     def refresh_voice_list(self):
-        """Refresh the voice selector list after external updates."""
+        """Refresh the voice selector and library after external updates."""
         if self.voice_selector:
             self.voice_selector.populate_voices()
             self.logger.debug("Voice selector refreshed")
+
+        if hasattr(self, 'voice_library_widget') and self.voice_library_widget:
+            self.voice_library_widget.refresh_voices()
+            self.logger.debug("Voice library widget refreshed")
 
     def _on_device_selection_changed(self):
         """Handle device selection change."""
@@ -925,6 +1198,46 @@ class SettingsDialog(QDialog):
         self.refresh_button.setEnabled(True)
         self.device_progress.setVisible(False)
 
+    def showEvent(self, event):
+        """
+        Handle dialog show event.
+
+        Story 2.5 AC4: New devices detected when settings opened
+        Automatically refresh the device list when settings dialog is opened.
+        """
+        super().showEvent(event)
+
+        # Auto-refresh devices when dialog is shown
+        if not self.device_refresh_in_progress:
+            self.logger.info("Settings dialog opened - triggering device refresh")
+            # Use a small delay to ensure UI is ready
+            QTimer.singleShot(100, self._auto_refresh_devices_on_show)
+
+    def _auto_refresh_devices_on_show(self):
+        """Auto-refresh devices when dialog is shown (Story 2.5)."""
+        if self.device_refresh_in_progress:
+            return
+
+        self.device_refresh_in_progress = True
+        self._show_device_status("Detecting audio devices...", "info")
+        self._show_virtual_device_status("Detecting virtual devices...", "info")
+
+        # Emit signal for parent to handle device refresh
+        self.device_refresh_requested.emit()
+
+        # Reset state after brief delay
+        QTimer.singleShot(1500, self._auto_refresh_complete)
+
+    def _auto_refresh_complete(self):
+        """Complete auto-refresh on dialog show."""
+        self.device_refresh_in_progress = False
+        self._show_device_status("Device list updated", "success")
+        self._show_virtual_device_status("Virtual device list updated", "success")
+
+        # Clear status after delay
+        QTimer.singleShot(2000, lambda: self._show_device_status("", ""))
+        QTimer.singleShot(2000, lambda: self._show_virtual_device_status("", ""))
+
     def _on_test_device(self):
         """Handle test device button click."""
         device_id = self.device_combo.currentData()
@@ -942,20 +1255,100 @@ class SettingsDialog(QDialog):
             self._show_virtual_device_status("Testing virtual device...", "info")
 
     def _on_reset_defaults(self):
-        """Handle reset to defaults button click."""
-        reply = QMessageBox.question(
-            self,
-            "Reset Settings",
-            "Are you sure you want to reset all settings to their default values?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
-        )
+        """
+        Handle reset to defaults button click (Story 6.4: FR48).
 
-        if reply == QMessageBox.StandardButton.Yes:
-            # Reset to defaults
-            self.current_settings.reset_to_defaults()
-            self._load_current_settings()
-            self._show_device_status("Settings reset to defaults", "info")
+        Resets:
+        - Devices to system default
+        - Voice to default bundled (Sarira-F)
+        - Position centered (cleared window_geometry)
+        - always_on_top true
+        - transparency 100%
+        - Quick Speak cleared (optional - with confirmation)
+
+        Does NOT delete user voices.
+        """
+        # Show confirmation dialog with details
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Reset Settings")
+        msg.setText("Are you sure you want to reset all settings to their default values?")
+        msg.setInformativeText(
+            "This will reset:\n"
+            "• Audio devices to system default\n"
+            "• Voice to default bundled voice\n"
+            "• Window position (will be centered)\n"
+            "• Always on top: enabled\n"
+            "• Transparency: 100%\n\n"
+            "Note: Your voice files will NOT be deleted."
+        )
+        msg.setIcon(QMessageBox.Icon.Question)
+
+        # Add checkbox for Quick Speak reset
+        checkbox = QCheckBox("Also clear Quick Speak phrases")
+        msg.setCheckBox(checkbox)
+
+        msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        msg.setDefaultButton(QMessageBox.StandardButton.No)
+
+        if msg.exec() == QMessageBox.StandardButton.Yes:
+            try:
+                # Reset AppSettings to defaults
+                self.current_settings.reset_to_defaults()
+
+                # Story 6.4: Set voice to default bundled
+                self.current_settings.selected_voice_profile = "Sarira-F"
+
+                # Story 6.4: Clear Quick Speak if checkbox was checked
+                if checkbox.isChecked():
+                    self._reset_quick_speak_entries()
+
+                # Reload settings into UI
+                self._load_current_settings()
+
+                # Reset device combos to system default
+                self.device_combo.setCurrentIndex(0)  # "(System Default)"
+                self.virtual_device_combo.setCurrentIndex(0)  # "(None)"
+
+                # Reset voice selector to default bundled
+                if self.voice_selector:
+                    self.voice_selector.set_selected_voice("Sarira-F")
+                    self.selected_voice_name = "Sarira-F"
+
+                # Show success message
+                self._show_device_status("Settings reset to defaults", "success")
+
+                self.logger.info("Settings reset to defaults (Story 6.4)")
+
+            except Exception as e:
+                self.logger.error(f"Error resetting settings: {e}")
+                QMessageBox.warning(
+                    self,
+                    "Reset Failed",
+                    f"Failed to reset some settings:\n{str(e)}"
+                )
+
+    def _reset_quick_speak_entries(self):
+        """
+        Reset Quick Speak entries to defaults (Story 6.4).
+
+        Creates a fresh default profile with sample entries.
+        """
+        try:
+            if not self.quick_speak_service:
+                return
+
+            # Create a fresh default profile
+            self.quick_speak_service._create_default_profile()
+            self.quick_speak_service.load_entries()
+
+            # Refresh the Quick Speak widget if it exists
+            if hasattr(self, 'quick_speak_widget') and self.quick_speak_widget:
+                self.quick_speak_widget.refresh_entries()
+
+            self.logger.info("Quick Speak entries reset to defaults")
+
+        except Exception as e:
+            self.logger.error(f"Error resetting Quick Speak entries: {e}")
 
     def _on_ok_clicked(self):
         """Handle OK button click."""
@@ -1218,66 +1611,6 @@ class SettingsDialog(QDialog):
         self.directory_status_label.setText(message)
         self.directory_status_label.setProperty("status", status_type)
 
-    def _on_check_tts_health(self):
-        """Handle TTS health check button click."""
-        try:
-            import requests
-
-            # Get the TTS URL from the input field
-            tts_url = self.tts_url_edit.text().strip() or "http://127.0.0.1:9880"
-
-            # Update UI to show checking
-            self.tts_health_check_button.setEnabled(False)
-            self.tts_health_status_label.setText("Checking TTS connection...")
-            self.tts_health_status_label.setProperty("status", "info")
-
-            # Try to connect to the TTS service
-            # GPT-SoVITS doesn't have a specific health endpoint, but any response means it's running
-            try:
-                response = requests.get(tts_url, timeout=2)
-                # Any response (200, 404, etc.) indicates the service is running
-                self._show_tts_health_status("✓ TTS service is available and responding", "success")
-                # Emit signal to update main window TTS ready status
-                self.tts_health_check_requested.emit()
-            except requests.exceptions.Timeout:
-                self._show_tts_health_status("✗ TTS service connection timeout", "error")
-            except requests.exceptions.ConnectionError:
-                self._show_tts_health_status("✗ TTS service not available (connection refused)", "error")
-            except Exception as e:
-                self._show_tts_health_status(f"✗ Error checking TTS: {str(e)}", "error")
-
-        except ImportError:
-            self._show_tts_health_status("✗ Requests library not available", "error")
-        except Exception as e:
-            self.logger.error(f"Error during TTS health check: {e}")
-            self._show_tts_health_status(f"✗ Unexpected error: {str(e)}", "error")
-        finally:
-            # Re-enable button after check
-            QTimer.singleShot(1000, lambda: self.tts_health_check_button.setEnabled(True))
-
-    def _show_tts_health_status(self, message: str, status_type: str = "info"):
-        """
-        Show TTS health check status to user.
-
-        Args:
-            message: Status message to display
-            status_type: Type of status (info, success, warning, error)
-        """
-        self.tts_health_status_label.setText(message)
-        self.tts_health_status_label.setProperty("status", status_type)
-
-    def update_tts_health_status(self, is_available: bool):
-        """
-        Update TTS health status from external source (e.g., main window).
-
-        Args:
-            is_available: Whether TTS service is currently available
-        """
-        if is_available:
-            self._show_tts_health_status("✓ TTS service is available", "success")
-        else:
-            self._show_tts_health_status("✗ TTS service not available", "error")
-
     def _apply_theme_if_changed(self):
         """Apply theme if it has changed from the original setting."""
         try:
@@ -1320,3 +1653,164 @@ class SettingsDialog(QDialog):
         """
         self._save_current_settings()
         return self.current_settings
+
+    # =========================================================================
+    # Custom Emotion Methods (Story 3.4: FR7)
+    # =========================================================================
+
+    def _load_custom_emotion_presets(self):
+        """Load custom emotion presets from settings into the dropdown."""
+        try:
+            self.emotion_preset_combo.clear()
+            self.emotion_preset_combo.addItem("(Select a preset...)")
+
+            # Load presets from settings
+            presets = self.current_settings.custom_emotion_presets
+            for preset in presets:
+                self.emotion_preset_combo.addItem(preset)
+
+            self.logger.debug(f"Loaded {len(presets)} custom emotion presets")
+
+        except Exception as e:
+            self.logger.error(f"Error loading custom emotion presets: {e}")
+
+    def _on_emotion_preset_selected(self, text: str):
+        """
+        Handle selection of a preset expression from the dropdown.
+
+        Args:
+            text: The selected preset text
+        """
+        try:
+            # Ignore placeholder selection
+            if text.startswith("(Select"):
+                return
+
+            # Populate the text field with the selected preset
+            self.custom_emotion_edit.setText(f"Speak with {text.lower()}")
+            self.logger.debug(f"Selected emotion preset: {text}")
+
+        except Exception as e:
+            self.logger.error(f"Error handling emotion preset selection: {e}")
+
+    def _on_custom_emotion_text_changed(self, text: str):
+        """
+        Handle changes to the custom emotion text field.
+
+        Args:
+            text: The current text in the field
+        """
+        try:
+            # Enable/disable apply button based on text content
+            has_text = bool(text.strip())
+            self.apply_emotion_button.setEnabled(has_text)
+
+            # Clear status when text changes
+            self.emotion_status_label.setText("")
+
+        except Exception as e:
+            self.logger.error(f"Error handling custom emotion text change: {e}")
+
+    def _on_apply_custom_emotion(self):
+        """Handle Apply to Main Window button click."""
+        try:
+            custom_text = self.custom_emotion_edit.text().strip()
+
+            if not custom_text:
+                self._show_emotion_status("Please enter custom emotion text", "warning")
+                return
+
+            # Save to settings
+            self.current_settings.custom_emotion_text = custom_text
+
+            # Emit signal to notify main window
+            self.custom_emotion_applied.emit(custom_text)
+
+            # Show success feedback
+            self._show_emotion_status("Custom emotion applied to main window", "success")
+
+            self.logger.info(f"Applied custom emotion: {custom_text}")
+
+            # Close the dialog after applying
+            self.accept()
+
+        except Exception as e:
+            self.logger.error(f"Error applying custom emotion: {e}")
+            self._show_emotion_status("Error applying custom emotion", "error")
+
+    def _show_emotion_status(self, message: str, status_type: str = "info"):
+        """
+        Show emotion configuration feedback to user.
+
+        Args:
+            message: Status message to display
+            status_type: Type of status (info, success, warning, error)
+        """
+        self.emotion_status_label.setText(message)
+        self.emotion_status_label.setProperty("status", status_type)
+
+    def navigate_to_custom_emotion(self):
+        """Navigate to the Custom Emotion section in Settings (called from main window)."""
+        try:
+            # Switch to TTS tab (index 2 - after Audio, Voices)
+            self.tab_widget.setCurrentIndex(2)
+            # Focus the custom emotion text field
+            self.custom_emotion_edit.setFocus()
+            self.logger.debug("Navigated to Custom Emotion section")
+        except Exception as e:
+            self.logger.error(f"Error navigating to custom emotion section: {e}")
+
+    def navigate_to_quick_speak(self):
+        """
+        Navigate to the Quick Speak tab in Settings (Story 5.2).
+
+        Called from main window when user clicks configure in Quick Speak menu.
+        """
+        try:
+            # Switch to Quick Speak tab (index 4 - after Audio, Voices, TTS, Interface)
+            self.tab_widget.setCurrentIndex(4)
+            self.logger.debug("Navigated to Quick Speak tab")
+        except Exception as e:
+            self.logger.error(f"Error navigating to Quick Speak tab: {e}")
+
+    def navigate_to_voices(self):
+        """
+        Navigate to the Voices tab in Settings.
+
+        Called when user wants to manage voices or create new voices.
+        """
+        try:
+            # Switch to Voices tab (index 1 - after Audio)
+            self.tab_widget.setCurrentIndex(1)
+            self.logger.debug("Navigated to Voices tab")
+        except Exception as e:
+            self.logger.error(f"Error navigating to Voices tab: {e}")
+
+    # =========================================================================
+    # Window Transparency Methods (Story 7.3: FR41)
+    # =========================================================================
+
+    def _on_transparency_changed(self, value: int):
+        """
+        Handle transparency slider value change (Story 7.3).
+
+        Provides real-time preview of window transparency as slider moves.
+        Minimum 20% enforced by slider minimum value.
+
+        Args:
+            value: Slider value (20-100 representing percentage)
+        """
+        try:
+            # Update value label
+            self.transparency_value_label.setText(f"{value}%")
+
+            # Convert percentage to opacity (0.0 - 1.0)
+            opacity = value / 100.0
+
+            # Emit signal for real-time preview on main window
+            self.transparency_preview_requested.emit(opacity)
+
+            self.logger.debug(f"Transparency changed to: {value}% (opacity: {opacity})")
+
+        except Exception as e:
+            self.logger.error(f"Error handling transparency change: {e}")

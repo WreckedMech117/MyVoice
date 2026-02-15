@@ -11,12 +11,28 @@ requests>=2.31.0
 # Speech Recognition
 openai-whisper>=20231117
 
-# Machine Learning (CPU-only for smaller package size)
-# NOTE: CPU-only PyTorch reduces package size by ~2-3GB vs CUDA version
-# GPT-SoVITS runs in its own isolated environment and is unaffected by this
-# To install: pip install torch==2.0.1 --index-url https://download.pytorch.org/whl/cpu
-torch==2.0.1
-numpy==1.24.3
+# ===============================================
+# Qwen3-TTS (Embedded TTS Engine)
+# ===============================================
+# NOTE: qwen-tts requires Python 3.9+ (3.10 confirmed working)
+# Models are downloaded on first use (~3.4GB per model)
+# Install from GitHub for latest version:
+#   pip install git+https://github.com/QwenLM/Qwen3-TTS.git
+qwen-tts @ git+https://github.com/QwenLM/Qwen3-TTS.git
+
+# Audio I/O for Qwen3-TTS
+soundfile>=0.12.1
+
+# ===============================================
+# Machine Learning / PyTorch
+# ===============================================
+# NOTE: torch >=2.0 required for qwen-tts compatibility
+# For GPU acceleration, install CUDA version separately:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+# For CPU-only (smaller package):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.0.0
+numpy>=1.24.0
 
 # Audio Processing
 # PyAudioWPatch is preferred on Windows for better WASAPI support and Windows 11 compatibility

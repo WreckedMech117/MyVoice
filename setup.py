@@ -13,7 +13,7 @@ if os.path.exists(readme_path):
 setup(
     name="myvoice",
     version="0.1.0",
-    description="Voice cloning desktop application using GPT-SoVITS",
+    description="Voice cloning desktop application using Qwen3-TTS",
     long_description=long_description,
     long_description_content_type="text/markdown",
     author="MyVoice Development Team",
@@ -51,5 +51,5 @@ setup(
         "Programming Language :: Python :: 3.12",
         "Operating System :: Microsoft :: Windows",
     ],
-    keywords="voice-cloning tts text-to-speech gpt-sovits audio",
+    keywords="voice-cloning tts text-to-speech qwen3-tts audio",
 )

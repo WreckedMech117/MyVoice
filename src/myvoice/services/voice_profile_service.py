@@ -12,10 +12,11 @@ from pathlib import Path
 from typing import Optional, Dict, List, Any, Union
 from concurrent.futures import ThreadPoolExecutor
 
-from myvoice.models.voice_profile import VoiceProfile
+from myvoice.models.voice_profile import VoiceProfile, VoiceType, BUNDLED_SPEAKERS
 from myvoice.models.transcription_result import TranscriptionResult
 from myvoice.models.validation import ValidationResult, ValidationIssue, ValidationStatus, UserFriendlyMessage
 from myvoice.models.error import MyVoiceError, ErrorSeverity
+from myvoice.models.service_enums import QwenModelType
 
 # Import base service after other models to avoid circular imports
 from myvoice.services.core.base_service import BaseService, ServiceStatus
@@ -47,7 +48,7 @@ class VoiceProfileManager(BaseService):
         self,
         voice_directory: Optional[Path] = None,
         cache_file: Optional[Path] = None,
-        max_duration: float = 10.0,
+        max_duration: float = 300.0,  # 5 minutes - Qwen3-TTS handles longer files
         max_workers: int = 4,
         auto_scan: bool = True,
         transcription_queue_service: Optional[Any] = None,
@@ -114,6 +115,12 @@ class VoiceProfileManager(BaseService):
             # Load cached profiles
             await self._load_profile_cache()
 
+            # Initialize bundled voices (9 pre-trained timbres)
+            self._initialize_bundled_voices()
+
+            # Scan embeddings directory for saved embedding voices (Story 1.6)
+            self._scan_embeddings_directory()
+
             # Auto-scan if enabled
             if self.auto_scan:
                 self.logger.info("Performing initial directory scan")
@@ -155,9 +162,9 @@ class VoiceProfileManager(BaseService):
             # Save profile cache
             await self._save_profile_cache()
 
-            # Cleanup resources
+            # Cleanup resources - QA Round 2 Item #8: Non-blocking shutdown
             if self._executor:
-                self._executor.shutdown(wait=True)
+                self._executor.shutdown(wait=False, cancel_futures=True)
                 self._executor = None
 
             await self._update_status(ServiceStatus.STOPPED)
@@ -261,9 +268,16 @@ class VoiceProfileManager(BaseService):
                         "profiles": []
                     }
 
-                # Get all WAV files
-                all_wav_files = list(scan_dir.rglob("*.wav"))
+                # Get all WAV files, excluding internal directories
+                # - design_sessions/: temporary session files from Voice Design Studio
+                # - embeddings/: source audio for embedding voices (handled separately)
+                excluded_dirs = {'design_sessions', 'embeddings'}
+                all_wav_files = [
+                    f for f in scan_dir.rglob("*.wav")
+                    if not any(excluded in f.relative_to(scan_dir).parts for excluded in excluded_dirs)
+                ]
                 self._total_scanned = len(all_wav_files)
+                self.logger.debug(f"Found {self._total_scanned} WAV files (excluding internal directories)")
 
                 # If incremental scanning, filter out files that are already cached and unchanged
                 files_to_process = []
@@ -356,6 +370,20 @@ class VoiceProfileManager(BaseService):
                 self._last_scan_time = time.time()
                 scan_duration = self._last_scan_time - start_time
 
+                # Re-initialize bundled voices (they were cleared during full rescan)
+                # This ensures the 9 timbre voices are always available
+                if not incremental:
+                    bundled_count = self._initialize_bundled_voices()
+                    self.logger.info(f"Re-initialized {bundled_count} bundled voices after full rescan")
+                    valid_count += bundled_count
+
+                # Scan embeddings directory for saved embedding voices (Story 1.6)
+                # This discovers voices created in Voice Design Studio
+                embedding_count = self._scan_embeddings_directory()
+                if embedding_count > 0:
+                    self.logger.info(f"Found {embedding_count} embedding voices")
+                    valid_count += embedding_count
+
                 # Save updated cache
                 await self._save_profile_cache()
 
@@ -400,11 +428,13 @@ class VoiceProfileManager(BaseService):
         try:
             profile = VoiceProfile.create_profile_from_file(file_path)
 
-            # Apply duration constraint
+            # Apply duration constraint (5 minute max for practical purposes)
             if profile.duration and profile.duration > self.max_duration:
                 # Mark as invalid due to duration
                 profile.is_valid = False
-                self.logger.debug(f"Profile {profile.name} exceeds max duration: {profile.duration:.1f}s > {self.max_duration}s")
+                self.logger.warning(
+                    f"Voice file '{profile.name}' rejected: duration {profile.duration:.1f}s exceeds limit of {self.max_duration:.0f}s."
+                )
 
             return profile
 
@@ -1319,6 +1349,35 @@ class VoiceProfileManager(BaseService):
         """Get the currently active voice profile."""
         return self._active_profile
 
+    def get_active_profile_model_type(self) -> Optional[QwenModelType]:
+        """
+        Get the QwenModelType required for the currently active voice profile.
+
+        This is used to determine which model should be loaded at startup
+        and when switching between voice groups.
+
+        Returns:
+            QwenModelType: The model type required for the active profile,
+                          or None if no active profile is set.
+
+        Example:
+            - BUNDLED voice -> QwenModelType.CUSTOM_VOICE
+            - DESIGNED voice -> QwenModelType.VOICE_DESIGN
+            - CLONED voice -> QwenModelType.BASE
+        """
+        if self._active_profile is None:
+            return None
+
+        if self._active_profile.voice_type is None:
+            # Default to CUSTOM_VOICE for unknown types
+            self.logger.warning(
+                f"Active profile '{self._active_profile.name}' has no voice_type, "
+                f"defaulting to CUSTOM_VOICE"
+            )
+            return QwenModelType.CUSTOM_VOICE
+
+        return self._active_profile.voice_type.required_model
+
     def get_profiles(self) -> Dict[str, VoiceProfile]:
         """Get all managed voice profiles."""
         return self._profiles.copy()
@@ -1347,6 +1406,254 @@ class VoiceProfileManager(BaseService):
         })
         return metrics
 
+    def _initialize_bundled_voices(self) -> int:
+        """
+        Initialize bundled voice profiles for the 9 pre-trained CustomVoice timbres.
+
+        Task: Integrate 9 Template Timbres into Voice Library
+
+        Creates VoiceProfile entries for all 9 bundled speakers:
+        - Vivian, Serena, Uncle_Fu, Dylan, Eric (Chinese)
+        - Ryan, Aiden (English)
+        - Ono_Anna (Japanese)
+        - Sohee (Korean)
+
+        These profiles:
+        - Have voice_type=VoiceType.BUNDLED
+        - Have emotion_capable=True (support emotion presets)
+        - Don't require audio files (use embedded model timbres)
+        - Are always valid and ready to use
+
+        Returns:
+            int: Number of bundled profiles initialized
+        """
+        initialized_count = 0
+
+        for speaker_name in BUNDLED_SPEAKERS:
+            # Skip if already exists (from cache or previous init)
+            if speaker_name in self._profiles:
+                self.logger.debug(f"Bundled voice already exists: {speaker_name}")
+                continue
+
+            try:
+                # Create bundled profile using factory method
+                profile = VoiceProfile.create_bundled_profile(speaker_name)
+                self._profiles[speaker_name] = profile
+                initialized_count += 1
+                self.logger.debug(f"Initialized bundled voice: {speaker_name}")
+
+            except Exception as e:
+                self.logger.error(f"Failed to initialize bundled voice {speaker_name}: {e}")
+
+        if initialized_count > 0:
+            self.logger.info(f"Initialized {initialized_count} bundled voice profiles")
+
+        return initialized_count
+
+    def get_bundled_profiles(self) -> Dict[str, VoiceProfile]:
+        """
+        Get only bundled voice profiles.
+
+        Returns:
+            Dict[str, VoiceProfile]: Dictionary of bundled profiles by name
+        """
+        from myvoice.models.voice_profile import VoiceType
+        return {
+            name: profile for name, profile in self._profiles.items()
+            if profile.voice_type == VoiceType.BUNDLED
+        }
+
+    def _scan_embeddings_directory(self) -> int:
+        """
+        Scan voice_files/embeddings/ directory for saved embedding voices.
+
+        Story 1.6: Emotion Control for Saved Voice
+        Emotion Variants: Support for multi-emotion embedding voices
+
+        Scans the embeddings directory for voice folders. Supports two structures:
+
+        1. Emotion Variants (v2.0): Emotion subfolders with embedding.pt
+           embeddings/{voice_name}/
+               neutral/embedding.pt
+               happy/embedding.pt
+               ...
+               preview.wav
+               metadata.json (with available_emotions)
+
+        2. Legacy (v1.0): Single embedding.pt at root
+           embeddings/{voice_name}/
+               embedding.pt
+               preview.wav
+               metadata.json
+
+        Returns:
+            int: Number of embedding profiles loaded
+        """
+        embeddings_dir = self.voice_directory / "embeddings"
+
+        if not embeddings_dir.exists():
+            self.logger.debug(f"Embeddings directory does not exist: {embeddings_dir}")
+            return 0
+
+        loaded_count = 0
+
+        # Iterate through subdirectories (each voice has its own folder)
+        for voice_dir in embeddings_dir.iterdir():
+            if not voice_dir.is_dir():
+                continue
+
+            voice_name = voice_dir.name
+
+            # QA8: Check if cached profile has stale path - update if needed
+            if voice_name in self._profiles:
+                existing_profile = self._profiles[voice_name]
+                if existing_profile.voice_type == VoiceType.EMBEDDING:
+                    # Verify cached checkpoint_path matches disk location
+                    if existing_profile.checkpoint_path and existing_profile.checkpoint_path != voice_dir:
+                        self.logger.info(
+                            f"Embedding voice '{voice_name}' path mismatch: "
+                            f"cached={existing_profile.checkpoint_path}, disk={voice_dir}. Updating."
+                        )
+                        # Path changed - need to rescan this voice
+                        del self._profiles[voice_name]
+                    else:
+                        self.logger.debug(f"Embedding voice already exists: {voice_name}")
+                        continue
+                else:
+                    self.logger.debug(f"Voice already exists (non-embedding): {voice_name}")
+                    continue
+
+            try:
+                # Emotion Variants: Detect available emotions from folder structure
+                available_emotions = VoiceProfile.detect_available_emotions(voice_dir)
+
+                # Skip if no embeddings found at all
+                if not available_emotions:
+                    self.logger.debug(f"No embeddings found in {voice_dir}, skipping")
+                    continue
+
+                # Determine embedding path (for compatibility with create_embedding_profile)
+                # Use the base directory for v2.0, or specific file for legacy
+                if len(available_emotions) > 1 or (
+                    len(available_emotions) == 1 and
+                    (voice_dir / available_emotions[0] / "embedding.pt").exists()
+                ):
+                    # v2.0 structure: use directory path
+                    embedding_path = voice_dir
+                else:
+                    # Legacy structure: use root embedding.pt
+                    embedding_path = voice_dir / "embedding.pt"
+
+                # Load and parse metadata
+                metadata_file = voice_dir / "metadata.json"
+                description = None
+                transcription = None  # ref_text for TTS generation
+
+                if metadata_file.exists():
+                    # Use the helper method from VoiceProfile for consistent parsing
+                    parsed_metadata = VoiceProfile.parse_embedding_metadata(metadata_file)
+                    description = parsed_metadata.get('description')
+                    transcription = parsed_metadata.get('transcription')
+
+                    # Use metadata name if present
+                    if parsed_metadata.get('name'):
+                        voice_name = parsed_metadata['name']
+
+                    # Prefer metadata's available_emotions if present (v2.0)
+                    if parsed_metadata.get('available_emotions'):
+                        metadata_emotions = parsed_metadata['available_emotions']
+                        # Verify they actually exist on disk
+                        available_emotions = [
+                            e for e in metadata_emotions
+                            if e in available_emotions or (
+                                e == "neutral" and (voice_dir / "embedding.pt").exists()
+                            )
+                        ]
+                        if not available_emotions:
+                            available_emotions = ["neutral"]
+
+                # Check for preview audio
+                preview_audio = voice_dir / "preview.wav"
+                preview_path = preview_audio if preview_audio.exists() else None
+
+                # Create embedding profile using factory method
+                profile = VoiceProfile.create_embedding_profile(
+                    name=voice_name,
+                    embedding_path=embedding_path,
+                    description=description,
+                    preview_audio_path=preview_path,
+                    available_emotions=available_emotions,
+                    transcription=transcription
+                )
+
+                self._profiles[voice_name] = profile
+                loaded_count += 1
+
+                # Log with emotion info
+                if len(available_emotions) > 1:
+                    self.logger.debug(
+                        f"Loaded embedding voice: {voice_name} "
+                        f"(emotions: {', '.join(available_emotions)})"
+                    )
+                else:
+                    self.logger.debug(f"Loaded embedding voice: {voice_name} (neutral only)")
+
+            except Exception as e:
+                self.logger.error(f"Failed to load embedding voice from {voice_dir}: {e}")
+
+        if loaded_count > 0:
+            self.logger.info(f"Loaded {loaded_count} embedding voice profiles from {embeddings_dir}")
+
+        return loaded_count
+
+    def get_embedding_profiles(self) -> Dict[str, VoiceProfile]:
+        """
+        Get only embedding voice profiles.
+
+        Story 1.6: Emotion Control for Saved Voice
+
+        Returns:
+            Dict[str, VoiceProfile]: Dictionary of embedding profiles by name
+        """
+        from myvoice.models.voice_profile import VoiceType
+        return {
+            name: profile for name, profile in self._profiles.items()
+            if profile.voice_type == VoiceType.EMBEDDING
+        }
+
+    async def register_profile(self, profile: VoiceProfile) -> bool:
+        """
+        Register an externally created voice profile with the manager.
+
+        This method is used to add profiles created outside of the normal
+        scanning process, such as cloned or designed voices created through
+        dialogs. The profile is added to the managed profiles dictionary
+        and the cache is saved.
+
+        Args:
+            profile: VoiceProfile to register
+
+        Returns:
+            bool: True if profile was registered successfully
+        """
+        try:
+            if not profile.is_valid:
+                self.logger.warning(f"Cannot register invalid profile: {profile.name}")
+                return False
+
+            # Add to managed profiles
+            self._profiles[profile.name] = profile
+            self.logger.info(f"Registered profile: {profile.name} (type={profile.voice_type.value})")
+
+            # Save cache in background
+            await self._save_profile_cache()
+
+            return True
+
+        except Exception as e:
+            self.logger.exception(f"Error registering profile {profile.name}: {e}")
+            return False
+
     async def _load_profile_cache(self):
         """Load profiles from cache file with invalidation checking."""
         try:
@@ -1369,8 +1676,90 @@ class VoiceProfileManager(BaseService):
             for profile_data in cache_data.get('profiles', []):
                 try:
                     file_path = Path(profile_data['file_path'])
+                    file_path_str = str(file_path)
 
-                    # Check if file exists
+                    # Bundled voices have virtual paths (bundled://SpeakerName or bundled:\SpeakerName on Windows)
+                    # Skip these as they'll be re-initialized by _initialize_bundled_voices()
+                    is_bundled_path = (
+                        file_path_str.startswith("bundled://") or
+                        file_path_str.startswith("bundled:\\") or
+                        file_path_str.startswith("bundled:")
+                    )
+                    if is_bundled_path:
+                        self.logger.debug(f"Skipping bundled voice in cache: {profile_data['name']}")
+                        continue
+
+                    # Optimized voices have virtual paths (optimized://VoiceName or optimized:\VoiceName on Windows)
+                    # These are fine-tuned from checkpoints, no audio file needed
+                    is_optimized_path = (
+                        file_path_str.startswith("optimized://") or
+                        file_path_str.startswith("optimized:\\") or
+                        file_path_str.startswith("optimized:")
+                    )
+
+                    # For optimized voices, validate checkpoint instead of file
+                    if is_optimized_path:
+                        checkpoint_path = profile_data.get('checkpoint_path')
+                        if checkpoint_path and Path(checkpoint_path).exists():
+                            # Load optimized voice from cache
+                            profile = VoiceProfile(
+                                file_path=file_path,
+                                name=profile_data['name'],
+                                transcription=None,
+                                duration=None,
+                                is_valid=True,
+                                voice_type=VoiceType.OPTIMIZED,
+                                checkpoint_path=Path(checkpoint_path),
+                                speaker_name=profile_data.get('speaker_name'),
+                                description=profile_data.get('description'),
+                            )
+                            self._profiles[profile.name] = profile
+                            loaded_count += 1
+                            self.logger.debug(f"Loaded optimized voice from cache: {profile.name}")
+                        else:
+                            self.logger.debug(f"Optimized voice checkpoint not found: {checkpoint_path}")
+                            invalidated_count += 1
+                        continue
+
+                    # Embedding voices have virtual paths (embedding://VoiceName or embedding:\VoiceName on Windows)
+                    # Story 1.6: Emotion Control for Saved Voice
+                    is_embedding_path = (
+                        file_path_str.startswith("embedding://") or
+                        file_path_str.startswith("embedding:\\") or
+                        file_path_str.startswith("embedding:")
+                    )
+
+                    # For embedding voices, validate embedding file exists
+                    if is_embedding_path:
+                        checkpoint_path = profile_data.get('checkpoint_path')
+                        if checkpoint_path and Path(checkpoint_path).exists():
+                            # QA8: Load available_emotions from cache
+                            available_emotions = profile_data.get('available_emotions', ["neutral"])
+                            if not available_emotions:
+                                available_emotions = ["neutral"]
+
+                            # Load embedding voice from cache
+                            profile = VoiceProfile(
+                                file_path=file_path,
+                                name=profile_data['name'],
+                                transcription=None,
+                                duration=profile_data.get('duration'),
+                                is_valid=True,
+                                voice_type=VoiceType.EMBEDDING,
+                                checkpoint_path=Path(checkpoint_path),
+                                speaker_name=None,
+                                description=profile_data.get('description'),
+                                available_emotions=available_emotions,
+                            )
+                            self._profiles[profile.name] = profile
+                            loaded_count += 1
+                            self.logger.debug(f"Loaded embedding voice from cache: {profile.name} (emotions: {available_emotions})")
+                        else:
+                            self.logger.debug(f"Embedding file not found: {checkpoint_path}")
+                            invalidated_count += 1
+                        continue
+
+                    # Check if file exists (for non-virtual voices only)
                     if not file_path.exists():
                         self.logger.debug(f"Cached profile file not found: {file_path}")
                         invalidated_count += 1
@@ -1391,12 +1780,21 @@ class VoiceProfileManager(BaseService):
                             continue
 
                     # Recreate profile from cached data
+                    # Restore voice_type if present in cache, otherwise default to CLONED
+                    voice_type = VoiceType.CLONED
+                    if profile_data.get('voice_type'):
+                        try:
+                            voice_type = VoiceType(profile_data['voice_type'])
+                        except ValueError:
+                            pass  # Keep default
+
                     profile = VoiceProfile(
                         file_path=file_path,
                         name=profile_data['name'],
                         transcription=profile_data.get('transcription'),
                         duration=profile_data.get('duration'),
-                        is_valid=profile_data.get('is_valid', False)
+                        is_valid=profile_data.get('is_valid', False),
+                        voice_type=voice_type,
                     )
                     self._profiles[profile.name] = profile
                     loaded_count += 1
@@ -1541,7 +1939,15 @@ class VoiceProfileManager(BaseService):
                         'file_path': str(profile.file_path),  # Convert Path to string
                         'transcription': profile.transcription,
                         'duration': profile.duration,
-                        'is_valid': profile.is_valid
+                        'is_valid': profile.is_valid,
+                        'voice_type': profile.voice_type.value if profile.voice_type else None,
+                        'emotion_capable': profile.emotion_capable,
+                        # OPTIMIZED voice metadata
+                        'checkpoint_path': str(profile.checkpoint_path) if profile.checkpoint_path else None,
+                        'speaker_name': profile.speaker_name,
+                        'description': profile.description,
+                        # QA8: Include available_emotions for EMBEDDING voices
+                        'available_emotions': profile.available_emotions if hasattr(profile, 'available_emotions') else ["neutral"],
                     }
                     profile_data.append(data)
                     self.logger.debug(f"Serialized profile {i+1}/{len(profiles_snapshot)}: {profile.name}")

@@ -7,6 +7,9 @@ with virtual microphone services.
 
 Implements Story 1.4 specifications with dedicated PyAudio instance optimized
 for monitor speaker devices.
+
+Story 2.1: Added playback_complete callbacks and streaming chunk support for
+immediate audio playback without waiting for complete audio (NFR3).
 """
 
 import asyncio
@@ -123,6 +126,14 @@ class MonitorAudioService(BaseService):
         self._is_initialized = False
         self._task_counter = 0
 
+        # Callbacks (Story 2.1: playback_complete signal)
+        self._playback_complete_callback: Optional[Callable[[str], None]] = None
+        self._playback_error_callback: Optional[Callable[[str, str], None]] = None
+
+        # Streaming state (Story 2.1: stream chunks immediately)
+        self._streaming_stream: Optional[Any] = None
+        self._streaming_lock = threading.Lock()
+
         self.logger.info("MonitorAudioService initialized")
 
     async def start(self) -> bool:
@@ -220,7 +231,7 @@ class MonitorAudioService(BaseService):
 
         except Exception as e:
             self.logger.error(f"Failed to initialize MonitorAudioService: {e}")
-            self.status = ServiceStatus.FAILED
+            self.status = ServiceStatus.ERROR
             return False
 
     async def shutdown(self) -> bool:
@@ -650,10 +661,14 @@ class MonitorAudioService(BaseService):
             if task.status.value == 'playing':
                 task.mark_completed()
                 self.logger.info(f"Monitor audio playback completed for {task.playback_id}")
+                # Story 2.1: Emit playback_complete signal
+                self._emit_playback_complete(task.playback_id)
 
         except Exception as e:
             self.logger.error(f"Monitor audio worker error for {task.playback_id}: {e}")
             task.mark_failed(f"Playback error: {str(e)}")
+            # Story 2.1: Emit playback_error signal
+            self._emit_playback_error(task.playback_id, str(e))
 
         finally:
             # Cleanup stream
@@ -739,3 +754,195 @@ class MonitorAudioService(BaseService):
             "current_device": self.current_monitor_device.name if self.current_monitor_device else None,
             "default_device_available": self._validate_monitor_device(self.config.default_device_index) if self._pyaudio else False
         }
+
+    # =========================================================================
+    # Story 2.1: Playback Complete Callbacks
+    # =========================================================================
+
+    def set_playback_complete_callback(self, callback: Callable[[str], None]) -> None:
+        """
+        Set callback for playback completion notification.
+
+        Called when audio playback finishes successfully. Emits the task_id.
+
+        Args:
+            callback: Function that receives the completed task_id
+        """
+        self._playback_complete_callback = callback
+
+    def set_playback_error_callback(self, callback: Callable[[str, str], None]) -> None:
+        """
+        Set callback for playback error notification.
+
+        Called when audio playback fails. Emits task_id and error message.
+
+        Args:
+            callback: Function that receives (task_id, error_message)
+        """
+        self._playback_error_callback = callback
+
+    def _emit_playback_complete(self, task_id: str) -> None:
+        """Emit playback complete callback."""
+        if self._playback_complete_callback:
+            try:
+                self._playback_complete_callback(task_id)
+            except Exception as e:
+                self.logger.error(f"Error in playback_complete callback: {e}")
+
+    def _emit_playback_error(self, task_id: str, error: str) -> None:
+        """Emit playback error callback."""
+        if self._playback_error_callback:
+            try:
+                self._playback_error_callback(task_id, error)
+            except Exception as e:
+                self.logger.error(f"Error in playback_error callback: {e}")
+
+    # =========================================================================
+    # Story 2.1: Streaming Chunk Playback (FR24 - stream without waiting)
+    # =========================================================================
+
+    async def start_streaming_session(
+        self,
+        device: Optional[AudioDevice] = None,
+        sample_rate: int = 24000,
+        channels: int = 1,
+        sample_width: int = 2,
+    ) -> Optional[str]:
+        """
+        Start a streaming session for playing audio chunks immediately.
+
+        This enables low-latency playback where chunks can be played as they
+        are generated without waiting for the complete audio (NFR3).
+
+        Args:
+            device: Target monitor device (uses current if None)
+            sample_rate: Audio sample rate (default 24000 for Qwen3-TTS)
+            channels: Number of audio channels
+            sample_width: Bytes per sample (2 for 16-bit)
+
+        Returns:
+            Session ID string, or None if failed
+        """
+        if not self._is_initialized:
+            self.logger.error("MonitorAudioService not initialized")
+            return None
+
+        with self._streaming_lock:
+            # Close existing streaming session if any
+            if self._streaming_stream:
+                try:
+                    self._streaming_stream.stop_stream()
+                    self._streaming_stream.close()
+                except Exception:
+                    pass
+                self._streaming_stream = None
+
+            try:
+                # Use current device if none specified
+                target_device = device or self.current_monitor_device
+
+                if target_device:
+                    device_id_str = target_device.device_id
+                    if device_id_str.startswith("pyaudio_"):
+                        device_index = int(device_id_str.split("_")[1])
+                    else:
+                        device_index = int(device_id_str)
+                else:
+                    device_index = self.config.default_device_index
+
+                # Convert sample width to PyAudio format
+                if sample_width == 2:
+                    audio_format = pyaudio.paInt16
+                elif sample_width == 4:
+                    audio_format = pyaudio.paFloat32
+                else:
+                    audio_format = pyaudio.paInt16
+
+                # Open streaming output
+                self._streaming_stream = self._pyaudio.open(
+                    format=audio_format,
+                    channels=channels,
+                    rate=sample_rate,
+                    output=True,
+                    output_device_index=device_index,
+                    frames_per_buffer=self.config.chunk_size,
+                )
+
+                # Generate session ID
+                self._task_counter += 1
+                session_id = f"stream_{self._task_counter}_{int(time.time())}"
+
+                self.logger.info(
+                    f"Started streaming session {session_id}: "
+                    f"{channels}ch, {sample_rate}Hz, device={device_index}"
+                )
+                return session_id
+
+            except Exception as e:
+                self.logger.error(f"Failed to start streaming session: {e}")
+                return None
+
+    async def play_audio_chunk(
+        self,
+        audio_data: bytes,
+        is_final: bool = False,
+    ) -> bool:
+        """
+        Play an audio chunk immediately in the streaming session.
+
+        Chunks are played without waiting for complete audio, enabling
+        low-latency streaming playback (NFR3: no stuttering or gaps).
+
+        Args:
+            audio_data: Raw audio bytes to play
+            is_final: If True, this is the last chunk (session stays open)
+
+        Returns:
+            bool: True if chunk was played successfully
+        """
+        with self._streaming_lock:
+            if not self._streaming_stream:
+                self.logger.error("No active streaming session")
+                return False
+
+            try:
+                # Write chunk directly to stream (non-blocking)
+                self._streaming_stream.write(audio_data)
+
+                if is_final:
+                    self.logger.debug("Played final audio chunk")
+
+                return True
+
+            except Exception as e:
+                self.logger.error(f"Failed to play audio chunk: {e}")
+                return False
+
+    async def stop_streaming_session(self) -> bool:
+        """
+        Stop the current streaming session and close the stream.
+
+        Returns:
+            bool: True if session was stopped successfully
+        """
+        with self._streaming_lock:
+            if not self._streaming_stream:
+                return True
+
+            try:
+                self._streaming_stream.stop_stream()
+                self._streaming_stream.close()
+                self._streaming_stream = None
+
+                self.logger.info("Streaming session stopped")
+                return True
+
+            except Exception as e:
+                self.logger.error(f"Error stopping streaming session: {e}")
+                self._streaming_stream = None
+                return False
+
+    def is_streaming_active(self) -> bool:
+        """Check if a streaming session is currently active."""
+        with self._streaming_lock:
+            return self._streaming_stream is not None

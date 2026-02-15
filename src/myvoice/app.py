@@ -5,6 +5,7 @@ This module contains the main application controller that manages the overall
 application lifecycle, initialization, and coordination between services and UI.
 """
 
+import gc
 import logging
 import sys
 import asyncio
@@ -16,7 +17,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 from PyQt6.QtCore import QObject, QTimer
 
 from myvoice.models.ui_state import ServiceStatusInfo, ServiceHealthStatus
-from myvoice.models.service_enums import ServiceStatus
+from myvoice.models.service_enums import ServiceStatus, QwenModelType
 
 
 class MyVoiceApp(QObject):
@@ -139,14 +140,20 @@ class MyVoiceApp(QObject):
         try:
             self.logger.debug("Initializing configuration asynchronously")
 
-            # Create necessary directories
-            self._ensure_directories()
+            # Create necessary directories (using portable paths)
+            from myvoice.utils.portable_paths import ensure_portable_compatibility, get_config_file_path
+            ensure_portable_compatibility()
 
-            # Initialize Configuration Service with local config directory
+            # Story 4.2: Clean up orphaned Voice Design Studio sessions (>24h old)
+            from myvoice.utils.session_manager import SessionManager
+            cleaned, preserved = SessionManager.cleanup_orphan_sessions()
+            if cleaned > 0:
+                self.logger.info(f"Startup cleanup: removed {cleaned} orphan sessions, preserved {preserved} recent")
+
+            # Initialize Configuration Service with PORTABLE path
             from myvoice.services.configuration_service import ConfigurationManager
-
-            # Use local config directory (relative to project root)
-            config_path = Path("config") / "settings.json"
+            config_path = get_config_file_path()
+            self.logger.info(f"Using portable config path: {config_path}")
 
             self._config_manager = ConfigurationManager(config_file=config_path)
             self.register_service("config", self._config_manager)
@@ -192,9 +199,9 @@ class MyVoiceApp(QObject):
             # Auto-detect and configure VB-Cable on first boot if no virtual device configured
             await self._auto_detect_and_configure_vb_cable()
 
-            # Initialize TTS Service with AudioCoordinator
-            from myvoice.services.tts_service import TTSService
-            self._tts_service = TTSService(audio_coordinator=self._audio_coordinator)
+            # Initialize TTS Service (Qwen3-TTS)
+            from myvoice.services.qwen_tts_service import QwenTTSService
+            self._tts_service = QwenTTSService()
             self.register_service("tts", self._tts_service)
 
             # Set up health status callback BEFORE starting service
@@ -206,14 +213,56 @@ class MyVoiceApp(QObject):
             self._on_tts_service_started(None)
 
             # Initialize Voice Profile Service
+            # Use portable paths to get the correct voice_files directory
             from myvoice.services.voice_profile_service import VoiceProfileManager
-            self._voice_manager = VoiceProfileManager()
+            from myvoice.utils.portable_paths import get_voice_files_path
+
+            # Get voice directory - prefer portable path for bundled voices
+            voice_directory = get_voice_files_path()
+            self.logger.info(f"Using voice directory: {voice_directory}")
+
+            # If settings has a custom path, use it instead (for user customization)
+            if hasattr(self, '_app_settings') and self._app_settings:
+                voice_dir_str = self._app_settings.voice_files_directory
+                # Only use custom path if it's different from default and exists
+                if voice_dir_str and voice_dir_str != "voice_files":
+                    custom_path = Path(voice_dir_str)
+                    if custom_path.is_absolute() and custom_path.exists():
+                        voice_directory = custom_path
+                        self.logger.info(f"Using custom voice directory from settings: {voice_directory}")
+
+            self._voice_manager = VoiceProfileManager(voice_directory=voice_directory)
             self.register_service("voice_profiles", self._voice_manager)
 
             # Start voice profile service (DIRECT AWAIT)
             await self._voice_manager.start()
             self.logger.info("Voice profile service started successfully")
             self._on_voice_service_started(None)
+
+            # Preload the appropriate model based on cached active voice profile
+            # This ensures fast first generation without model switching delay
+            preferred_model = self._voice_manager.get_active_profile_model_type()
+            if preferred_model:
+                self.logger.info(f"Preloading model for cached active profile: {preferred_model.display_name}")
+                try:
+                    success, error = await self._tts_service.preload_model(preferred_model)
+                    if success:
+                        self.logger.info(f"Model {preferred_model.display_name} preloaded successfully")
+                    else:
+                        self.logger.warning(f"Failed to preload model {preferred_model.display_name}: {error}")
+                except Exception as e:
+                    self.logger.warning(f"Error preloading model: {e}")
+            else:
+                # No cached active profile, preload default CustomVoice model
+                self.logger.info("No cached active profile, preloading default CustomVoice model")
+                try:
+                    success, error = await self._tts_service.preload_model(QwenModelType.CUSTOM_VOICE)
+                    if success:
+                        self.logger.info("CustomVoice model preloaded successfully")
+                    else:
+                        self.logger.warning(f"Failed to preload CustomVoice model: {error}")
+                except Exception as e:
+                    self.logger.warning(f"Error preloading default model: {e}")
 
             # Note: Whisper Service will be initialized on-demand due to DLL conflicts with PyQt6
             # See _initialize_whisper_service_on_demand method
@@ -254,6 +303,7 @@ class MyVoiceApp(QObject):
                 self._main_window.set_audio_coordinator(self._audio_coordinator)
                 self.logger.debug("Connected audio coordinator to main window during UI init")
 
+
             # Connect main window signals to application handlers
             self._main_window.text_generate_requested.connect(self._on_text_generate_requested)
             self._main_window.voice_changed.connect(self._on_voice_changed)
@@ -265,6 +315,21 @@ class MyVoiceApp(QObject):
             self._main_window.voice_directory_changed.connect(self._on_voice_directory_changed)
             self._main_window.voice_refresh_requested.connect(self._on_voice_refresh_requested)
             self._main_window.voice_transcription_requested.connect(self._on_voice_transcription_requested)
+            self._main_window.replay_last_requested.connect(self._on_replay_last_requested)  # Story 2.4
+            self._main_window.whisper_init_requested.connect(self._on_whisper_init_requested)  # QA4
+
+            # Connect TTS service to main window and update status
+            # This must happen here since _on_tts_service_started's 100ms timer fires
+            # before _main_window exists (services init completes before UI init)
+            if hasattr(self, '_tts_service') and self._tts_service:
+                self._main_window.add_service_monitoring("TTS")
+                self._main_window.set_tts_service(self._tts_service)
+
+                # Update TTS health status in UI
+                from myvoice.models.ui_state import ServiceHealthStatus
+                health_status = ServiceHealthStatus.HEALTHY if self._tts_service.is_running() else ServiceHealthStatus.ERROR
+                self._on_tts_health_status_changed(health_status, None)
+                self.logger.info(f"TTS status initialized in UI: {health_status.value}")
 
             # Show the main window
             self._main_window.show_and_raise()
@@ -277,17 +342,15 @@ class MyVoiceApp(QObject):
             return False
 
     def _ensure_directories(self):
-        """Create necessary application directories in local project folder."""
-        # Use local directories relative to project root
-        directories = [
-            Path("config"),
-            Path("logs"),
-            Path("voice_files")
-        ]
+        """
+        DEPRECATED: Use portable_paths.ensure_portable_compatibility() instead.
 
-        for directory in directories:
-            directory.mkdir(parents=True, exist_ok=True)
-            self.logger.debug(f"Ensured directory exists: {directory}")
+        This method is kept for backward compatibility but delegates to the
+        portable paths utility which handles directory creation properly.
+        """
+        from myvoice.utils.portable_paths import initialize_portable_directories
+        initialize_portable_directories()
+        self.logger.debug("Portable directories initialized")
 
     def _show_error_dialog(self, title: str, message: str):
         """
@@ -330,15 +393,18 @@ class MyVoiceApp(QObject):
 
         This replaces _cleanup_services() and ensures services are stopped
         in the SAME event loop they were started in (CRITICAL FIX).
+
+        QA5 Enhancement: Added aggressive memory cleanup to prevent process
+        persistence after taskbar close.
         """
-        self.logger.debug("Cleaning up services asynchronously")
+        self.logger.info("Starting async cleanup - stopping services...")
 
         try:
             # Stop services in SAME loop they were started in
             if hasattr(self, '_tts_service') and self._tts_service:
                 try:
                     await self._tts_service.stop()
-                    self.logger.debug("TTS service stopped")
+                    self.logger.info("TTS service stopped")
                 except Exception as e:
                     self.logger.error(f"Error stopping TTS service: {e}")
 
@@ -371,7 +437,7 @@ class MyVoiceApp(QObject):
                     self.logger.error(f"Error stopping Whisper service: {e}")
 
             # Cleanup other services
-            for service_name, service in self._services.items():
+            for service_name, service in list(self._services.items()):
                 try:
                     if hasattr(service, 'cleanup'):
                         service.cleanup()
@@ -382,6 +448,46 @@ class MyVoiceApp(QObject):
             # Close main window
             if self._main_window:
                 self._main_window.close()
+
+            # QA5: Aggressive memory cleanup to prevent process persistence
+            self.logger.info("Releasing service references...")
+
+            # Clear service references to break potential circular refs
+            if hasattr(self, '_tts_service'):
+                self._tts_service = None
+            if hasattr(self, '_config_manager'):
+                self._config_manager = None
+            if hasattr(self, '_voice_manager'):
+                self._voice_manager = None
+            if hasattr(self, '_audio_coordinator'):
+                self._audio_coordinator = None
+            if hasattr(self, '_whisper_service'):
+                self._whisper_service = None
+            if hasattr(self, '_main_window'):
+                self._main_window = None
+
+            # Clear services dict
+            self._services.clear()
+
+            # Force garbage collection multiple times to handle circular refs
+            self.logger.info("Running garbage collection...")
+            gc.collect()
+            gc.collect()
+            gc.collect()
+
+            # Release CUDA memory if available
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                    self.logger.info("CUDA cache cleared")
+            except ImportError:
+                pass
+            except Exception as e:
+                self.logger.warning(f"Error clearing CUDA cache: {e}")
+
+            self.logger.info("Async cleanup complete")
 
         except Exception as e:
             self.logger.exception(f"Error during async cleanup: {e}")
@@ -463,6 +569,9 @@ class MyVoiceApp(QObject):
         self.logger.info(f"TTS generation requested for text: {text[:50]}...")
 
         try:
+            # Import VoiceType early for use throughout this method
+            from myvoice.models.voice_profile import VoiceType
+
             # Update main window status
             if self._main_window:
                 self._main_window.set_generation_status("Generating speech...", True)
@@ -480,7 +589,16 @@ class MyVoiceApp(QObject):
                     # Get the currently active voice profile
                     active_profile = self._voice_manager.get_active_profile()
                     if active_profile:
-                        if not active_profile.file_path or not active_profile.file_path.exists():
+                        # Bundled and Embedding voices use virtual paths - check by voice_type or path prefix
+                        # Note: Path("bundled://X") becomes "bundled:\X" on Windows
+                        # Note: Path("embedding://X") becomes "embedding:\X" on Windows
+                        is_virtual_voice = (
+                            active_profile.voice_type == VoiceType.BUNDLED or
+                            active_profile.voice_type == VoiceType.EMBEDDING or
+                            str(active_profile.file_path).startswith("bundled:") or
+                            str(active_profile.file_path).startswith("embedding:")
+                        )
+                        if not is_virtual_voice and (not active_profile.file_path or not active_profile.file_path.exists()):
                             self.logger.warning(f"Voice file does not exist: {active_profile.file_path}")
                             active_profile = None
                     else:
@@ -502,49 +620,253 @@ class MyVoiceApp(QObject):
                     self._main_window.set_generation_status("No voice profile available", False)
                 return
 
-            # Get emotion parameters from UI
-            emotion_position = 3  # Default to neutral
+            # Get emotion instruct from UI (Story 3.2: FR8, Story 5.3: FR35)
+            # EmotionButtonGroup provides instruct string for Qwen3-TTS
+            # Cloned voices do not support emotion control
+            emotion_instruct = None
             if self._main_window:
                 try:
-                    emotion_position = self._main_window.get_emotion_position()
-                    self.logger.debug(f"Using emotion position from UI: {emotion_position}")
+                    # Story 5.3: Check if voice type supports emotion before getting instruct
+                    if active_profile.voice_type and active_profile.voice_type.supports_emotion:
+                        emotion_instruct = self._main_window.get_emotion_instruct()
+                        if emotion_instruct:
+                            self.logger.debug(f"Using emotion instruct from UI: {emotion_instruct}")
+                        else:
+                            self.logger.debug("Using neutral emotion (no instruct)")
+                    else:
+                        # Cloned voice - no emotion support (Story 5.3: FR35)
+                        self.logger.info(f"Voice type '{active_profile.voice_type}' does not support emotion, skipping instruct")
                 except Exception as e:
-                    self.logger.warning(f"Error getting emotion position from UI: {e}, using neutral")
+                    self.logger.warning(f"Error getting emotion instruct from UI: {e}, using neutral")
 
-            # Create TTS request with voice profile (including transcription)
-            from myvoice.models.tts_request import TTSRequest
-            request = TTSRequest(
-                text=text,
-                voice_file_path=active_profile.file_path,
-                voice_text=active_profile.transcription  # Include transcription from profile
-            )
-
-            # Set emotion parameters based on UI slider position
-            request.set_emotion_by_slider_position(emotion_position)
-
-            # Log the voice profile and emotion parameters being used
-            self.logger.info(f"TTS request using voice profile: {active_profile.name}")
+            # Log the voice profile being used
+            self.logger.info(f"TTS generation using voice profile: {active_profile.name}")
             if active_profile.transcription:
                 self.logger.debug(f"Using transcription: {active_profile.transcription[:50]}...")
             else:
                 self.logger.warning(f"No transcription available for voice profile: {active_profile.name}")
 
-            emotion_params = request.get_emotion_parameters()
-            self.logger.info(f"TTS request using emotion: {emotion_params.name} "
-                           f"(temp={emotion_params.temperature}, top_p={emotion_params.top_p}, "
-                           f"rep_penalty={emotion_params.repetition_penalty})")
+            # Log emotion instruct (Story 3.2: FR8, Story 5.3: FR35)
+            # Note: Voice cloning does NOT support emotion control in Qwen3-TTS
+            if emotion_instruct:
+                self.logger.info(f"Emotion instruct requested: '{emotion_instruct}' (ignored for voice clone)")
+            elif active_profile.voice_type and not active_profile.voice_type.supports_emotion:
+                self.logger.info(f"TTS request for cloned voice '{active_profile.name}' (no emotion support)")
+            else:
+                self.logger.info("TTS request using neutral emotion")
 
-            # Start TTS generation asynchronously
-            self._run_async_task(
-                self._tts_service.generate_speech(request),
-                on_success=self._on_tts_generation_complete,
-                on_error=self._on_tts_generation_failed
-            )
+            # Start TTS generation using appropriate model based on voice type
+            # QA-1: Use correct model for each voice type
+            # Log voice type for debugging
+            self.logger.info(f"[DEBUG] Voice type: {active_profile.voice_type} (value={active_profile.voice_type.value if active_profile.voice_type else 'None'})")
+            self.logger.info(f"[DEBUG] file_path: {active_profile.file_path}")
+            self.logger.info(f"[DEBUG] VoiceType.EMBEDDING = {VoiceType.EMBEDDING}, comparison = {active_profile.voice_type == VoiceType.EMBEDDING}")
+
+            # Check for bundled voice (by type - most reliable)
+            # Note: Path("bundled://X") becomes "bundled:\X" on Windows, so check type first
+            is_bundled = active_profile.voice_type == VoiceType.BUNDLED
+
+            if is_bundled:
+                # BUNDLED voices use CustomVoice model with speaker timbre
+                # Speaker name is stored in the profile name
+                speaker_name = active_profile.name
+
+                self.logger.info(f"Using CustomVoice model with speaker: {speaker_name}")
+                self._run_async_task(
+                    self._tts_service.generate_custom_voice(
+                        text=text,
+                        speaker=speaker_name,
+                        instruct=emotion_instruct,
+                    ),
+                    on_success=self._on_tts_generation_complete,
+                    on_error=self._on_tts_generation_failed
+                )
+
+            elif active_profile.voice_type == VoiceType.DESIGNED:
+                # DESIGNED voices can be saved as Prompt (VoiceDesign) or Clone (Base)
+                # Check if transcription contains a voice description (prompt voice)
+                voice_description = active_profile.transcription
+                if voice_description:
+                    # Prompt Voice - use VoiceDesign model with description
+                    self.logger.info(f"Using VoiceDesign model with description: {voice_description[:50]}...")
+                    self._run_async_task(
+                        self._tts_service.generate_voice_design(
+                            text=text,
+                            voice_description=voice_description,
+                            instruct=emotion_instruct,
+                        ),
+                        on_success=self._on_tts_generation_complete,
+                        on_error=self._on_tts_generation_failed
+                    )
+                else:
+                    # Clone Voice (saved from design) - use Base model with x-vector mode
+                    # Designed voices saved as clone don't have transcription, use x_vector_only_mode
+                    self.logger.info(f"Using Base model for designed voice (clone type) with x-vector mode")
+                    self._run_async_task(
+                        self._tts_service.generate_voice_clone(
+                            text=text,
+                            ref_audio=active_profile.file_path,
+                            ref_text="",
+                            x_vector_only_mode=True,
+                        ),
+                        on_success=self._on_tts_generation_complete,
+                        on_error=self._on_tts_generation_failed
+                    )
+
+            elif active_profile.voice_type == VoiceType.OPTIMIZED:
+                # OPTIMIZED voices use fine-tuned checkpoint with CustomVoice generation
+                # These voices support emotion presets just like bundled voices
+                checkpoint_path = active_profile.checkpoint_path
+                speaker_name = active_profile.speaker_name
+
+                if not checkpoint_path:
+                    self.logger.error(f"Optimized voice '{active_profile.name}' missing checkpoint path")
+                    if self._main_window:
+                        self._main_window.set_generation_status("Optimized voice checkpoint not configured", False)
+                    return
+
+                if not speaker_name:
+                    self.logger.error(f"Optimized voice '{active_profile.name}' missing speaker name")
+                    if self._main_window:
+                        self._main_window.set_generation_status("Optimized voice speaker name not configured", False)
+                    return
+
+                self.logger.info(f"Using fine-tuned checkpoint: {checkpoint_path} with speaker: {speaker_name}")
+                self._run_async_task(
+                    self._tts_service.generate_optimized_voice(
+                        text=text,
+                        checkpoint_path=checkpoint_path,
+                        speaker_name=speaker_name,
+                        instruct=emotion_instruct,
+                    ),
+                    on_success=self._on_tts_generation_complete,
+                    on_error=self._on_tts_generation_failed
+                )
+
+            elif active_profile.voice_type == VoiceType.EMBEDDING:
+                # EMBEDDING voices use Base model with pre-computed voice clone prompt
+                # Created in Voice Design Studio - Base model does NOT support emotion/instruct
+                embedding_path = active_profile.get_embedding_path()
+
+                if not embedding_path:
+                    self.logger.error(f"Embedding voice '{active_profile.name}' missing embedding path")
+                    if self._main_window:
+                        self._main_window.set_generation_status("Embedding file not found", False)
+                    return
+
+                self.logger.info(f"[DEBUG] EMBEDDING PATH TAKEN for '{active_profile.name}'")
+                self.logger.info(f"[DEBUG] embedding_path={embedding_path}, checkpoint_path={active_profile.checkpoint_path}")
+                self.logger.info(f"Using embedding voice: {active_profile.name} from {embedding_path}")
+
+                # Emotion Variants: Get current emotion for EMBEDDING voices
+                # The emotion ID is used to select the correct embedding subfolder
+                emotion_id = None
+                if self._main_window:
+                    try:
+                        emotion_preset = self._main_window.get_emotion_preset()
+                        emotion_id = emotion_preset.id
+                        self.logger.debug(f"Using emotion variant: {emotion_id}")
+                    except Exception as e:
+                        self.logger.warning(f"Error getting emotion preset: {e}, using neutral")
+                        emotion_id = "neutral"
+
+                self._run_async_task(
+                    self._tts_service.generate_with_embedding(
+                        text=text,
+                        embedding_path=embedding_path,
+                        emotion=emotion_id,
+                        instruct=emotion_instruct,
+                    ),
+                    on_success=self._on_tts_generation_complete,
+                    on_error=self._on_tts_generation_failed
+                )
+
+            else:
+                # CLONED voices use Base model with reference audio
+                # Use stored transcription for ICL mode (better quality) or x_vector mode if none
+                ref_text = active_profile.transcription or ""
+                use_xvector = not bool(ref_text)
+
+                if ref_text:
+                    self.logger.info(f"Using Base model for cloned voice with ICL mode (transcription available)")
+                else:
+                    self.logger.info(f"Using Base model for cloned voice with x-vector mode (no transcription)")
+
+                self._run_async_task(
+                    self._tts_service.generate_voice_clone(
+                        text=text,
+                        ref_audio=active_profile.file_path,
+                        ref_text=ref_text,
+                        x_vector_only_mode=use_xvector,
+                    ),
+                    on_success=self._on_tts_generation_complete,
+                    on_error=self._on_tts_generation_failed
+                )
 
         except Exception as e:
             self.logger.exception(f"Error during TTS generation: {e}")
             if self._main_window:
                 self._main_window.set_generation_status(f"Generation failed: {str(e)}", False)
+
+    def _on_replay_last_requested(self):
+        """
+        Handle replay last audio request (Story 2.4: FR28, FR29, FR31, FR32).
+
+        Replays the last generated audio from cache, routing through both
+        monitor and virtual microphone.
+        """
+        self.logger.info("Replay last audio requested")
+
+        try:
+            # Check if TTS service has cached audio
+            if not hasattr(self, '_tts_service') or not self._tts_service:
+                if self._main_window:
+                    self._main_window.set_generation_status("TTS service not available", False)
+                return
+
+            cached_path = self._tts_service.get_cached_audio_path()
+            if not cached_path or not cached_path.exists():
+                self.logger.warning("No cached audio available for replay")
+                if self._main_window:
+                    self._main_window.set_generation_status("No audio to replay", False)
+                return
+
+            # Read the cached audio file
+            audio_data = cached_path.read_bytes()
+            self.logger.info(f"Replaying cached audio: {len(audio_data)} bytes from {cached_path}")
+
+            # Update status
+            if self._main_window:
+                self._main_window.set_generation_status("Replaying last audio...", False)
+
+            # Play using the same dual-stream playback (FR31, FR32)
+            if self._audio_coordinator:
+                self._run_async_task(
+                    self._play_generated_audio(audio_data),
+                    on_success=self._on_replay_success,
+                    on_error=self._on_replay_error
+                )
+            else:
+                self.logger.warning("Audio coordinator not available for replay")
+                if self._main_window:
+                    self._main_window.set_generation_status("Audio coordinator not available", False)
+
+        except Exception as e:
+            self.logger.exception(f"Error during replay: {e}")
+            if self._main_window:
+                self._main_window.set_generation_status(f"Replay failed: {str(e)}", False)
+
+    def _on_replay_success(self, result):
+        """Handle successful replay playback."""
+        self.logger.info("Replay playback completed successfully")
+        if self._main_window:
+            self._main_window.set_generation_status("Replay complete", False)
+
+    def _on_replay_error(self, error):
+        """Handle replay playback failure."""
+        self.logger.error(f"Replay playback failed: {error}")
+        if self._main_window:
+            self._main_window.set_generation_status(f"Replay failed: {error}", False)
 
     def _on_voice_changed(self, voice_name: str):
         """
@@ -582,6 +904,58 @@ class MyVoiceApp(QObject):
                     active_profile = self._voice_manager.get_active_profile()
                     if active_profile:
                         self._main_window.update_voice_label(active_profile.name)
+
+                        # Story 3.3: FR8a, Story 5.3: FR35 - Enable/disable emotion based on voice type
+                        # Emotion Variants: EMBEDDING voices have per-emotion control
+                        from myvoice.models.voice_profile import VoiceType
+
+                        if active_profile.voice_type == VoiceType.EMBEDDING:
+                            # Emotion Variants: Enable only available emotions
+                            available_emotions = active_profile.get_available_emotions()
+                            self._main_window.update_voice_emotions(
+                                available_emotions,
+                                active_profile.name
+                            )
+                            self.logger.debug(
+                                f"Emotion controls updated for EMBEDDING voice: {active_profile.name} "
+                                f"(available: {available_emotions})"
+                            )
+                        elif active_profile.voice_type and active_profile.voice_type.supports_emotion:
+                            # BUNDLED/DESIGNED/OPTIMIZED: Enable all emotions
+                            self._main_window.set_emotion_enabled(True)
+                            self.logger.debug(
+                                f"Emotion controls enabled for voice profile: {active_profile.name} "
+                                f"(type: {active_profile.voice_type})"
+                            )
+                        else:
+                            # CLONED: Disable emotion controls
+                            self._main_window.set_emotion_enabled(False)
+                            self.logger.debug(
+                                f"Emotion controls disabled for voice profile: {active_profile.name} "
+                                f"(type: {active_profile.voice_type})"
+                            )
+
+                        # Preload model if voice group changed (different model required)
+                        # This ensures smoother switching between Clone/Bundled/Design voices
+                        if hasattr(self, '_tts_service') and self._tts_service:
+                            required_model = self._voice_manager.get_active_profile_model_type()
+                            if required_model:
+                                current_model = self._tts_service.get_current_model_type()
+                                if current_model != required_model:
+                                    self.logger.info(
+                                        f"Voice group changed: {current_model.display_name if current_model else 'None'} "
+                                        f"-> {required_model.display_name}, preloading model..."
+                                    )
+                                    # Preload in background for smoother first generation
+                                    self._run_async_task(
+                                        self._tts_service.preload_model(required_model),
+                                        on_success=lambda s: self.logger.info(
+                                            f"Model {required_model.display_name} preloaded: {'success' if s[0] else s[1]}"
+                                        ) if isinstance(s, tuple) else self.logger.info(
+                                            f"Model {required_model.display_name} preloaded"
+                                        ),
+                                        on_error=lambda e: self.logger.warning(f"Failed to preload model: {e}")
+                                    )
             else:
                 self.logger.warning(f"Failed to set active profile")
         except Exception as e:
@@ -641,8 +1015,13 @@ class MyVoiceApp(QObject):
             if self._main_window and hasattr(self, '_tts_service') and self._tts_service:
                 self._main_window.add_service_monitoring("TTS")
 
+                # Set TTS service on main window for voice creation dialogs
+                self._main_window.set_tts_service(self._tts_service)
+
                 # Get current health status and update UI
-                health_status = self._tts_service._last_health_status
+                # QwenTTSService is running if start() succeeded, so assume HEALTHY
+                from myvoice.models.ui_state import ServiceHealthStatus
+                health_status = ServiceHealthStatus.HEALTHY if self._tts_service.is_running() else ServiceHealthStatus.ERROR
                 self._on_tts_health_status_changed(health_status, None)
                 self.logger.info(f"Updated TTS status in UI after window initialization: {health_status.value}")
 
@@ -775,6 +1154,38 @@ class MyVoiceApp(QObject):
         self.logger.error(f"Whisper service failed to start: {error}")
         # Whisper service failure is not critical - app can continue without transcription
 
+    def _on_whisper_init_requested(self):
+        """
+        Handle request to initialize whisper service on-demand (QA4).
+
+        This is called when Voice Design Studio is opened and whisper_service
+        is not yet available. Triggers async initialization.
+        """
+        self.logger.info("Whisper service initialization requested")
+
+        if self._whisper_service is not None:
+            self.logger.debug("Whisper service already initialized")
+            return
+
+        # Start initialization asynchronously
+        self._run_async_task(
+            self._initialize_whisper_service_on_demand(),
+            on_success=self._on_whisper_init_completed,
+            on_error=lambda error: self.logger.error(f"Whisper init failed: {error}")
+        )
+
+    def _on_whisper_init_completed(self, success: bool):
+        """
+        Handle whisper service initialization completion (QA4).
+
+        Args:
+            success: Whether initialization was successful
+        """
+        if success:
+            self.logger.info("Whisper service initialized successfully for Voice Design Studio")
+        else:
+            self.logger.warning("Whisper service initialization failed")
+
     async def _initialize_whisper_service_on_demand(self):
         """
         Initialize Whisper service on-demand to avoid DLL conflicts with PyQt6.
@@ -809,6 +1220,11 @@ class MyVoiceApp(QObject):
             self.logger.debug("Starting whisper service")
             await self._whisper_service.start()
             self.logger.debug(f"Whisper service started, status: {self._whisper_service.status}")
+
+            # QA4: Propagate whisper service to MainWindow for Voice Design Studio transcription
+            if self._main_window:
+                self._main_window.set_whisper_service(self._whisper_service)
+                self.logger.debug("Whisper service propagated to MainWindow")
 
             self.logger.info("Whisper service initialized successfully on-demand")
             return True
@@ -1114,16 +1530,29 @@ class MyVoiceApp(QObject):
         Handle TTS generation completion with dual-stream playback.
 
         Args:
-            response: TTSResponse object with audio data
+            response: QwenTTSResponse object with audio data (numpy array)
         """
         if response.success:
-            self.logger.info(f"TTS generation completed successfully, {len(response.audio_data)} bytes")
+            # Convert numpy array to WAV bytes for audio playback
+            import io
+            import soundfile as sf
+            audio_bytes = None
+            if response.audio_data is not None:
+                buffer = io.BytesIO()
+                sf.write(buffer, response.audio_data, response.sample_rate, format='WAV')
+                audio_bytes = buffer.getvalue()
+                self.logger.info(f"TTS generation completed successfully, {len(audio_bytes)} bytes")
+            else:
+                self.logger.warning("TTS generation succeeded but no audio data returned")
+                if self._main_window:
+                    self._main_window.set_generation_status("No audio data generated", False)
+                return
 
             # Start dual-stream audio playback (monitor + virtual microphone)
-            if self._audio_coordinator:
+            if self._audio_coordinator and audio_bytes:
                 self.logger.debug("Starting audio playback task")
                 self._run_async_task(
-                    self._play_generated_audio(response.audio_data),
+                    self._play_generated_audio(audio_bytes),
                     on_success=self._on_audio_playback_success,
                     on_error=self._on_audio_playback_error
                 )
@@ -1385,6 +1814,8 @@ class MyVoiceApp(QObject):
         self.logger.info("Audio playback completed successfully")
         if self._main_window:
             self._main_window.set_generation_status("Audio playback completed", False)
+            # Story 2.4: Enable replay button after successful playback (FR29)
+            self._main_window.set_replay_enabled(True)
 
     def _on_audio_playback_error(self, error):
         """Handle audio playback error."""

@@ -3,6 +3,9 @@ Configuration Service
 
 This module implements the ConfigurationManager service for loading, saving,
 and managing application settings with automatic persistence and graceful error handling.
+
+Story 2.3: Added audio device selection methods with persistence and guidance
+for missing virtual microphone detection (FR26, FR27, FR44).
 """
 
 import asyncio
@@ -131,9 +134,9 @@ class ConfigurationManager(BaseService):
             if self._settings and self.auto_save:
                 await self.save_settings()
 
-            # Cleanup resources
+            # Cleanup resources - QA Round 2 Item #8: Non-blocking shutdown
             if self._executor:
-                self._executor.shutdown(wait=True)
+                self._executor.shutdown(wait=False, cancel_futures=True)
                 self._executor = None
 
             await self._update_status(ServiceStatus.STOPPED)
@@ -557,15 +560,17 @@ class ConfigurationManager(BaseService):
         Restore voice selection from saved settings.
 
         This method checks if the saved voice profile still exists and is valid.
-        If the saved profile is missing or invalid, it clears the selection.
+        If the saved profile is missing or invalid, it falls back to bundled voice.
+
+        Story 6.3: FR47 - If selected voice deleted externally, switch to bundled.
 
         Returns:
-            Optional[str]: Restored voice profile name or None if not available
+            Optional[str]: Restored voice profile name or bundled fallback
         """
         try:
             if not self._settings or not self._settings.selected_voice_profile:
                 self.logger.debug("No voice profile selected in settings")
-                return None
+                return await self._select_default_bundled_voice()
 
             selected_profile = self._settings.selected_voice_profile
             self.logger.info(f"Attempting to restore voice selection: {selected_profile}")
@@ -574,31 +579,91 @@ class ConfigurationManager(BaseService):
             voice_files_path = self._settings.get_voice_files_path()
             if not voice_files_path.exists():
                 self.logger.warning(f"Voice files directory not found: {voice_files_path}")
-                await self.update_voice_selection(None)
-                return None
+                return await self._select_default_bundled_voice()
 
-            # Look for the voice file
+            # Check for bundled voices first (they don't have .wav files)
+            from myvoice.models.voice_profile import BUNDLED_SPEAKERS
+            if selected_profile in BUNDLED_SPEAKERS:
+                self.logger.info(f"Successfully restored bundled voice selection: {selected_profile}")
+                return selected_profile
+
+            # Check for embedding voices (they have embedding directories, not .wav files)
+            embeddings_path = voice_files_path / "embeddings" / selected_profile
+            if embeddings_path.exists() and embeddings_path.is_dir():
+                # Verify embedding has at least a neutral embedding or root embedding
+                has_embedding = (
+                    (embeddings_path / "neutral" / "embedding.pt").exists() or
+                    (embeddings_path / "embedding.pt").exists()
+                )
+                if has_embedding:
+                    self.logger.info(f"Successfully restored embedding voice selection: {selected_profile}")
+                    return selected_profile
+                else:
+                    self.logger.warning(f"Embedding voice directory exists but no embedding.pt found: {selected_profile}")
+
+            # Look for the voice file (cloned voices)
             voice_file_pattern = f"{selected_profile}.wav"
             voice_files = list(voice_files_path.rglob(voice_file_pattern))
 
             if not voice_files:
                 self.logger.warning(f"Voice file not found for profile: {selected_profile}")
-                await self.update_voice_selection(None)
-                return None
+                # Story 6.3: Fallback to bundled voice
+                return await self._select_default_bundled_voice()
 
             # Verify the voice file is still valid
             voice_file = voice_files[0]
             if not voice_file.exists() or voice_file.stat().st_size == 0:
                 self.logger.warning(f"Voice file is missing or empty: {voice_file}")
-                await self.update_voice_selection(None)
-                return None
+                # Story 6.3: Fallback to bundled voice
+                return await self._select_default_bundled_voice()
 
             self.logger.info(f"Successfully restored voice selection: {selected_profile}")
             return selected_profile
 
         except Exception as e:
             self.logger.exception(f"Error restoring voice selection: {e}")
-            # Clear selection on error
+            # Story 6.3: Fallback to bundled voice on error
+            return await self._select_default_bundled_voice()
+
+    async def _select_default_bundled_voice(self) -> Optional[str]:
+        """
+        Select default bundled voice as fallback (Story 6.3: FR47).
+
+        This method selects the first available bundled voice when the
+        previously selected voice is no longer available.
+
+        Returns:
+            Optional[str]: Name of bundled voice selected, or None if none available
+        """
+        try:
+            # Default bundled voice name
+            default_bundled = "Sarira-F"
+
+            voice_files_path = self._settings.get_voice_files_path() if self._settings else Path("voice_files")
+
+            # Check if default bundled voice exists
+            default_voice_file = voice_files_path / f"{default_bundled}.wav"
+            if default_voice_file.exists():
+                self.logger.info(f"Falling back to default bundled voice: {default_bundled}")
+                await self.update_voice_selection(default_bundled)
+                return default_bundled
+
+            # Try to find any bundled voice file
+            if voice_files_path.exists():
+                wav_files = list(voice_files_path.glob("*.wav"))
+                if wav_files:
+                    first_voice = wav_files[0].stem
+                    self.logger.info(f"Falling back to first available voice: {first_voice}")
+                    await self.update_voice_selection(first_voice)
+                    return first_voice
+
+            # No voices available
+            self.logger.warning("No bundled voices available for fallback")
+            await self.update_voice_selection(None)
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Error selecting default bundled voice: {e}")
             if self._settings:
                 await self.update_voice_selection(None)
             return None
@@ -1356,7 +1421,8 @@ class ConfigurationManager(BaseService):
             "UNKNOWN_THEME",
             "HIGH_DURATION",
             "LONG_RECENT_LIST",
-            "DUPLICATE_RECENT_PROFILES"
+            "DUPLICATE_RECENT_PROFILES",
+            "INVALID_TRANSPARENCY_RANGE"
         }
         return issue.code in auto_fixable_codes
 
@@ -1372,7 +1438,8 @@ class ConfigurationManager(BaseService):
             "UNKNOWN_THEME": "Will reset to 'dark' theme",
             "HIGH_DURATION": "Will reduce to reasonable value",
             "LONG_RECENT_LIST": "Will trim to 10 most recent items",
-            "DUPLICATE_RECENT_PROFILES": "Will remove duplicates"
+            "DUPLICATE_RECENT_PROFILES": "Will remove duplicates",
+            "INVALID_TRANSPARENCY_RANGE": "Will reset to 1.0 (fully opaque)"
         }
         return suggestions.get(issue.code, "Manual fix required")
 
@@ -1446,7 +1513,366 @@ class ConfigurationManager(BaseService):
                 settings.recent_voice_profiles = list(dict.fromkeys(settings.recent_voice_profiles))
                 return True, "Removed duplicates"
 
+            elif code == "INVALID_TRANSPARENCY_RANGE":
+                settings.window_transparency = 1.0
+                return True, "Reset to 1.0 (fully opaque)"
+
             return False, f"No fix available for {code}"
 
         except Exception as e:
             return False, f"Fix failed: {str(e)}"
+
+    # =========================================================================
+    # Story 2.3: Audio Device Selection (FR26, FR27, FR44)
+    # =========================================================================
+
+    async def update_monitor_device(
+        self,
+        device_id: str,
+        device_name: str,
+        host_api: Optional[str] = None
+    ) -> bool:
+        """
+        Update the selected monitor audio device in settings.
+
+        Args:
+            device_id: Device ID (PyAudio index)
+            device_name: Human-readable device name
+            host_api: Host API name (e.g., "Windows WASAPI")
+
+        Returns:
+            bool: True if update successful
+        """
+        try:
+            if not self._settings:
+                self.logger.error("No settings loaded, cannot update monitor device")
+                return False
+
+            old_device = self._settings.monitor_device_name
+            self._settings.monitor_device_id = device_id
+            self._settings.monitor_device_name = device_name
+            self._settings.monitor_device_host_api = host_api
+
+            self.logger.info(f"Monitor device updated: '{old_device}' -> '{device_name}' (id={device_id})")
+
+            # Auto-save if enabled
+            if self.auto_save:
+                return await self.save_settings()
+
+            return True
+
+        except Exception as e:
+            self.logger.exception(f"Error updating monitor device: {e}")
+            return False
+
+    async def update_virtual_microphone_device(
+        self,
+        device_id: str,
+        device_name: str,
+        host_api: Optional[str] = None
+    ) -> bool:
+        """
+        Update the selected virtual microphone device in settings.
+
+        Args:
+            device_id: Device ID (PyAudio index)
+            device_name: Human-readable device name
+            host_api: Host API name (e.g., "Windows WASAPI")
+
+        Returns:
+            bool: True if update successful
+        """
+        try:
+            if not self._settings:
+                self.logger.error("No settings loaded, cannot update virtual microphone device")
+                return False
+
+            old_device = self._settings.virtual_microphone_device_name
+            self._settings.virtual_microphone_device_id = device_id
+            self._settings.virtual_microphone_device_name = device_name
+            self._settings.virtual_microphone_device_host_api = host_api
+
+            self.logger.info(f"Virtual mic device updated: '{old_device}' -> '{device_name}' (id={device_id})")
+
+            # Auto-save if enabled
+            if self.auto_save:
+                return await self.save_settings()
+
+            return True
+
+        except Exception as e:
+            self.logger.exception(f"Error updating virtual microphone device: {e}")
+            return False
+
+    def get_monitor_device(self) -> Optional[Dict[str, Any]]:
+        """
+        Get the currently selected monitor device.
+
+        Returns:
+            Dict with device_id, device_name, host_api, or None if not set
+        """
+        if not self._settings or not self._settings.monitor_device_id:
+            return None
+
+        return {
+            "device_id": self._settings.monitor_device_id,
+            "device_name": self._settings.monitor_device_name,
+            "host_api": self._settings.monitor_device_host_api,
+        }
+
+    def get_virtual_microphone_device(self) -> Optional[Dict[str, Any]]:
+        """
+        Get the currently selected virtual microphone device.
+
+        Returns:
+            Dict with device_id, device_name, host_api, or None if not set
+        """
+        if not self._settings or not self._settings.virtual_microphone_device_id:
+            return None
+
+        return {
+            "device_id": self._settings.virtual_microphone_device_id,
+            "device_name": self._settings.virtual_microphone_device_name,
+            "host_api": self._settings.virtual_microphone_device_host_api,
+        }
+
+    async def clear_monitor_device(self) -> bool:
+        """
+        Clear the selected monitor device (use system default).
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            if not self._settings:
+                return False
+
+            self._settings.monitor_device_id = None
+            self._settings.monitor_device_name = None
+            self._settings.monitor_device_host_api = None
+
+            self.logger.info("Monitor device selection cleared")
+
+            if self.auto_save:
+                return await self.save_settings()
+
+            return True
+
+        except Exception as e:
+            self.logger.exception(f"Error clearing monitor device: {e}")
+            return False
+
+    async def clear_virtual_microphone_device(self) -> bool:
+        """
+        Clear the selected virtual microphone device.
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            if not self._settings:
+                return False
+
+            self._settings.virtual_microphone_device_id = None
+            self._settings.virtual_microphone_device_name = None
+            self._settings.virtual_microphone_device_host_api = None
+
+            self.logger.info("Virtual microphone device selection cleared")
+
+            if self.auto_save:
+                return await self.save_settings()
+
+            return True
+
+        except Exception as e:
+            self.logger.exception(f"Error clearing virtual microphone device: {e}")
+            return False
+
+    # =========================================================================
+    # Story 6.2: Window Settings Persistence (FR41)
+    # =========================================================================
+
+    async def update_window_geometry(
+        self,
+        x: int,
+        y: int,
+        width: int,
+        height: int
+    ) -> bool:
+        """
+        Update window geometry (position and size) in settings.
+
+        Args:
+            x: Window X position
+            y: Window Y position
+            width: Window width
+            height: Window height
+
+        Returns:
+            bool: True if update successful
+        """
+        try:
+            if not self._settings:
+                self.logger.error("No settings loaded, cannot update window geometry")
+                return False
+
+            self._settings.window_geometry = {
+                "x": x,
+                "y": y,
+                "width": width,
+                "height": height
+            }
+
+            self.logger.debug(f"Window geometry updated: x={x}, y={y}, width={width}, height={height}")
+
+            # Auto-save if enabled
+            if self.auto_save:
+                return await self.save_settings()
+
+            return True
+
+        except Exception as e:
+            self.logger.exception(f"Error updating window geometry: {e}")
+            return False
+
+    async def update_window_transparency(self, transparency: float) -> bool:
+        """
+        Update window transparency in settings.
+
+        Args:
+            transparency: Window opacity (0.0 = fully transparent, 1.0 = fully opaque)
+
+        Returns:
+            bool: True if update successful
+        """
+        try:
+            if not self._settings:
+                self.logger.error("No settings loaded, cannot update window transparency")
+                return False
+
+            # Validate range
+            if transparency < 0.0 or transparency > 1.0:
+                self.logger.error(f"Invalid transparency value: {transparency}. Must be 0.0-1.0")
+                return False
+
+            old_transparency = self._settings.window_transparency
+            self._settings.window_transparency = transparency
+
+            self.logger.info(f"Window transparency updated: {old_transparency} -> {transparency}")
+
+            # Auto-save if enabled
+            if self.auto_save:
+                return await self.save_settings()
+
+            return True
+
+        except Exception as e:
+            self.logger.exception(f"Error updating window transparency: {e}")
+            return False
+
+    async def update_always_on_top(self, always_on_top: bool) -> bool:
+        """
+        Update always-on-top setting.
+
+        Args:
+            always_on_top: Whether window should stay on top
+
+        Returns:
+            bool: True if update successful
+        """
+        try:
+            if not self._settings:
+                self.logger.error("No settings loaded, cannot update always_on_top")
+                return False
+
+            old_value = self._settings.always_on_top
+            self._settings.always_on_top = always_on_top
+
+            self.logger.info(f"Always on top updated: {old_value} -> {always_on_top}")
+
+            # Auto-save if enabled
+            if self.auto_save:
+                return await self.save_settings()
+
+            return True
+
+        except Exception as e:
+            self.logger.exception(f"Error updating always_on_top: {e}")
+            return False
+
+    def get_window_geometry(self) -> Optional[Dict[str, int]]:
+        """
+        Get the saved window geometry.
+
+        Returns:
+            Dict with x, y, width, height or None if not set
+        """
+        if not self._settings or not self._settings.window_geometry:
+            return None
+
+        return self._settings.window_geometry.copy()
+
+    def get_window_transparency(self) -> float:
+        """
+        Get the saved window transparency.
+
+        Returns:
+            Transparency value (0.0-1.0), defaults to 1.0
+        """
+        if not self._settings:
+            return 1.0
+
+        return self._settings.window_transparency
+
+    def get_always_on_top(self) -> bool:
+        """
+        Get the always-on-top setting.
+
+        Returns:
+            Always on top setting, defaults to True
+        """
+        if not self._settings:
+            return True
+
+        return self._settings.always_on_top
+
+    def get_no_virtual_mic_guidance(self) -> Dict[str, Any]:
+        """
+        Get guidance for when no virtual microphone is detected (FR44).
+
+        Returns:
+            Dict with guidance information and links
+        """
+        return {
+            "title": "No Virtual Microphone Detected",
+            "message": (
+                "To use MyVoice in voice chat applications, you need a virtual "
+                "audio cable installed. This creates a virtual microphone that "
+                "other apps can use as their audio input."
+            ),
+            "recommended_software": [
+                {
+                    "name": "VB-Audio Virtual Cable",
+                    "url": "https://vb-audio.com/Cable/",
+                    "description": "Free, lightweight virtual audio cable",
+                    "free": True,
+                },
+                {
+                    "name": "VoiceMeeter",
+                    "url": "https://vb-audio.com/Voicemeeter/",
+                    "description": "Free audio mixer with virtual cables",
+                    "free": True,
+                },
+            ],
+            "setup_steps": [
+                "1. Download and install VB-Audio Virtual Cable",
+                "2. Restart your computer after installation",
+                "3. In MyVoice Settings, select 'CABLE Input' as virtual microphone",
+                "4. In your voice chat app, select 'CABLE Output' as microphone",
+            ],
+            "troubleshooting": [
+                "If device doesn't appear, restart your computer",
+                "Make sure to select 'CABLE Input' (not 'CABLE Output') in MyVoice",
+                "Check Windows Sound settings to verify device is enabled",
+            ],
+        }

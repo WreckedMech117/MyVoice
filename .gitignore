@@ -28,68 +28,89 @@ MANIFEST
 venv/
 ENV/
 env/
+env.bak/
+venv.bak/
+
+# Bundled Python (for portable releases)
+python310/
 
 # PyInstaller
 *.manifest
 *.spec
 
-# Installer
+# Build outputs
+build/
+dist/
+build_tools/build/
+build_tools/dist/
 installer_output/
 
-# IDEs
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Logs
+logs/
+*.log
+*.log.*
+
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+
+# OS
 .DS_Store
-
-# Logs
-*.log
-logs/
-*.log.*
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-
-# MyVoice Specific
-# GPT-SoVITS (external dependency - not included in repo)
-GPT-SoVITS/
-GPT-SoVITS.7z
-
-# Bundled Python (for installer only)
-python310/
-
-# Build artifacts
-build_tools/installer_output/
-dist/
-
-# Audio cache and generated files
-whisper_models/
-*.wav.bak
-
-# Config (keep templates, ignore user configs)
-config/*.json
-!config/*.json.example
-
-# Third-party installers
-*.zip
-*.7z
-*.exe
-
-# FFmpeg (downloaded by setup script)
-ffmpeg/
-
-# Temp files
-*.tmp
-nul
-backup/
-testingdata/
-
-# Windows
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+$RECYCLE.BIN/
+
+# MyVoice Application Data
+config/*.json
+!config/*.json.example
+whisper_models/
+*.wav
+*.mp3
+*.flac
+!voice_files/*.wav
+!voice_files/*.mp3
+
+# Temporary and backup files
+*.tmp
+*.bak
+*.backup
+nul
+backup/
+temp/
+cache/
+
+# Development tools (not for public release)
+.claude/
+_bmad/
+_bmad-output/
+CLAUDE.md
+DEVELOPER.md
+00_Start_Claude.bat
+validation_output/
+testingdata/
+
+# Downloaded archives
+*.zip
+*.7z
+
+# Test outputs
+test_output.wav
+startup_test_output.txt

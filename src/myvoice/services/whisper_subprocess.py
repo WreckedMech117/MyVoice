@@ -266,10 +266,10 @@ def main():
             app_dir = Path(__file__).parent.parent.parent.parent
             model_dir = app_dir / "whisper_models"
 
-            # Add GPT-SoVITS ffmpeg to PATH if available
-            gptsovits_ffmpeg = app_dir / "GPT-SoVITS"
-            if gptsovits_ffmpeg.exists():
-                os.environ["PATH"] = str(gptsovits_ffmpeg) + os.pathsep + os.environ.get("PATH", "")
+            # Add bundled ffmpeg to PATH if available
+            ffmpeg_dir = app_dir / "ffmpeg"
+            if ffmpeg_dir.exists():
+                os.environ["PATH"] = str(ffmpeg_dir) + os.pathsep + os.environ.get("PATH", "")
 
         # Check if bundled model exists
         model_file = model_dir / "base.pt"

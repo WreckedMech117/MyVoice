@@ -123,6 +123,10 @@ class UIState:
     selected_voice: str = "Default"
     speech_speed: float = 1.0
 
+    # Emotion state (Story 3.3: FR9 - persist emotion selection)
+    current_emotion: str = "neutral"  # Emotion preset ID (neutral, happy, sad, angry, flirtatious)
+    emotion_enabled: bool = True  # Whether emotion controls are enabled (FR8a)
+
     def update_service_status(
         self,
         service_name: str,
@@ -271,5 +275,7 @@ class UIState:
             "current_operation": self.current_operation,
             "window_visible": self.window_visible,
             "selected_voice": self.selected_voice,
-            "speech_speed": self.speech_speed
+            "speech_speed": self.speech_speed,
+            "current_emotion": self.current_emotion,  # Story 3.3: FR9
+            "emotion_enabled": self.emotion_enabled,  # Story 3.3: FR8a
         }

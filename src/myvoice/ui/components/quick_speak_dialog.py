@@ -26,11 +26,18 @@ class QuickSpeakDialog(QDialog):
     Provides a simple list-based interface for selecting preset text
     entries that will be used for TTS generation.
 
+    Story 5.1: Quick Speak Phrase Configuration
+    - Shows empty state with "Configure in Settings" button when no entries
+    - Search/filter functionality
+    - Keyboard navigation
+
     Signals:
         entry_selected: Emitted when user selects an entry (str: text)
+        open_settings_requested: Emitted when user wants to configure phrases
     """
 
     entry_selected = pyqtSignal(str)  # text content
+    open_settings_requested = pyqtSignal()  # Request to open settings
 
     def __init__(self, quick_speak_service: QuickSpeakService, parent: Optional[QWidget] = None):
         """
@@ -82,6 +89,12 @@ class QuickSpeakDialog(QDialog):
         self.search_edit.textChanged.connect(self._on_search_changed)
         layout.addWidget(self.search_edit)
 
+        # Configure button (shown when no entries - Story 5.1 empty state)
+        self.configure_button = QPushButton("Configure Phrases in Settings...")
+        self.configure_button.clicked.connect(self._on_configure_clicked)
+        self.configure_button.setVisible(False)  # Hidden by default
+        layout.addWidget(self.configure_button)
+
         # List widget for entries
         self.entries_list = QListWidget()
         self.entries_list.setAlternatingRowColors(True)
@@ -123,14 +136,41 @@ class QuickSpeakDialog(QDialog):
             self._populate_list(entries)
             self.logger.debug(f"Loaded {len(entries)} Quick Speak entries from profile: {self.quick_speak_service.get_current_profile()}")
 
-            if not entries:
-                # Show message if no entries available
-                item = QListWidgetItem("No Quick Speak entries available")
-                item.setFlags(Qt.ItemFlag.NoItemFlags)  # Make it non-selectable
-                self.entries_list.addItem(item)
+            # Show/hide empty state elements
+            self._update_empty_state(len(entries) == 0)
 
         except Exception as e:
             self.logger.error(f"Error loading Quick Speak entries: {e}")
+            self._update_empty_state(True)
+
+    def _update_empty_state(self, is_empty: bool):
+        """
+        Update the empty state display.
+
+        Story 5.1: Show "No phrases configured" with link to settings.
+
+        Args:
+            is_empty: True if no entries are available
+        """
+        if is_empty:
+            # Show empty state message
+            item = QListWidgetItem("No phrases configured")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)  # Make it non-selectable
+            self.entries_list.addItem(item)
+
+            hint_item = QListWidgetItem("Click 'Configure...' to add phrases in Settings")
+            hint_item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.entries_list.addItem(hint_item)
+
+        # Show/hide the configure button based on empty state
+        self.configure_button.setVisible(is_empty)
+        self.search_edit.setVisible(not is_empty)
+
+    def _on_configure_clicked(self):
+        """Handle configure button click - request to open settings."""
+        self.logger.info("User requested to open Settings for Quick Speak configuration")
+        self.open_settings_requested.emit()
+        self.reject()  # Close this dialog
 
     def _populate_list(self, entries: list):
         """

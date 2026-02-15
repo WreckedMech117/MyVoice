@@ -98,7 +98,7 @@ class WhisperService(BaseService):
     - Batch transcription support
     - Multiple Whisper model sizes with automatic validation
     - CPU-only inference configuration for compatibility
-    - Voice file validation for GPT-SoVITS compatibility
+    - Voice file validation for TTS compatibility
     - Resource management and cleanup
     """
 
@@ -194,9 +194,16 @@ class WhisperService(BaseService):
                     self.logger.info(f"Using bundled Whisper models from: {bundled_model_dir}")
                     return bundled_model_dir
 
-            # Fallback: use local whisper_models directory
-            self.logger.warning("Bundled Whisper models not found, using local directory")
-            cache_path = Path("whisper_models")
+            # Fallback: use user cache directory (should not happen in production)
+            self.logger.warning("Bundled Whisper models not found, falling back to cache directory")
+            if sys.platform == "win32":
+                # Use portable whisper models directory
+                from myvoice.utils.portable_paths import get_whisper_models_path
+                cache_dir = str(get_whisper_models_path())
+            else:
+                cache_dir = os.path.expanduser("~/.cache/whisper")
+
+            cache_path = Path(cache_dir)
             cache_path.mkdir(parents=True, exist_ok=True)
             return cache_path
 
@@ -524,9 +531,9 @@ class WhisperService(BaseService):
             self.status = ServiceStatus.STOPPING
             self.logger.info("Stopping Whisper service")
 
-            # Shutdown thread pool executor
+            # Shutdown thread pool executor - QA Round 2 Item #8: Non-blocking shutdown
             if self._executor:
-                self._executor.shutdown(wait=True)
+                self._executor.shutdown(wait=False, cancel_futures=True)
                 self._executor = None
 
             # Clear model from memory

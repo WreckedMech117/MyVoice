@@ -106,6 +106,48 @@ def is_windows_dark_mode_supported() -> bool:
         return False
 
 
+def is_high_contrast_mode() -> bool:
+    """
+    Check if Windows high contrast mode is enabled.
+
+    Story 7.5: NFR20 - Support for high contrast mode for accessibility.
+
+    Returns:
+        True if high contrast mode is enabled
+    """
+    if not _windows_available or sys.platform != "win32":
+        return False
+
+    try:
+        # SPI_GETHIGHCONTRAST = 0x0042
+        # HIGHCONTRASTW structure has flags at offset 4 (HCF_HIGHCONTRASTON = 0x1)
+        class HIGHCONTRASTW(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", ctypes.c_uint),
+                ("dwFlags", ctypes.c_uint),
+                ("lpszDefaultScheme", ctypes.c_wchar_p)
+            ]
+
+        hc = HIGHCONTRASTW()
+        hc.cbSize = ctypes.sizeof(HIGHCONTRASTW)
+
+        result = ctypes.windll.user32.SystemParametersInfoW(
+            0x0042,  # SPI_GETHIGHCONTRAST
+            ctypes.sizeof(HIGHCONTRASTW),
+            ctypes.byref(hc),
+            0
+        )
+
+        if result:
+            # HCF_HIGHCONTRASTON = 0x1
+            return bool(hc.dwFlags & 0x1)
+        return False
+
+    except Exception as e:
+        logging.getLogger(__name__).debug(f"Failed to check high contrast mode: {e}")
+        return False
+
+
 class ThemeManager(QObject):
     """
     Centralized theme management system.

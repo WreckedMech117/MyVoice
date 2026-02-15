@@ -7,19 +7,30 @@ resource conflicts.
 
 This replaces the problematic play_synchronized_dual_stream approach with proper
 service separation as specified in the dual-service architecture design.
+
+Story 2.5: Audio Device Resilience
+- Integrated DeviceResilienceManager for graceful device disconnect/reconnect handling
+- Auto-recovery when devices reconnect
+- User notifications for device changes
 """
 
 import asyncio
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Callable
 from dataclasses import dataclass
 from datetime import datetime
 
 from myvoice.models.audio_device import AudioDevice
 from myvoice.models.error import MyVoiceError, ErrorSeverity
 from myvoice.models.app_settings import AppSettings
+from myvoice.models.device_notification import DeviceNotification
 from myvoice.services.monitor_audio_service import MonitorAudioService, MonitorPlaybackTask
 from myvoice.services.virtual_microphone_service import VirtualMicrophoneService, VirtualPlaybackTask
+from myvoice.services.device_resilience_manager import (
+    DeviceResilienceManager,
+    DeviceResilienceConfig,
+    DeviceRole,
+)
 from myvoice.services.core.base_service import BaseService, ServiceStatus
 
 
@@ -100,6 +111,9 @@ class AudioCoordinator(BaseService):
         self.monitor_service: Optional[MonitorAudioService] = None
         self.virtual_service: Optional[VirtualMicrophoneService] = None
 
+        # Story 2.5: Device Resilience Manager for graceful disconnect/reconnect
+        self.resilience_manager: Optional[DeviceResilienceManager] = None
+
         # Coordination tracking
         self._active_coordinations: Dict[str, DualStreamResult] = {}
         self._coordination_counter = 0
@@ -107,6 +121,12 @@ class AudioCoordinator(BaseService):
         # Service health tracking
         self._last_health_check: Optional[datetime] = None
         self._services_healthy = True
+
+        # Callbacks (Story 2.1: playback_complete signal)
+        self._playback_complete_callback: Optional[Callable[[str], None]] = None
+
+        # Story 2.5: Device notification callbacks
+        self._device_notification_callbacks: List[Callable[[DeviceNotification], None]] = []
 
         self.logger.info("AudioCoordinator initialized")
 
@@ -166,12 +186,39 @@ class AudioCoordinator(BaseService):
         try:
             self.logger.info("Initializing AudioCoordinator with dual services")
 
+            # Story 2.5: Initialize Device Resilience Manager first
+            resilience_config = DeviceResilienceConfig(
+                enable_monitoring=True,
+                poll_interval_seconds=2.0,
+                auto_recovery_enabled=True,
+                show_disconnect_warning=True,
+                show_reconnect_notification=True,
+                show_fallback_notification=True,
+                fallback_to_default_on_disconnect=True,
+            )
+            self.resilience_manager = DeviceResilienceManager(resilience_config)
+            resilience_success = await self.resilience_manager.initialize()
+
+            if resilience_success:
+                self.logger.info("DeviceResilienceManager initialized successfully")
+                # Register callbacks for device recovery and notifications
+                self.resilience_manager.add_recovery_callback(self._handle_device_recovery)
+                self.resilience_manager.add_notification_callback(self._handle_device_notification)
+            else:
+                self.logger.warning("⚠ DeviceResilienceManager initialization failed - continuing without resilience")
+
             # Initialize MonitorAudioService (Audio Service 1)
             self.monitor_service = MonitorAudioService(self.app_settings)
             monitor_success = await self.monitor_service.initialize()
 
             if monitor_success:
                 self.logger.info("MonitorAudioService initialized successfully")
+                # Story 2.5: Register monitor device with resilience manager
+                if self.resilience_manager and self.monitor_service.current_monitor_device:
+                    self.resilience_manager.register_device(
+                        DeviceRole.MONITOR,
+                        self.monitor_service.current_monitor_device
+                    )
             else:
                 self.logger.warning("⚠ MonitorAudioService initialization failed")
 
@@ -181,6 +228,13 @@ class AudioCoordinator(BaseService):
 
             if virtual_success:
                 self.logger.info("VirtualMicrophoneService initialized successfully")
+                # Story 2.5: Register virtual mic device with resilience manager
+                virtual_device = getattr(self.virtual_service, 'current_virtual_device', None)
+                if self.resilience_manager and virtual_device:
+                    self.resilience_manager.register_device(
+                        DeviceRole.VIRTUAL_MIC,
+                        virtual_device
+                    )
             else:
                 self.logger.warning("⚠ VirtualMicrophoneService initialization failed")
 
@@ -192,12 +246,12 @@ class AudioCoordinator(BaseService):
                 return True
             else:
                 self.logger.error("AudioCoordinator initialization failed - both services failed")
-                self.status = ServiceStatus.FAILED
+                self.status = ServiceStatus.ERROR
                 return False
 
         except Exception as e:
             self.logger.error(f"Failed to initialize AudioCoordinator: {e}")
-            self.status = ServiceStatus.FAILED
+            self.status = ServiceStatus.ERROR
             return False
 
     async def shutdown(self) -> bool:
@@ -230,6 +284,11 @@ class AudioCoordinator(BaseService):
                         self.logger.info(f"{service_name} service shutdown successful")
                     else:
                         self.logger.warning(f"⚠ {service_name} service shutdown failed")
+
+            # Story 2.5: Shutdown resilience manager
+            if self.resilience_manager:
+                await self.resilience_manager.shutdown()
+                self.resilience_manager = None
 
             self._is_initialized = False
             self.status = ServiceStatus.STOPPED
@@ -589,6 +648,323 @@ class AudioCoordinator(BaseService):
 
         except Exception as e:
             self.logger.error(f"Failed to add device notification callback: {e}")
+
+    # =========================================================================
+    # Story 2.1: Playback Complete Callbacks
+    # =========================================================================
+
+    def set_playback_complete_callback(self, callback: Callable[[str], None]) -> None:
+        """
+        Set callback for playback completion notification.
+
+        The callback is propagated to both MonitorAudioService and
+        VirtualMicrophoneService so that any playback completion emits the signal.
+
+        Args:
+            callback: Function that receives the completed task_id
+        """
+        self._playback_complete_callback = callback
+
+        # Propagate to services
+        if self.monitor_service:
+            self.monitor_service.set_playback_complete_callback(callback)
+        if self.virtual_service:
+            self.virtual_service.set_playback_complete_callback(callback)
+
+    # =========================================================================
+    # Story 2.1: Streaming Chunk Playback (FR24 - stream without waiting)
+    # =========================================================================
+
+    async def start_streaming_session(
+        self,
+        sample_rate: int = 24000,
+        channels: int = 1,
+        sample_width: int = 2,
+    ) -> Dict[str, Optional[str]]:
+        """
+        Start streaming sessions on both audio services for immediate chunk playback.
+
+        This enables low-latency dual-stream playback where TTS chunks can be
+        played as they are generated without waiting for complete audio (NFR3).
+
+        Args:
+            sample_rate: Audio sample rate (default 24000 for Qwen3-TTS)
+            channels: Number of audio channels
+            sample_width: Bytes per sample (2 for 16-bit)
+
+        Returns:
+            Dict with session IDs: {"monitor": id_or_none, "virtual": id_or_none}
+        """
+        result = {"monitor": None, "virtual": None}
+
+        if not self._is_initialized:
+            self.logger.error("AudioCoordinator not initialized")
+            return result
+
+        try:
+            # Start streaming on monitor service
+            if self.monitor_service and await self._is_monitor_service_healthy():
+                monitor_session = await self.monitor_service.start_streaming_session(
+                    sample_rate=sample_rate,
+                    channels=channels,
+                    sample_width=sample_width,
+                )
+                result["monitor"] = monitor_session
+
+            # Start streaming on virtual service (if available)
+            if self.virtual_service and await self._is_virtual_service_healthy():
+                if hasattr(self.virtual_service, 'start_streaming_session'):
+                    virtual_session = await self.virtual_service.start_streaming_session(
+                        sample_rate=sample_rate,
+                        channels=channels,
+                        sample_width=sample_width,
+                    )
+                    result["virtual"] = virtual_session
+
+            self.logger.info(f"Streaming sessions started: {result}")
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Failed to start streaming sessions: {e}")
+            return result
+
+    async def play_audio_chunk(
+        self,
+        audio_data: bytes,
+        is_final: bool = False,
+    ) -> Dict[str, bool]:
+        """
+        Play an audio chunk immediately to both streaming sessions.
+
+        Chunks are played without waiting for complete audio, enabling
+        low-latency streaming playback (NFR3: no stuttering or gaps).
+
+        Args:
+            audio_data: Raw audio bytes to play
+            is_final: If True, this is the last chunk
+
+        Returns:
+            Dict with success status: {"monitor": bool, "virtual": bool}
+        """
+        result = {"monitor": False, "virtual": False}
+
+        try:
+            # Play on monitor service
+            if self.monitor_service and self.monitor_service.is_streaming_active():
+                result["monitor"] = await self.monitor_service.play_audio_chunk(
+                    audio_data, is_final
+                )
+
+            # Play on virtual service (if available)
+            if self.virtual_service:
+                if hasattr(self.virtual_service, 'is_streaming_active') and \
+                   self.virtual_service.is_streaming_active():
+                    result["virtual"] = await self.virtual_service.play_audio_chunk(
+                        audio_data, is_final
+                    )
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Failed to play audio chunk: {e}")
+            return result
+
+    async def stop_streaming_session(self) -> Dict[str, bool]:
+        """
+        Stop streaming sessions on both services.
+
+        Returns:
+            Dict with stop status: {"monitor": bool, "virtual": bool}
+        """
+        result = {"monitor": False, "virtual": False}
+
+        try:
+            # Stop monitor streaming
+            if self.monitor_service:
+                result["monitor"] = await self.monitor_service.stop_streaming_session()
+
+            # Stop virtual streaming (if available)
+            if self.virtual_service and hasattr(self.virtual_service, 'stop_streaming_session'):
+                result["virtual"] = await self.virtual_service.stop_streaming_session()
+
+            self.logger.info(f"Streaming sessions stopped: {result}")
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Error stopping streaming sessions: {e}")
+            return result
+
+    def is_streaming_active(self) -> Dict[str, bool]:
+        """
+        Check if streaming sessions are active on each service.
+
+        Returns:
+            Dict with active status: {"monitor": bool, "virtual": bool}
+        """
+        result = {"monitor": False, "virtual": False}
+
+        if self.monitor_service:
+            result["monitor"] = self.monitor_service.is_streaming_active()
+
+        if self.virtual_service and hasattr(self.virtual_service, 'is_streaming_active'):
+            result["virtual"] = self.virtual_service.is_streaming_active()
+
+        return result
+
+    # =========================================================================
+    # Story 2.5: Device Resilience - Recovery and Notification Handlers
+    # =========================================================================
+
+    def _handle_device_recovery(self, role: DeviceRole, device: AudioDevice) -> None:
+        """
+        Handle device recovery when a device reconnects or falls back.
+
+        Story 2.5 AC: Device reconnect → auto-recovery, no manual reconfiguration
+
+        Args:
+            role: Role of the device (MONITOR or VIRTUAL_MIC)
+            device: The recovered or fallback device
+        """
+        self.logger.info(f"Handling device recovery for {role.value}: {device.name}")
+
+        try:
+            if role == DeviceRole.MONITOR and self.monitor_service:
+                # Update monitor service's current device
+                self.monitor_service.current_monitor_device = device
+                self.logger.info(f"Monitor device updated to: {device.name}")
+
+            elif role == DeviceRole.VIRTUAL_MIC and self.virtual_service:
+                # Update virtual service's current device
+                self.virtual_service.current_virtual_device = device
+                self.logger.info(f"Virtual mic device updated to: {device.name}")
+
+        except Exception as e:
+            self.logger.error(f"Error handling device recovery for {role.value}: {e}")
+
+    def _handle_device_notification(self, notification: DeviceNotification) -> None:
+        """
+        Handle device notification and forward to registered callbacks.
+
+        Story 2.5 AC: Warning on disconnect, notification on reconnect
+
+        Args:
+            notification: The device notification to handle
+        """
+        self.logger.info(f"Device notification: {notification.title} - {notification.message}")
+
+        # Forward to all registered callbacks
+        for callback in self._device_notification_callbacks:
+            try:
+                callback(notification)
+            except Exception as e:
+                self.logger.error(f"Error in device notification callback: {e}")
+
+    def add_device_notification_callback(
+        self,
+        callback: Callable[[DeviceNotification], None]
+    ) -> None:
+        """
+        Add callback for device notifications.
+
+        Story 2.5: These callbacks receive notifications about device
+        disconnect, reconnect, and fallback events for UI display.
+
+        Args:
+            callback: Function to call when device notifications occur
+        """
+        if callback not in self._device_notification_callbacks:
+            self._device_notification_callbacks.append(callback)
+            self.logger.debug("Added device notification callback")
+
+    def remove_device_notification_callback(
+        self,
+        callback: Callable[[DeviceNotification], None]
+    ) -> None:
+        """Remove a device notification callback."""
+        if callback in self._device_notification_callbacks:
+            self._device_notification_callbacks.remove(callback)
+            self.logger.debug("Removed device notification callback")
+
+    def refresh_audio_devices(self) -> bool:
+        """
+        Refresh the audio device list.
+
+        Story 2.5 AC: New devices detected when settings opened
+
+        Returns:
+            bool: True if refresh was successful
+        """
+        if not self.resilience_manager:
+            self.logger.warning("Cannot refresh devices: resilience manager not available")
+            return False
+
+        return self.resilience_manager.refresh_devices()
+
+    def register_monitor_device(
+        self,
+        device: AudioDevice,
+        fallback_device: Optional[AudioDevice] = None
+    ) -> None:
+        """
+        Register or update the monitor device for resilience monitoring.
+
+        Args:
+            device: Monitor device to track
+            fallback_device: Optional fallback device
+        """
+        if self.resilience_manager:
+            self.resilience_manager.register_device(
+                DeviceRole.MONITOR,
+                device,
+                fallback_device
+            )
+        if self.monitor_service:
+            self.monitor_service.current_monitor_device = device
+
+    def register_virtual_mic_device(
+        self,
+        device: AudioDevice,
+        fallback_device: Optional[AudioDevice] = None
+    ) -> None:
+        """
+        Register or update the virtual mic device for resilience monitoring.
+
+        Args:
+            device: Virtual mic device to track
+            fallback_device: Optional fallback device
+        """
+        if self.resilience_manager:
+            self.resilience_manager.register_device(
+                DeviceRole.VIRTUAL_MIC,
+                device,
+                fallback_device
+            )
+        if self.virtual_service:
+            self.virtual_service.current_virtual_device = device
+
+    def get_device_resilience_status(self) -> Dict[str, Any]:
+        """
+        Get the current device resilience status.
+
+        Returns:
+            Dict with device status information
+        """
+        if not self.resilience_manager:
+            return {"enabled": False, "reason": "Resilience manager not initialized"}
+
+        try:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Can't await in sync context, return basic status
+                return {
+                    "enabled": True,
+                    "monitoring_active": self.resilience_manager._is_monitoring,
+                }
+            else:
+                return loop.run_until_complete(self.resilience_manager.get_health())
+        except Exception as e:
+            return {"enabled": True, "error": str(e)}
 
     # Required BaseService attribute
     _is_initialized = False
