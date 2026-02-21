@@ -21,7 +21,7 @@ from typing import Optional, Dict, List
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QGroupBox, QTextEdit, QComboBox, QTabWidget, QSplitter,
-    QFrame, QSizePolicy, QFileDialog, QMessageBox
+    QFrame, QSizePolicy, QFileDialog, QMessageBox, QProgressBar
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
@@ -56,12 +56,14 @@ class EmotionTabWidget(QWidget):
     - Emotion instruction input
     - Variant list (5 variants)
     - Generate button
+    - Transcript field (QA6: per-emotion transcript for uploaded samples)
     """
 
     generate_requested = pyqtSignal(str, str, str)  # emotion, instruction, preview_text
     upload_completed = pyqtSignal(str, str)  # QA7: emotion, audio_path - emitted when upload finishes
     variant_selected = pyqtSignal(str, int)  # emotion, variant_index
     variant_deselected = pyqtSignal(str)  # emotion
+    transcription_requested = pyqtSignal(str, str)  # QA6: emotion, audio_path - for Whisper transcription
 
     def __init__(
         self,
@@ -82,6 +84,9 @@ class EmotionTabWidget(QWidget):
         self._voice_description: str = ""
         self._preview_text: str = ""
         self._is_generating = False
+        self._transcript: str = ""  # QA6: Per-emotion transcript
+        self._uploaded_audio_path: Optional[Path] = None  # QA6: Track uploaded audio path
+        self._is_transcribing = False  # QA6: Track transcription state
 
         self._create_ui()
         self._setup_connections()
@@ -262,6 +267,83 @@ class EmotionTabWidget(QWidget):
 
         parent_layout.addLayout(generate_layout)
 
+        # QA6: Transcript section for uploaded samples (hidden by default)
+        self._create_transcript_section(parent_layout)
+
+    def _create_transcript_section(self, parent_layout: QVBoxLayout):
+        """QA6: Create transcript section for uploaded samples."""
+        # Container for transcript (hidden by default)
+        self.transcript_container = QWidget()
+        self.transcript_container.setObjectName(f"transcript_container_{self._emotion}")
+        self.transcript_container.setVisible(False)
+
+        transcript_layout = QVBoxLayout(self.transcript_container)
+        transcript_layout.setContentsMargins(0, 8, 0, 0)
+        transcript_layout.setSpacing(4)
+
+        # Styled frame for transcript (no hardcoded colors - inherits from theme)
+        transcript_frame = QFrame()
+        transcript_frame.setObjectName(f"transcript_frame_{self._emotion}")
+        transcript_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        transcript_frame.setFrameShadow(QFrame.Shadow.Raised)
+
+        frame_layout = QVBoxLayout(transcript_frame)
+        frame_layout.setContentsMargins(8, 6, 8, 6)
+        frame_layout.setSpacing(4)
+
+        # Header row
+        header_layout = QHBoxLayout()
+        header_layout.setSpacing(6)
+
+        transcript_label = QLabel("Sample Transcript:")
+        transcript_label.setObjectName(f"transcript_label_{self._emotion}")
+        header_font = QFont()
+        header_font.setBold(True)
+        transcript_label.setFont(header_font)
+        header_layout.addWidget(transcript_label)
+
+        # Transcription progress indicator
+        self.transcript_progress = QProgressBar()
+        self.transcript_progress.setObjectName(f"transcript_progress_{self._emotion}")
+        self.transcript_progress.setRange(0, 0)  # Indeterminate
+        self.transcript_progress.setVisible(False)
+        self.transcript_progress.setMaximumWidth(100)
+        self.transcript_progress.setMaximumHeight(14)
+        header_layout.addWidget(self.transcript_progress)
+
+        # Status label
+        self.transcript_status = QLabel("")
+        self.transcript_status.setObjectName(f"transcript_status_{self._emotion}")
+        self.transcript_status.setStyleSheet("font-size: 11px;")
+        header_layout.addWidget(self.transcript_status)
+
+        header_layout.addStretch()
+
+        # Auto-transcribe button
+        self.transcribe_button = QPushButton("Auto-Transcribe")
+        self.transcribe_button.setObjectName(f"transcribe_button_{self._emotion}")
+        self.transcribe_button.setMinimumWidth(110)
+        self.transcribe_button.setToolTip(
+            "Use Whisper to automatically transcribe the uploaded audio"
+        )
+        header_layout.addWidget(self.transcribe_button)
+
+        frame_layout.addLayout(header_layout)
+
+        # Transcript text edit
+        self.transcript_edit = QTextEdit()
+        self.transcript_edit.setObjectName(f"transcript_edit_{self._emotion}")
+        self.transcript_edit.setPlaceholderText(
+            "Enter the transcript of what is spoken in this sample, "
+            "or click Auto-Transcribe..."
+        )
+        self.transcript_edit.setMinimumHeight(40)
+        self.transcript_edit.setMaximumHeight(60)
+        frame_layout.addWidget(self.transcript_edit)
+
+        transcript_layout.addWidget(transcript_frame)
+        parent_layout.addWidget(self.transcript_container)
+
     def _setup_connections(self):
         """Setup signal connections."""
         # Template selection
@@ -286,6 +368,9 @@ class EmotionTabWidget(QWidget):
 
         # Regenerate button from variant list
         self.variant_list.regenerate_button.clicked.connect(self._on_generate_clicked)
+
+        # QA6: Transcribe button
+        self.transcribe_button.clicked.connect(self._on_transcribe_clicked)
 
     def _setup_accessibility(self):
         """Configure accessibility properties."""
@@ -412,11 +497,20 @@ class EmotionTabWidget(QWidget):
             self._update_status(f"Sample uploaded: {audio_path.name}")
             self.logger.info(f"Uploaded sample for {self._emotion}: {audio_path}")
 
+            # QA6: Store uploaded audio path and show transcript section
+            self._uploaded_audio_path = audio_path
+            self.transcript_container.setVisible(True)
+            self._transcript = ""  # Clear any previous transcript
+            self.transcript_edit.clear()
+
             # Emit signal so parent can handle the upload
             self.upload_completed.emit(self._emotion, str(audio_path))
 
             # Auto-select the uploaded variant
             self.variant_list.select_variant(0)
+
+            # QA6: Auto-trigger transcription
+            self._on_transcribe_clicked()
 
         except Exception as e:
             self.logger.error(f"Failed to load uploaded sample: {e}")
@@ -425,6 +519,19 @@ class EmotionTabWidget(QWidget):
                 "Upload Failed",
                 f"Failed to load the audio sample:\n{str(e)}"
             )
+
+    def _on_transcribe_clicked(self):
+        """QA6: Handle auto-transcribe button click."""
+        if not self._uploaded_audio_path:
+            self.logger.warning("No uploaded audio to transcribe")
+            return
+
+        if self._is_transcribing:
+            self.logger.debug("Already transcribing, ignoring request")
+            return
+
+        self.logger.info(f"Requesting transcription for {self._emotion}: {self._uploaded_audio_path}")
+        self.transcription_requested.emit(self._emotion, str(self._uploaded_audio_path))
 
     def _get_audio_duration(self, audio_path: Path) -> float:
         """Get audio duration in seconds."""
@@ -561,6 +668,102 @@ class EmotionTabWidget(QWidget):
         self._is_generating = False
         self.status_label.setText("")
         self._update_generate_button_state()
+        # QA6: Clear transcript state
+        self._transcript = ""
+        self._uploaded_audio_path = None
+        self._is_transcribing = False
+        self.transcript_container.setVisible(False)
+        self.transcript_edit.clear()
+
+    # =========================================================================
+    # QA6: Transcription API
+    # =========================================================================
+
+    def set_transcribing(self, is_transcribing: bool, message: str = ""):
+        """
+        QA6: Set the transcription state.
+
+        Args:
+            is_transcribing: Whether transcription is in progress
+            message: Status message to display
+        """
+        self._is_transcribing = is_transcribing
+        self.transcript_progress.setVisible(is_transcribing)
+        self.transcribe_button.setEnabled(not is_transcribing)
+
+        if is_transcribing:
+            self.transcript_status.setText(message or "Transcribing...")
+            self.transcript_status.setStyleSheet("color: #4da6ff; font-size: 11px;")
+        else:
+            self.transcript_status.setText("")
+            self.transcript_status.setStyleSheet("font-size: 11px;")
+
+    def set_transcription_complete(self, text: str):
+        """
+        QA6: Set transcription complete with result.
+
+        Args:
+            text: Transcribed text
+        """
+        self._is_transcribing = False
+        self._transcript = text
+        self.transcript_progress.setVisible(False)
+        self.transcribe_button.setEnabled(True)
+        self.transcript_edit.setPlainText(text)
+        self.transcript_status.setText("Transcribed")
+        self.transcript_status.setStyleSheet("color: #44cc44; font-size: 11px;")
+        self.logger.info(f"Transcription complete for {self._emotion}: {len(text)} chars")
+
+    def set_transcription_error(self, error_message: str):
+        """
+        QA6: Set transcription error state.
+
+        Args:
+            error_message: Error message to display
+        """
+        self._is_transcribing = False
+        self.transcript_progress.setVisible(False)
+        self.transcribe_button.setEnabled(True)
+        self.transcript_status.setText(f"Error: {error_message[:30]}...")
+        self.transcript_status.setStyleSheet("color: #ff6666; font-size: 11px;")
+        self.logger.error(f"Transcription failed for {self._emotion}: {error_message}")
+
+    def get_transcript(self) -> str:
+        """
+        QA6: Get the current transcript text.
+
+        Returns:
+            Transcript text (from edit field, may be user-modified)
+        """
+        return self.transcript_edit.toPlainText().strip()
+
+    def set_transcript(self, text: str):
+        """
+        QA6: Set the transcript text.
+
+        Args:
+            text: Transcript text
+        """
+        self._transcript = text
+        self.transcript_edit.setPlainText(text)
+
+    def has_transcript(self) -> bool:
+        """
+        QA6: Check if a transcript is available.
+
+        Returns:
+            True if transcript text is non-empty
+        """
+        return bool(self.get_transcript())
+
+    def get_uploaded_audio_path(self) -> Optional[Path]:
+        """
+        QA6: Get the uploaded audio file path.
+
+        Returns:
+            Path to uploaded audio file, or None
+        """
+        return self._uploaded_audio_path
 
 
 class EmotionsPanel(QWidget):
@@ -575,12 +778,14 @@ class EmotionsPanel(QWidget):
         generation_requested: Emitted when generation is requested for an emotion
         proceed_to_refinement_requested: Emitted when Proceed button is clicked
         neutral_selection_changed: Emitted when neutral's selection state changes
+        transcription_requested: QA6 - Emitted when transcription is requested for an emotion
     """
 
     emotion_variant_selected = pyqtSignal(str, int)  # emotion, variant_index
     generation_requested = pyqtSignal(str, str, str)  # emotion, instruction, preview_text
     proceed_to_refinement_requested = pyqtSignal()
     neutral_selection_changed = pyqtSignal(bool)  # has_selection
+    transcription_requested = pyqtSignal(str, str)  # QA6: emotion, audio_path
 
     def __init__(self, parent: Optional[QWidget] = None):
         """
@@ -684,8 +889,16 @@ class EmotionsPanel(QWidget):
             tab.variant_selected.connect(self._on_emotion_variant_selected)
             tab.variant_deselected.connect(self._on_emotion_variant_deselected)
 
+            # QA6: Connect transcription request
+            tab.transcription_requested.connect(self._on_transcription_requested)
+
         # Proceed button
         self.proceed_button.clicked.connect(self._on_proceed_clicked)
+
+    def _on_transcription_requested(self, emotion: str, audio_path: str):
+        """QA6: Handle transcription request from emotion tab."""
+        self.logger.debug(f"Transcription requested for {emotion}: {audio_path}")
+        self.transcription_requested.emit(emotion, audio_path)
 
     def _setup_accessibility(self):
         """Configure accessibility properties."""
@@ -1024,3 +1237,70 @@ class EmotionsPanel(QWidget):
 
         self._update_proceed_button_state()
         self.logger.info(f"Loaded sample into Neutral tab: {audio_path}")
+
+    # =========================================================================
+    # QA6: Transcription API for per-emotion transcripts
+    # =========================================================================
+
+    def set_emotion_transcribing(self, emotion: str, is_transcribing: bool, message: str = ""):
+        """
+        QA6: Set transcription state for an emotion tab.
+
+        Args:
+            emotion: Emotion ID
+            is_transcribing: Whether transcription is in progress
+            message: Status message
+        """
+        tab = self._emotion_tabs.get(emotion)
+        if tab:
+            tab.set_transcribing(is_transcribing, message)
+
+    def set_emotion_transcription_complete(self, emotion: str, text: str):
+        """
+        QA6: Set transcription complete for an emotion tab.
+
+        Args:
+            emotion: Emotion ID
+            text: Transcribed text
+        """
+        tab = self._emotion_tabs.get(emotion)
+        if tab:
+            tab.set_transcription_complete(text)
+
+    def set_emotion_transcription_error(self, emotion: str, error_message: str):
+        """
+        QA6: Set transcription error for an emotion tab.
+
+        Args:
+            emotion: Emotion ID
+            error_message: Error message
+        """
+        tab = self._emotion_tabs.get(emotion)
+        if tab:
+            tab.set_transcription_error(error_message)
+
+    def get_emotion_transcript(self, emotion: str) -> str:
+        """
+        QA6: Get transcript for an emotion.
+
+        Args:
+            emotion: Emotion ID
+
+        Returns:
+            Transcript text, or empty string
+        """
+        tab = self._emotion_tabs.get(emotion)
+        return tab.get_transcript() if tab else ""
+
+    def get_all_transcripts(self) -> Dict[str, str]:
+        """
+        QA6: Get transcripts for all emotions.
+
+        Returns:
+            Dict mapping emotion ID to transcript text
+        """
+        return {
+            emotion: tab.get_transcript()
+            for emotion, tab in self._emotion_tabs.items()
+            if tab.has_transcript()
+        }

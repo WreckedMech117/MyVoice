@@ -11,11 +11,21 @@ State Machine:
 import asyncio
 import logging
 import gc
+import os
+from pathlib import Path
 from typing import Optional, Dict, Any, Callable
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor
 
 import torch
+
+# HuggingFace Hub for cache detection
+try:
+    from huggingface_hub import try_to_load_from_cache, _CACHED_NO_EXIST
+    HF_HUB_AVAILABLE = True
+except ImportError:
+    HF_HUB_AVAILABLE = False
+    _CACHED_NO_EXIST = None
 
 from myvoice.models.service_enums import ModelState, QwenModelType
 
@@ -84,7 +94,8 @@ class ModelRegistry:
         device: str = "auto",
         dtype: str = "bfloat16",
         models_path: Optional[str] = None,
-        progress_callback: Optional[Callable[[ModelLoadProgress], None]] = None
+        progress_callback: Optional[Callable[[ModelLoadProgress], None]] = None,
+        quality_tier: str = "quality"
     ):
         """
         Initialize the ModelRegistry.
@@ -94,6 +105,7 @@ class ModelRegistry:
             dtype: PyTorch dtype ("bfloat16", "float16", "float32")
             models_path: Optional local path for model weights
             progress_callback: Callback for loading progress updates
+            quality_tier: Model quality tier ("small" or "quality")
         """
         self.logger = logging.getLogger(self.__class__.__name__)
 
@@ -114,6 +126,10 @@ class ModelRegistry:
         self.models_path = models_path
         self._progress_callback = progress_callback
 
+        # Quality tier configuration (Small 0.6B vs Quality 1.7B)
+        from myvoice.models.service_enums import ModelQualityTier
+        self._quality_tier = ModelQualityTier.SMALL if quality_tier == "small" else ModelQualityTier.QUALITY
+
         # Registry state
         self._models: Dict[QwenModelType, ModelInfo] = {}
         self._current_model_type: Optional[QwenModelType] = None
@@ -126,13 +142,50 @@ class ModelRegistry:
             self._models[model_type] = ModelInfo(model_type=model_type)
 
         self.logger.info(
-            f"ModelRegistry initialized: device={self.device}, dtype={dtype}"
+            f"ModelRegistry initialized: device={self.device}, dtype={dtype}, quality_tier={self._quality_tier.value}"
         )
 
     @property
     def current_model_type(self) -> Optional[QwenModelType]:
         """Get the currently loaded model type."""
         return self._current_model_type
+
+    @property
+    def quality_tier(self) -> "ModelQualityTier":
+        """Get the current quality tier."""
+        return self._quality_tier
+
+    async def set_quality_tier(self, tier: str) -> bool:
+        """
+        Set the model quality tier dynamically.
+
+        If a model is currently loaded, it will be unloaded so the next
+        generation request loads the correct tier's model.
+
+        Args:
+            tier: Quality tier ("small" or "quality")
+
+        Returns:
+            bool: True if tier was changed, False if already set to this tier
+        """
+        from myvoice.models.service_enums import ModelQualityTier
+        new_tier = ModelQualityTier.SMALL if tier == "small" else ModelQualityTier.QUALITY
+
+        if self._quality_tier == new_tier:
+            self.logger.debug(f"Quality tier already set to {tier}")
+            return False
+
+        old_tier = self._quality_tier
+        self._quality_tier = new_tier
+        self.logger.info(f"Quality tier changed from {old_tier.value} to {new_tier.value}")
+
+        # Unload current model so next request loads the new tier
+        async with self._lock:
+            if self._current_model_type is not None:
+                self.logger.info(f"Unloading model to apply tier change")
+                await self._unload_model(self._current_model_type)
+
+        return True
 
     def get_model_state(self, model_type: QwenModelType) -> ModelState:
         """Get the state of a specific model."""
@@ -148,11 +201,49 @@ class ModelRegistry:
         """Check if a specific model is loaded and ready."""
         return self._models[model_type].state == ModelState.READY
 
+    def is_model_cached(self, model_type: QwenModelType) -> bool:
+        """
+        Check if a model is cached locally (no download needed).
+
+        Uses HuggingFace Hub cache detection to determine if the model
+        files are already downloaded.
+
+        Args:
+            model_type: The model type to check
+
+        Returns:
+            bool: True if model is cached, False if download is needed
+        """
+        if not HF_HUB_AVAILABLE:
+            # Can't detect, assume not cached to show download message
+            return False
+
+        # Check if using local models path
+        if self.models_path:
+            model_name = model_type.value.split("/")[-1]
+            local_path = Path(self.models_path) / model_name
+            if local_path.exists():
+                return True
+
+        # Check HuggingFace cache for key model files
+        repo_id = model_type.value
+        try:
+            # Check for a key file that indicates model is cached
+            # config.json is always present and downloaded first
+            cached_path = try_to_load_from_cache(repo_id, "config.json")
+            if cached_path is None or cached_path is _CACHED_NO_EXIST:
+                return False
+            return True
+        except Exception as e:
+            self.logger.debug(f"Cache check failed for {repo_id}: {e}")
+            return False
+
     async def ensure_model_loaded(
         self,
         model_type: QwenModelType,
         force_reload: bool = False,
-        checkpoint_path: Optional[str] = None
+        checkpoint_path: Optional[str] = None,
+        tier_override: Optional[str] = None
     ) -> tuple[bool, Optional[str]]:
         """
         Ensure the requested model is loaded, loading it if necessary.
@@ -165,6 +256,9 @@ class ModelRegistry:
             force_reload: Force reload even if already loaded
             checkpoint_path: Optional custom checkpoint path for fine-tuned models.
                            If provided, loads from this path instead of HuggingFace.
+            tier_override: Optional tier to use instead of the configured tier.
+                          Use "quality" or "small" for embedding extraction.
+                          Does NOT change the persistent tier setting.
 
         Returns:
             tuple[bool, Optional[str]]: (success, error_message)
@@ -175,6 +269,10 @@ class ModelRegistry:
                 checkpoint_path == self._current_checkpoint_path or
                 (checkpoint_path is None and self._current_checkpoint_path is None)
             )
+
+            # If tier override specified, force reload to ensure correct tier model
+            if tier_override:
+                force_reload = True
 
             if (self._current_model_type == model_type and
                 self._models[model_type].state == ModelState.READY and
@@ -189,12 +287,13 @@ class ModelRegistry:
                 await self._unload_model(self._current_model_type)
 
             # Load the requested model
-            return await self._load_model(model_type, checkpoint_path=checkpoint_path)
+            return await self._load_model(model_type, checkpoint_path=checkpoint_path, tier_override=tier_override)
 
     async def _load_model(
         self,
         model_type: QwenModelType,
-        checkpoint_path: Optional[str] = None
+        checkpoint_path: Optional[str] = None,
+        tier_override: Optional[str] = None
     ) -> tuple[bool, Optional[str]]:
         """
         Load a model (internal method, must be called with lock held).
@@ -202,6 +301,7 @@ class ModelRegistry:
         Args:
             model_type: The model type to load
             checkpoint_path: Optional custom checkpoint path for fine-tuned models
+            tier_override: Optional tier to use instead of configured tier ("quality" or "small")
 
         Returns:
             tuple[bool, Optional[str]]: (success, error_message)
@@ -217,13 +317,27 @@ class ModelRegistry:
         model_info.checkpoint_path = checkpoint_path
 
         load_source = checkpoint_path if checkpoint_path else model_type.display_name
-        self._emit_progress(model_type, ModelState.LOADING, 0, f"Initializing load from {load_source}...")
+
+        # Check if model is cached (no download needed)
+        is_cached = checkpoint_path is not None or self.is_model_cached(model_type)
+
+        if is_cached:
+            self._emit_progress(model_type, ModelState.LOADING, 0, f"Loading {load_source}...")
+        else:
+            # Model needs to be downloaded - show clear download message
+            self._emit_progress(model_type, ModelState.LOADING, 0, f"Downloading {load_source} (~3.4 GB)...")
+            self.logger.info(f"Model not cached, downloading: {load_source}")
 
         start_time = time.time()
 
         try:
             self.logger.info(f"Loading model: {load_source}")
-            self._emit_progress(model_type, ModelState.LOADING, 10, "Loading model weights...")
+
+            # Update progress message based on cache status
+            if is_cached:
+                self._emit_progress(model_type, ModelState.LOADING, 10, f"Loading {load_source} from cache...")
+            else:
+                self._emit_progress(model_type, ModelState.LOADING, 10, f"Downloading {load_source}... (this may take several minutes)")
 
             # Check if qwen_tts is available
             if Qwen3TTSModel is None:
@@ -233,7 +347,7 @@ class ModelRegistry:
 
             # Load model in thread pool to avoid blocking
             loop = asyncio.get_event_loop()
-            load_func = partial(self._load_model_sync, model_type, checkpoint_path)
+            load_func = partial(self._load_model_sync, model_type, checkpoint_path, tier_override)
             model = await loop.run_in_executor(
                 self._executor,
                 load_func
@@ -269,7 +383,8 @@ class ModelRegistry:
     def _load_model_sync(
         self,
         model_type: QwenModelType,
-        checkpoint_path: Optional[str] = None
+        checkpoint_path: Optional[str] = None,
+        tier_override: Optional[str] = None
     ) -> Any:
         """
         Synchronously load a model (runs in thread pool).
@@ -278,10 +393,20 @@ class ModelRegistry:
             model_type: The model type to load
             checkpoint_path: Optional custom checkpoint path for fine-tuned models.
                            If provided, loads from this path instead of HuggingFace model.
+            tier_override: Optional tier to use instead of configured tier ("quality" or "small")
 
         Returns:
             The loaded Qwen3TTSModel instance
         """
+        from myvoice.models.service_enums import ModelQualityTier
+
+        # Determine which tier to use
+        if tier_override:
+            effective_tier = ModelQualityTier.SMALL if tier_override == "small" else ModelQualityTier.QUALITY
+            self.logger.info(f"Using tier override: {tier_override}")
+        else:
+            effective_tier = self._quality_tier
+
         # Determine model source
         if checkpoint_path:
             # Load from custom fine-tuned checkpoint
@@ -289,14 +414,20 @@ class ModelRegistry:
             self.logger.info(f"Loading fine-tuned checkpoint: {checkpoint_path}")
         else:
             # Load standard model from HuggingFace or local cache
-            model_id = model_type.value
+            # Use quality tier to determine model size (0.6B or 1.7B)
+            try:
+                model_id = model_type.get_model_id(effective_tier)
+            except ValueError as e:
+                # Model not available in this tier (e.g., VoiceDesign in Small tier)
+                self.logger.warning(f"{e}, falling back to Quality tier")
+                model_id = model_type.get_model_id(ModelQualityTier.QUALITY)
+
             if self.models_path:
                 # Use local path if provided
-                import os
                 model_path = os.path.join(self.models_path, model_id.split("/")[-1])
                 model_id = model_path
 
-        self.logger.debug(f"Loading from: {model_id}")
+        self.logger.debug(f"Loading from: {model_id} (tier: {effective_tier.value})")
 
         # Determine attention implementation
         attn_impl = None

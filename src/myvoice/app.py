@@ -200,8 +200,11 @@ class MyVoiceApp(QObject):
             await self._auto_detect_and_configure_vb_cable()
 
             # Initialize TTS Service (Qwen3-TTS)
+            # Use quality tier from settings (Small 0.6B vs Quality 1.7B)
             from myvoice.services.qwen_tts_service import QwenTTSService
-            self._tts_service = QwenTTSService()
+            quality_tier = getattr(self._app_settings, 'model_quality_tier', 'quality') if self._app_settings else 'quality'
+            self.logger.info(f"Initializing TTS service with quality tier: {quality_tier}")
+            self._tts_service = QwenTTSService(quality_tier=quality_tier)
             self.register_service("tts", self._tts_service)
 
             # Set up health status callback BEFORE starting service
@@ -1870,8 +1873,21 @@ class MyVoiceApp(QObject):
         self.logger.info("Settings changed, saving and applying updates")
 
         try:
+            # Check if model quality tier changed (before updating stored settings)
+            old_tier = getattr(self._app_settings, 'model_quality_tier', 'quality') if self._app_settings else 'quality'
+            new_tier = getattr(new_settings, 'model_quality_tier', 'quality')
+
             # Update stored settings
             self._app_settings = new_settings
+
+            # Handle model quality tier change (no restart required)
+            if old_tier != new_tier and hasattr(self, '_tts_service') and self._tts_service:
+                self.logger.info(f"Model quality tier changed from '{old_tier}' to '{new_tier}'")
+                self._run_async_task(
+                    self._tts_service.set_quality_tier(new_tier),
+                    on_success=lambda changed: self.logger.info(f"Quality tier updated: {'changed' if changed else 'no change'}"),
+                    on_error=lambda error: self.logger.error(f"Failed to update quality tier: {error}")
+                )
 
             # Update configuration manager's settings and save
             if hasattr(self, '_config_manager'):

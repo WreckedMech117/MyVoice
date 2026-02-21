@@ -416,6 +416,8 @@ class VoiceDesignStudioDialog(QDialog):
         self.emotions_panel.emotion_variant_selected.connect(self._on_emotion_variant_selected)
         self.emotions_panel.proceed_to_refinement_requested.connect(self._on_proceed_to_refinement)
         self.emotions_panel.neutral_selection_changed.connect(self._on_neutral_selection_changed)
+        # QA6: Connect transcription request for per-emotion transcripts
+        self.emotions_panel.transcription_requested.connect(self._on_emotion_transcribe_requested)
 
         self.tab_widget.addTab(self.emotions_panel, "Emotions")
 
@@ -934,6 +936,11 @@ class VoiceDesignStudioDialog(QDialog):
         self.refinement_panel.set_samples(samples)
         self.refinement_panel.set_voice_description(description)
 
+        # Set current tier for dual-tier extraction UI
+        if self._tts_service:
+            current_tier = self._tts_service.get_quality_tier()
+            self.refinement_panel.set_current_tier(current_tier)
+
         # QA Round 2 Item #2: Restore voice name after clear()
         if existing_voice_name:
             self.refinement_panel.set_voice_name(existing_voice_name)
@@ -952,6 +959,7 @@ class VoiceDesignStudioDialog(QDialog):
         Handle batch extraction request from refinement panel.
 
         Extracts embeddings for all selected emotion samples sequentially.
+        Supports dual-tier extraction when the checkbox is enabled.
         """
         self.logger.info("Batch extraction requested")
 
@@ -965,34 +973,63 @@ class VoiceDesignStudioDialog(QDialog):
             self.refinement_panel.set_extraction_error("Voice service not available")
             return
 
+        # Determine which tiers to extract
+        current_tier = self._tts_service.get_quality_tier()
+        current_tier_short = "1.7" if current_tier == "quality" else "0.6"
+        other_tier = "small" if current_tier == "quality" else "quality"
+        other_tier_short = "0.6" if current_tier == "quality" else "1.7"
+
+        # Build extraction tasks: list of (emotion, tier, tier_short)
+        extraction_tasks = []
+        for emotion in emotions:
+            # Always extract for current tier first
+            extraction_tasks.append((emotion, current_tier, current_tier_short))
+            # Add other tier if dual extraction is enabled
+            if self.refinement_panel.is_dual_tier_enabled():
+                extraction_tasks.append((emotion, other_tier, other_tier_short))
+
         # Start extraction
-        self.refinement_panel.set_extracting(True, "Starting extraction...")
+        tier_msg = "both tiers" if self.refinement_panel.is_dual_tier_enabled() else f"{current_tier_short} tier"
+        self.refinement_panel.set_extracting(True, f"Starting extraction ({tier_msg})...")
 
         self._batch_extraction_state = {
-            'emotions': emotions,
+            'tasks': extraction_tasks,
             'current_index': 0,
-            'total': len(emotions),
-            'cancelled': False
+            'total': len(extraction_tasks),
+            'emotions': emotions,  # For tracking per-emotion completion
+            'completed_emotions': set(),  # Track which emotions are fully done
+            'cancelled': False,
+            'dual_tier': self.refinement_panel.is_dual_tier_enabled(),
+            'current_tier': current_tier,
+            'current_tier_short': current_tier_short
         }
 
         self._extract_next_emotion_embedding()
 
     def _extract_next_emotion_embedding(self):
-        """Extract embedding for the next emotion in the batch."""
+        """Extract embedding for the next task in the batch."""
         state = getattr(self, '_batch_extraction_state', None)
         if not state or state['cancelled'] or state['current_index'] >= state['total']:
             self._finish_batch_extraction()
             return
 
-        emotions = state['emotions']
+        tasks = state['tasks']
         index = state['current_index']
-        emotion = emotions[index]
+        emotion, tier, tier_short = tasks[index]
 
-        self.logger.debug(f"Extracting embedding for {emotion} ({index + 1}/{state['total']})")
+        # Calculate display progress based on emotions, not individual tier tasks
+        emotions_count = len(state['emotions'])
+        emotion_index = state['emotions'].index(emotion) + 1
+        tier_suffix = f" ({tier_short})" if state['dual_tier'] else ""
 
-        # Update UI
-        self.refinement_panel.set_extraction_progress(index + 1, state['total'], emotion)
-        self.refinement_panel.set_emotion_extracting(emotion)
+        self.logger.debug(f"Extracting embedding for {emotion}{tier_suffix} ({index + 1}/{state['total']})")
+
+        # Update UI - show emotion progress
+        self.refinement_panel.set_extraction_progress(emotion_index, emotions_count, f"{emotion}{tier_suffix}")
+
+        # Only mark as extracting on first tier for this emotion
+        if emotion not in state['completed_emotions']:
+            self.refinement_panel.set_emotion_extracting(emotion)
 
         # Get audio path for this emotion
         audio_paths = self.refinement_panel.get_audio_paths()
@@ -1003,47 +1040,74 @@ class VoiceDesignStudioDialog(QDialog):
             self._on_emotion_extraction_failed(Exception(f"Audio not found"), emotion)
             return
 
-        # Run async extraction
+        # Run async extraction with tier
         self._run_async_task(
-            self._extract_emotion_embedding(emotion, audio_path),
+            self._extract_emotion_embedding(emotion, audio_path, tier, tier_short),
             on_success=self._on_emotion_extraction_complete,
             on_error=lambda e: self._on_emotion_extraction_failed(e, emotion)
         )
 
-    async def _extract_emotion_embedding(self, emotion: str, audio_path: Path) -> dict:
+    async def _extract_emotion_embedding(
+        self,
+        emotion: str,
+        audio_path: Path,
+        tier: str = None,
+        tier_short: str = None
+    ) -> dict:
         """
-        Extract embedding for a single emotion.
+        Extract embedding for a single emotion and tier.
 
         Args:
             emotion: Emotion ID
             audio_path: Path to the audio sample
+            tier: Quality tier ("quality" or "small") - if None, uses current tier
+            tier_short: Tier display string ("1.7" or "0.6") - if None, derived from tier
 
         Returns:
-            Dictionary with emotion and embedding_path
+            Dictionary with emotion, tier, and embedding_path
         """
         import torch
 
-        self.logger.debug(f"Extracting embedding from {audio_path}")
+        tier_suffix = f" ({tier_short})" if tier_short else ""
+        self.logger.debug(f"Extracting embedding from {audio_path}{tier_suffix}")
 
-        # QA8: Get ref_text from session data - required for embedding extraction
-        # Priority: clone_transcript (Clone workflow) > preview_text (From Scratch workflow)
+        # QA6: Get ref_text - priority order:
+        # 1. Per-emotion transcript from Emotions panel (for uploaded samples with different audio per emotion)
+        # 2. clone_transcript from session (Clone workflow - same audio for all)
+        # 3. preview_text from session (From Scratch workflow - generated audio)
         ref_text = ""
-        session_data = self._session_manager.load_session_data()
-        if session_data:
-            if session_data.get("clone_transcript"):
-                ref_text = session_data["clone_transcript"]
-                self.logger.info(f"Using clone transcript for {emotion} extraction: {ref_text[:50]}...")
-            elif session_data.get("preview_text"):
-                ref_text = session_data["preview_text"]
-                self.logger.info(f"Using preview text for {emotion} extraction: {ref_text[:50]}...")
+
+        # First, try per-emotion transcript from emotions panel
+        emotion_transcript = self.emotions_panel.get_emotion_transcript(emotion)
+        if emotion_transcript:
+            ref_text = emotion_transcript
+            self.logger.info(f"Using per-emotion transcript for {emotion}{tier_suffix} extraction: {ref_text[:50]}...")
+        else:
+            # Fall back to session data
+            session_data = self._session_manager.load_session_data()
+            if session_data:
+                if session_data.get("clone_transcript"):
+                    ref_text = session_data["clone_transcript"]
+                    self.logger.info(f"Using clone transcript for {emotion}{tier_suffix} extraction: {ref_text[:50]}...")
+                elif session_data.get("preview_text"):
+                    ref_text = session_data["preview_text"]
+                    self.logger.info(f"Using preview text for {emotion}{tier_suffix} extraction: {ref_text[:50]}...")
 
         if not ref_text:
-            raise ValueError(f"No ref_text available for {emotion} extraction. Please ensure preview text is provided.")
+            raise ValueError(f"No ref_text available for {emotion} extraction. Please ensure transcript or preview text is provided.")
 
-        voice_clone_prompt = await self._tts_service.create_voice_clone_prompt(
-            ref_audio=audio_path,
-            ref_text=ref_text
-        )
+        # Extract embedding using tier-specific method if tier is specified
+        if tier:
+            voice_clone_prompt = await self._tts_service.create_voice_clone_prompt_for_tier(
+                ref_audio=audio_path,
+                ref_text=ref_text,
+                tier=tier
+            )
+        else:
+            voice_clone_prompt = await self._tts_service.create_voice_clone_prompt(
+                ref_audio=audio_path,
+                ref_text=ref_text
+            )
 
         # Move tensors to CPU before saving for cross-device compatibility
         if voice_clone_prompt.ref_code is not None:
@@ -1051,22 +1115,30 @@ class VoiceDesignStudioDialog(QDialog):
         if voice_clone_prompt.ref_spk_embedding is not None:
             voice_clone_prompt.ref_spk_embedding = voice_clone_prompt.ref_spk_embedding.cpu()
 
-        # Save embedding to session directory (emotion-specific path)
-        embedding_path = self._session_manager.get_emotion_embedding_path(emotion)
+        # Save embedding to tier-specific path
+        embedding_path = self._session_manager.get_emotion_embedding_path(emotion, tier=tier_short)
         torch.save(voice_clone_prompt, str(embedding_path))
+
+        # Copy source audio for fallback (once per emotion, not per tier)
+        source_audio_path = self._session_manager.get_emotion_source_audio_path(emotion)
+        if not source_audio_path.exists():
+            shutil.copy2(audio_path, source_audio_path)
+            self.logger.debug(f"Copied source audio to {source_audio_path}")
 
         # Verify save was successful by reloading
         try:
             verify_prompt = torch.load(str(embedding_path), map_location='cpu', weights_only=False)
             if verify_prompt.ref_spk_embedding is None:
                 raise ValueError("Embedding verification failed: ref_spk_embedding is None")
-            self.logger.info(f"Saved and verified {emotion} embedding to {embedding_path}")
+            self.logger.info(f"Saved and verified {emotion}{tier_suffix} embedding to {embedding_path}")
         except Exception as verify_error:
             self.logger.error(f"Embedding verification failed: {verify_error}")
-            raise RuntimeError(f"Failed to save {emotion} embedding correctly: {verify_error}")
+            raise RuntimeError(f"Failed to save {emotion}{tier_suffix} embedding correctly: {verify_error}")
 
         return {
             'emotion': emotion,
+            'tier': tier,
+            'tier_short': tier_short,
             'embedding_path': embedding_path
         }
 
@@ -1077,14 +1149,35 @@ class VoiceDesignStudioDialog(QDialog):
             return
 
         emotion = result['emotion']
+        tier_short = result.get('tier_short', '')
         embedding_path = result['embedding_path']
 
-        self.logger.debug(f"{emotion} embedding extraction complete")
+        tier_suffix = f" ({tier_short})" if tier_short else ""
+        self.logger.debug(f"{emotion}{tier_suffix} embedding extraction complete")
 
-        # Update UI
-        self.refinement_panel.set_emotion_complete(emotion, embedding_path)
+        # Check if this is the last tier for this emotion
+        current_index = state['current_index']
+        tasks = state['tasks']
 
-        # Move to next emotion
+        # Look ahead to see if next task is same emotion (different tier)
+        is_last_tier_for_emotion = True
+        if current_index + 1 < len(tasks):
+            next_emotion, _, _ = tasks[current_index + 1]
+            if next_emotion == emotion:
+                is_last_tier_for_emotion = False
+
+        # Only mark emotion complete in UI when all tiers are done
+        if is_last_tier_for_emotion:
+            # Use current tier's embedding path for UI display
+            current_tier_short = state.get('current_tier_short', '1.7')
+            current_tier_embedding = self._session_manager.get_emotion_embedding_path(
+                emotion, tier=current_tier_short
+            )
+            self.refinement_panel.set_emotion_complete(emotion, current_tier_embedding)
+            state['completed_emotions'].add(emotion)
+            self.logger.info(f"{emotion} fully extracted for all tiers")
+
+        # Move to next task
         state['current_index'] += 1
         self._extract_next_emotion_embedding()
 
@@ -1230,30 +1323,52 @@ class VoiceDesignStudioDialog(QDialog):
             # Create voice directory
             save_dir.mkdir(parents=True, exist_ok=True)
 
-            # Get paths from refinement panel
-            embedding_paths = self.refinement_panel.get_embedding_paths()
+            # Get audio paths from refinement panel
             audio_paths = self.refinement_panel.get_audio_paths()
+
+            # Determine which tiers were extracted
+            tiers_extracted = []
+            current_tier = "quality"
+            if self._tts_service:
+                current_tier = self._tts_service.get_quality_tier()
+            current_tier_short = "1.7" if current_tier == "quality" else "0.6"
+            tiers_extracted.append(current_tier_short)
+
+            # Check if dual-tier extraction was done by looking for other tier embeddings
+            other_tier_short = "0.6" if current_tier_short == "1.7" else "1.7"
+            # Check first emotion for other tier embedding
+            if selected_emotions:
+                other_tier_path = self._session_manager.get_emotion_embedding_path(
+                    selected_emotions[0], tier=other_tier_short
+                )
+                if other_tier_path.exists():
+                    tiers_extracted.append(other_tier_short)
+
+            self.logger.debug(f"Tiers to save: {tiers_extracted}")
 
             # Copy embeddings and audio for each emotion
             for emotion in selected_emotions:
-                if emotion in embedding_paths:
-                    # Create emotion subfolder
-                    emotion_dir = save_dir / emotion
-                    emotion_dir.mkdir(exist_ok=True)
+                # Create emotion subfolder
+                emotion_dir = save_dir / emotion
+                emotion_dir.mkdir(exist_ok=True)
 
-                    # Copy embedding
-                    src_embedding = embedding_paths[emotion]
-                    if src_embedding and src_embedding.exists():
-                        dest_embedding = emotion_dir / "embedding.pt"
+                # Copy tier-specific embeddings
+                for tier_short in tiers_extracted:
+                    src_embedding = self._session_manager.get_emotion_embedding_path(emotion, tier=tier_short)
+                    if src_embedding.exists():
+                        # Create tier subfolder
+                        tier_dir = emotion_dir / tier_short
+                        tier_dir.mkdir(exist_ok=True)
+                        dest_embedding = tier_dir / "embedding.pt"
                         shutil.copy2(src_embedding, dest_embedding)
-                        self.logger.debug(f"Copied {emotion} embedding")
+                        self.logger.debug(f"Copied {emotion}/{tier_short} embedding")
 
-                    # Copy source audio
-                    src_audio = audio_paths.get(emotion)
-                    if src_audio and src_audio.exists():
-                        dest_audio = emotion_dir / "source_audio.wav"
-                        shutil.copy2(src_audio, dest_audio)
-                        self.logger.debug(f"Copied {emotion} source audio")
+                # Copy source audio (shared at emotion level)
+                src_source_audio = self._session_manager.get_emotion_source_audio_path(emotion)
+                if src_source_audio.exists():
+                    dest_source_audio = emotion_dir / "source_audio.wav"
+                    shutil.copy2(src_source_audio, dest_source_audio)
+                    self.logger.debug(f"Copied {emotion} source audio")
 
             # Copy preview audio if exists
             preview_path = self._session_manager.session_dir / "refinement_preview.wav"
@@ -1261,7 +1376,7 @@ class VoiceDesignStudioDialog(QDialog):
                 dest_preview = save_dir / "preview.wav"
                 shutil.copy2(preview_path, dest_preview)
 
-            # Create metadata.json with Emotion Variants schema (v2.0)
+            # Create metadata.json with tier-aware schema (v3.0)
             description = self.refinement_panel.get_voice_description()
 
             # Get transcription (ref_text) for TTS generation
@@ -1271,13 +1386,19 @@ class VoiceDesignStudioDialog(QDialog):
             if session_data:
                 transcription = session_data.get("clone_transcript") or session_data.get("preview_text")
 
+            # Build available_tiers mapping: {emotion: [tiers]}
+            available_tiers = {}
+            for emotion in selected_emotions:
+                available_tiers[emotion] = tiers_extracted
+
             metadata = {
-                "version": "2.0",
+                "version": "3.0",
                 "name": voice_name,
                 "description": description,
                 "transcription": transcription,  # ref_text for TTS generation
                 "voice_type": "embedding",
                 "available_emotions": selected_emotions,
+                "available_tiers": available_tiers,
                 "emotion_capable": True,
                 "created_at": datetime.now().isoformat(),
                 "updated_at": datetime.now().isoformat(),
@@ -1538,6 +1659,79 @@ class VoiceDesignStudioDialog(QDialog):
         # Switch to Emotions tab (index 1)
         self.tab_widget.setCurrentIndex(1)
         self.logger.info("Switched to Emotions tab from Clone tab")
+
+    # =========================================================================
+    # QA6: Per-Emotion Transcription Handlers
+    # =========================================================================
+
+    def _on_emotion_transcribe_requested(self, emotion: str, file_path: str):
+        """
+        QA6: Handle transcription request from Emotions tab.
+
+        Args:
+            emotion: Emotion ID (e.g., "neutral", "happy")
+            file_path: Path to the audio file to transcribe
+        """
+        self.logger.info(f"Emotion transcription requested for {emotion}: {file_path}")
+
+        # Try to get whisper_service from parent if not set
+        if not self._whisper_service:
+            self.logger.debug("Whisper service not set, trying to get from parent")
+            parent = self.parent()
+            if parent and hasattr(parent, 'whisper_service') and parent.whisper_service:
+                self._whisper_service = parent.whisper_service
+                self.logger.info("Got whisper_service from parent")
+
+        # Check if whisper service is available
+        if not self._whisper_service:
+            self.logger.error("Whisper service not available")
+            self.emotions_panel.set_emotion_transcription_error(
+                emotion, "Transcription service not available"
+            )
+            return
+
+        # Check if service is running
+        try:
+            if hasattr(self._whisper_service, 'is_running') and not self._whisper_service.is_running():
+                self.logger.error("Whisper service not running")
+                self.emotions_panel.set_emotion_transcription_error(
+                    emotion, "Transcription service is still initializing"
+                )
+                return
+        except Exception as e:
+            self.logger.warning(f"Could not check whisper service status: {e}")
+
+        # Start transcription
+        self.emotions_panel.set_emotion_transcribing(emotion, True, "Transcribing...")
+
+        # Run async transcription with emotion context
+        self._run_async_task(
+            self._transcribe_audio(file_path),
+            on_success=lambda text: self._on_emotion_transcription_complete(emotion, text),
+            on_error=lambda error: self._on_emotion_transcription_failed(emotion, error)
+        )
+
+    def _on_emotion_transcription_complete(self, emotion: str, text: str):
+        """
+        QA6: Handle successful emotion transcription.
+
+        Args:
+            emotion: Emotion ID
+            text: Transcribed text
+        """
+        self.logger.info(f"Emotion transcription complete for {emotion}: {len(text)} characters")
+        self.emotions_panel.set_emotion_transcription_complete(emotion, text)
+
+    def _on_emotion_transcription_failed(self, emotion: str, error: Exception):
+        """
+        QA6: Handle emotion transcription failure.
+
+        Args:
+            emotion: Emotion ID
+            error: The exception that occurred
+        """
+        self.logger.error(f"Emotion transcription failed for {emotion}: {error}")
+        self.emotions_panel.set_emotion_transcription_error(emotion, str(error))
 
     # =========================================================================
     # Footer

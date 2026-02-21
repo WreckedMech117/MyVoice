@@ -21,7 +21,7 @@ from enum import Enum, auto
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QGroupBox, QLineEdit, QProgressBar, QScrollArea,
-    QFrame, QSizePolicy
+    QFrame, QSizePolicy, QCheckBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QUrl
 from PyQt6.QtGui import QFont
@@ -344,6 +344,10 @@ class RefinementPanel(QWidget):
 
     def _create_extract_section(self, parent_layout: QVBoxLayout):
         """Create the extract button section."""
+        # QA6: Dual-tier extraction option - PROMINENT placement BEFORE extract button
+        self._create_dual_tier_option(parent_layout)
+
+        # Main extract row
         extract_layout = QHBoxLayout()
         extract_layout.setSpacing(12)
 
@@ -370,6 +374,73 @@ class RefinementPanel(QWidget):
         extract_layout.addWidget(self.extract_button)
 
         parent_layout.addLayout(extract_layout)
+
+    def _create_dual_tier_option(self, parent_layout: QVBoxLayout):
+        """QA6: Create prominent dual-tier extraction option."""
+        # Styled frame to make option visually prominent (theme-aware)
+        self.dual_tier_frame = QFrame()
+        self.dual_tier_frame.setObjectName("dual_tier_frame")
+        self.dual_tier_frame.setFrameShape(QFrame.Shape.Box)
+        self.dual_tier_frame.setFrameShadow(QFrame.Shadow.Raised)
+        self.dual_tier_frame.setLineWidth(2)
+
+        frame_layout = QVBoxLayout(self.dual_tier_frame)
+        frame_layout.setContentsMargins(10, 8, 10, 8)
+        frame_layout.setSpacing(4)
+
+        # Header row with icon and title
+        header_layout = QHBoxLayout()
+        header_layout.setSpacing(6)
+
+        # Icon label
+        icon_label = QLabel("\u2699")  # Gear icon
+        icon_label.setStyleSheet("font-size: 14px;")
+        header_layout.addWidget(icon_label)
+
+        # Title label
+        title_label = QLabel("Multi-Tier Compatibility")
+        title_label.setObjectName("dual_tier_title")
+        title_font = QFont()
+        title_font.setBold(True)
+        title_label.setFont(title_font)
+        header_layout.addWidget(title_label)
+
+        header_layout.addStretch()
+
+        # Current tier indicator
+        self._current_tier_label = QLabel("")
+        self._current_tier_label.setObjectName("current_tier_label")
+        self._current_tier_label.setStyleSheet("font-size: 11px; font-style: italic;")
+        header_layout.addWidget(self._current_tier_label)
+
+        frame_layout.addLayout(header_layout)
+
+        # Checkbox row
+        checkbox_layout = QHBoxLayout()
+        checkbox_layout.setSpacing(8)
+
+        self.dual_tier_checkbox = QCheckBox("Extract for BOTH model tiers (Quality + Small)")
+        self.dual_tier_checkbox.setObjectName("dual_tier_checkbox")
+        self.dual_tier_checkbox.setToolTip(
+            "Extract embeddings for both 1.7B (Quality) and 0.6B (Small) model tiers.\n"
+            "This ensures your voice works when switching between model sizes."
+        )
+        self.dual_tier_checkbox.setChecked(False)
+        checkbox_font = QFont()
+        checkbox_font.setPointSize(checkbox_font.pointSize())
+        self.dual_tier_checkbox.setFont(checkbox_font)
+        checkbox_layout.addWidget(self.dual_tier_checkbox)
+
+        checkbox_layout.addStretch()
+
+        frame_layout.addLayout(checkbox_layout)
+
+        # Recommendation note
+        note_label = QLabel("\u2714 Recommended for maximum voice compatibility")
+        note_label.setStyleSheet("font-size: 10px; margin-left: 20px;")
+        frame_layout.addWidget(note_label)
+
+        parent_layout.addWidget(self.dual_tier_frame)
 
     def _create_preview_section(self, parent_layout: QVBoxLayout):
         """Create the preview section."""
@@ -510,6 +581,11 @@ class RefinementPanel(QWidget):
         self.back_button.setAccessibleName("Back to Emotions")
         self.back_button.setAccessibleDescription(
             "Return to the Emotions tab to modify selections"
+        )
+
+        self.dual_tier_checkbox.setAccessibleName("Extract for both model tiers")
+        self.dual_tier_checkbox.setAccessibleDescription(
+            "When checked, extracts embeddings for both 1.7B Quality and 0.6B Small models"
         )
 
     def _on_extract_clicked(self):
@@ -888,8 +964,36 @@ class RefinementPanel(QWidget):
         self.preview_status.setText("")
         self.voice_name_edit.clear()
         self.save_status.setText("")
+        # Don't reset dual_tier_checkbox - preserve user preference
 
         self._update_extract_button_state()
         self._update_save_button_state()
 
         self.logger.debug("RefinementPanel cleared")
+
+    # Dual-tier extraction methods
+
+    def is_dual_tier_enabled(self) -> bool:
+        """Check if dual-tier extraction is enabled."""
+        return self.dual_tier_checkbox.isChecked()
+
+    def set_dual_tier_enabled(self, enabled: bool):
+        """Set dual-tier extraction checkbox state."""
+        self.dual_tier_checkbox.setChecked(enabled)
+
+    def set_current_tier(self, tier: str):
+        """
+        Set the current tier indicator label.
+
+        Args:
+            tier: Current tier string - "quality" or "small"
+        """
+        tier_display = "1.7B Quality" if tier == "quality" else "0.6B Small"
+        other_tier = "0.6B Small" if tier == "quality" else "1.7B Quality"
+        self._current_tier_label.setText(f"Current: {tier_display}")
+        self.dual_tier_checkbox.setToolTip(
+            f"Extract embeddings for both model tiers.\n"
+            f"Current tier: {tier_display}\n"
+            f"Other tier: {other_tier}\n\n"
+            f"This ensures voice compatibility when switching between model sizes."
+        )

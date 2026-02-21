@@ -370,6 +370,7 @@ class QwenTTSService(BaseService):
         models_path: Optional[str] = None,
         cache_dir: Optional[Path] = None,
         max_concurrent_requests: int = 1,
+        quality_tier: str = "quality",
     ):
         """
         Initialize the Qwen TTS service.
@@ -381,6 +382,7 @@ class QwenTTSService(BaseService):
             models_path: Optional local path for model weights
             cache_dir: Directory for caching generated audio
             max_concurrent_requests: Maximum concurrent TTS requests (default 1)
+            quality_tier: Model quality tier ("small" or "quality")
         """
         super().__init__("QwenTTSService")
 
@@ -394,7 +396,8 @@ class QwenTTSService(BaseService):
             device=device,
             dtype=dtype,
             models_path=models_path,
-            progress_callback=self._on_model_progress
+            progress_callback=self._on_model_progress,
+            quality_tier=quality_tier
         )
 
         # Configuration
@@ -417,6 +420,11 @@ class QwenTTSService(BaseService):
         self._model_loading_callback: Optional[Callable[[str], None]] = None
         self._model_ready_callback: Optional[Callable[[str], None]] = None
         self._health_status_callback: Optional[Callable[[ServiceHealthStatus, Optional[str]], None]] = None
+
+        # Track last model state for replay when UI connects (Fix: startup indicator timing)
+        self._last_model_loading_message: Optional[str] = None
+        self._last_model_ready_name: Optional[str] = None
+        self._is_model_loading: bool = False
 
         # Generation state
         self._generation_state = GenerationState.IDLE
@@ -1025,6 +1033,62 @@ class QwenTTSService(BaseService):
 
             return prompt
 
+    async def create_voice_clone_prompt_for_tier(
+        self,
+        ref_audio: Path,
+        ref_text: str,
+        tier: str,
+    ) -> Any:
+        """
+        Create a reusable voice clone prompt for a specific model tier.
+
+        This is used by Voice Design Studio to extract embeddings for both
+        1.7B and 0.6B model tiers, regardless of the current tier setting.
+
+        Args:
+            ref_audio: Path to reference audio file (3+ seconds recommended)
+            ref_text: Transcript of reference audio
+            tier: Target tier - "quality" (1.7B) or "small" (0.6B)
+
+        Returns:
+            Voice clone prompt tensor with correct dimensions for the specified tier
+
+        Raises:
+            RuntimeError: If model loading fails or prompt creation fails
+        """
+        tier_display = "1.7B" if tier == "quality" else "0.6B"
+        self.logger.info(f"Creating voice clone prompt for {tier_display} tier from {ref_audio}")
+
+        # Load Base model with tier override
+        async with self._request_semaphore:
+            success, error = await self._model_registry.ensure_model_loaded(
+                QwenModelType.BASE,
+                tier_override=tier
+            )
+            if not success:
+                raise RuntimeError(f"Failed to load {tier_display} Base model: {error}")
+
+            # Get the model
+            model = self._model_registry.get_loaded_model()
+            if model is None:
+                raise RuntimeError(f"{tier_display} Base model not available after loading")
+
+            # Create voice clone prompt in thread pool
+            loop = asyncio.get_event_loop()
+            prompt = await loop.run_in_executor(
+                self._executor,
+                self._create_voice_clone_prompt_sync,
+                model,
+                ref_audio,
+                ref_text
+            )
+
+            if prompt is None:
+                raise RuntimeError("Voice clone prompt creation returned None")
+
+            self.logger.info(f"Created {tier_display} voice clone prompt successfully")
+            return prompt
+
     def _create_voice_clone_prompt_sync(
         self,
         model: Any,
@@ -1342,9 +1406,30 @@ class QwenTTSService(BaseService):
         emotion_info = f" (emotion: {emotion})" if emotion else ""
         self.logger.info(f"Generating with saved embedding: {resolved_path.name}{emotion_info}")
 
-        if streaming:
-            return await self._generate_streaming(request)
-        return await self._generate(request)
+        # Try generation with embedding, fall back to source_audio.wav on tier mismatch
+        try:
+            if streaming:
+                response = await self._generate_streaming(request)
+            else:
+                response = await self._generate(request)
+
+            # Check if generation failed due to embedding dimension mismatch
+            if not response.success and self._is_embedding_tier_mismatch_error(response.error_message):
+                return await self._fallback_to_source_audio(
+                    resolved_path, text, language, streaming,
+                    voice_clone_prompt.ref_text if voice_clone_prompt else None
+                )
+
+            return response
+
+        except RuntimeError as e:
+            # Catch tensor dimension mismatch errors directly
+            if self._is_embedding_tier_mismatch_error(str(e)):
+                return await self._fallback_to_source_audio(
+                    resolved_path, text, language, streaming,
+                    voice_clone_prompt.ref_text if voice_clone_prompt else None
+                )
+            raise
 
     def _resolve_emotion_embedding_path(
         self,
@@ -1352,15 +1437,17 @@ class QwenTTSService(BaseService):
         emotion: Optional[str] = None
     ) -> Path:
         """
-        Resolve the actual embedding file path based on emotion.
+        Resolve the actual embedding file path based on emotion and current model tier.
 
-        Emotion Variants: Supports both legacy single-file and new multi-emotion structures.
+        Supports multi-tier structure (1.7/, 0.6/ subfolders) and legacy single-file structures.
 
-        Path resolution order:
+        Path resolution order (for each emotion, tries current tier first):
         1. If embedding_path is a file that exists, use it directly
-        2. If emotion specified, try {base_dir}/{emotion}/embedding.pt
-        3. Fall back to {base_dir}/neutral/embedding.pt
-        4. Fall back to {base_dir}/embedding.pt (legacy)
+        2. If emotion specified:
+           a. Try {base_dir}/{emotion}/{tier}/embedding.pt (tier-specific)
+           b. Try {base_dir}/{emotion}/embedding.pt (legacy, assumed 1.7B)
+        3. Fall back to neutral with same tier preference
+        4. Fall back to {base_dir}/embedding.pt (legacy root)
         5. Return original path if nothing found (will fail validation later)
 
         Args:
@@ -1381,21 +1468,39 @@ class QwenTTSService(BaseService):
             # Could be a non-existent file path - get parent
             base_dir = embedding_path.parent
 
+        # Get current model tier for tier-aware resolution
+        current_tier = self._model_registry.quality_tier
+        tier_folder = "1.7" if current_tier.value == "quality" else "0.6"
+
         # Valid emotions for Emotion Variants
         valid_emotions = ["neutral", "happy", "sad", "angry", "flirtatious"]
 
         # Try emotion-specific path first
         if emotion and emotion in valid_emotions:
+            # Try tier-specific path first: {emotion}/{tier}/embedding.pt
+            tier_path = base_dir / emotion / tier_folder / "embedding.pt"
+            if tier_path.exists():
+                self.logger.debug(f"Using tier-specific embedding: {emotion}/{tier_folder}")
+                return tier_path
+
+            # Fall back to legacy emotion path (assumed 1.7B): {emotion}/embedding.pt
             emotion_path = base_dir / emotion / "embedding.pt"
             if emotion_path.exists():
-                self.logger.debug(f"Using emotion-specific embedding: {emotion}")
+                self.logger.debug(f"Using legacy emotion embedding: {emotion} (assuming 1.7B)")
                 return emotion_path
 
-        # Fall back to neutral
+        # Fall back to neutral with tier preference
         if emotion != "neutral":  # Avoid double check
+            # Try tier-specific neutral
+            neutral_tier_path = base_dir / "neutral" / tier_folder / "embedding.pt"
+            if neutral_tier_path.exists():
+                self.logger.debug(f"Falling back to tier-specific neutral: {tier_folder}")
+                return neutral_tier_path
+
+            # Try legacy neutral
             neutral_path = base_dir / "neutral" / "embedding.pt"
             if neutral_path.exists():
-                self.logger.debug(f"Falling back to neutral embedding")
+                self.logger.debug(f"Falling back to legacy neutral embedding")
                 return neutral_path
 
         # Legacy fallback: root embedding.pt
@@ -1407,6 +1512,102 @@ class QwenTTSService(BaseService):
         # Return original path - will fail validation later with clear error
         self.logger.warning(f"No embedding found at {base_dir}")
         return embedding_path
+
+    def _is_embedding_tier_mismatch_error(self, error_message: Optional[str]) -> bool:
+        """
+        Check if an error is caused by embedding dimension mismatch between tiers.
+
+        1.7B models use 2048-dimensional embeddings, 0.6B models use 1024-dimensional.
+        When an embedding from one tier is used with the other, torch.cat fails with
+        a tensor size mismatch error.
+
+        Args:
+            error_message: The error message to check
+
+        Returns:
+            bool: True if this is a tier mismatch error
+        """
+        if not error_message:
+            return False
+
+        # Check for the specific tensor size mismatch pattern
+        # "Expected size 1024 but got size 2048" or vice versa
+        error_lower = error_message.lower()
+        return (
+            "sizes of tensors must match" in error_lower or
+            ("expected size 1024" in error_lower and "2048" in error_lower) or
+            ("expected size 2048" in error_lower and "1024" in error_lower)
+        )
+
+    async def _fallback_to_source_audio(
+        self,
+        embedding_path: Path,
+        text: str,
+        language: str,
+        streaming: bool,
+        ref_text: Optional[str] = None
+    ) -> QwenTTSResponse:
+        """
+        Fall back to real-time voice cloning using source_audio.wav.
+
+        When an embedding is incompatible with the current model tier (dimension mismatch),
+        we fall back to using the source audio file that was saved alongside the embedding.
+
+        Args:
+            embedding_path: Path to the embedding file (used to find source_audio.wav)
+            text: Text to convert to speech
+            language: Language code
+            streaming: Whether to use streaming mode
+            ref_text: Reference text for the source audio (optional, uses x-vector mode if not provided)
+
+        Returns:
+            QwenTTSResponse: Response from voice cloning fallback
+        """
+        # Find source_audio.wav - it should be in the same emotion folder as the embedding
+        # Structure: VoiceName/emotion/embedding.pt and VoiceName/emotion/source_audio.wav
+        emotion_dir = embedding_path.parent
+        source_audio_path = emotion_dir / "source_audio.wav"
+
+        if not source_audio_path.exists():
+            # Try parent directory (in case embedding was in a tier subfolder)
+            source_audio_path = emotion_dir.parent / "source_audio.wav"
+
+        if not source_audio_path.exists():
+            current_tier = self._model_registry.quality_tier.display_name
+            self.logger.error(
+                f"Cannot fall back to source audio - file not found: {source_audio_path}. "
+                f"Embedding is incompatible with {current_tier} tier."
+            )
+            return QwenTTSResponse(
+                success=False,
+                error_message=(
+                    f"Voice embedding incompatible with {current_tier} model tier. "
+                    f"No source audio available for fallback. "
+                    f"Re-extract embeddings for this tier or switch to Quality tier."
+                )
+            )
+
+        current_tier = self._model_registry.quality_tier.display_name
+        self.logger.warning(
+            f"Embedding incompatible with {current_tier} tier - "
+            f"falling back to real-time voice cloning from {source_audio_path.name}"
+        )
+
+        # Use x_vector_only_mode if no ref_text available (slightly lower quality but works)
+        use_xvector = not ref_text
+
+        if use_xvector:
+            self.logger.info("Using x-vector mode for fallback (no reference text available)")
+
+        # Call generate_voice_clone with the source audio
+        return await self.generate_voice_clone(
+            text=text,
+            ref_audio=source_audio_path,
+            ref_text=ref_text or "",
+            language=language,
+            streaming=streaming,
+            x_vector_only_mode=use_xvector
+        )
 
     async def _generate(self, request: QwenTTSRequest) -> QwenTTSResponse:
         """
@@ -2050,11 +2251,24 @@ class QwenTTSService(BaseService):
         # Generate based on model type
         if request.model_type == QwenModelType.CUSTOM_VOICE:
             self.logger.debug(f"Generating with CUSTOM_VOICE: speaker={request.speaker}")
+
+            # Check if current tier supports instruct parameter
+            # 0.6B models don't support emotion/style instructions
+            current_tier = self._model_registry.quality_tier
+            effective_instruct = request.instruct
+            if not request.model_type.supports_instruct_in_tier(current_tier):
+                if request.instruct:
+                    self.logger.info(
+                        f"Ignoring instruct parameter '{request.instruct[:30]}...' - "
+                        f"not supported in {current_tier.display_name} tier"
+                    )
+                effective_instruct = None
+
             wavs, sr = model.generate_custom_voice(
                 text=request.text,
                 language=request.language,
                 speaker=request.speaker,
-                instruct=request.instruct,
+                instruct=effective_instruct,
             )
         elif request.model_type == QwenModelType.VOICE_DESIGN:
             self.logger.debug(f"Generating with VOICE_DESIGN: description={request.voice_description[:50] if request.voice_description else 'None'}...")
@@ -2271,11 +2485,22 @@ class QwenTTSService(BaseService):
             f"[{progress.state.value}] {progress.progress_percent:.0f}% - {progress.message}"
         )
 
-        # Could emit PyQt signal here if integrated
-        if progress.state == ModelState.LOADING and self._model_loading_callback:
-            self._model_loading_callback(progress.message)
-        elif progress.state == ModelState.READY and self._model_ready_callback:
-            self._model_ready_callback(progress.model_type.display_name)
+        # Store state for replay when UI connects (Fix: startup indicator timing)
+        if progress.state == ModelState.LOADING:
+            self._is_model_loading = True
+            self._last_model_loading_message = progress.message
+            self._last_model_ready_name = None
+            if self._model_loading_callback:
+                self._model_loading_callback(progress.message)
+        elif progress.state == ModelState.READY:
+            self._is_model_loading = False
+            self._last_model_loading_message = None
+            self._last_model_ready_name = progress.model_type.display_name
+            if self._model_ready_callback:
+                self._model_ready_callback(progress.model_type.display_name)
+        elif progress.state == ModelState.ERROR:
+            self._is_model_loading = False
+            self._last_model_loading_message = None
 
     # Callback setters
 
@@ -2332,12 +2557,30 @@ class QwenTTSService(BaseService):
         self._audio_chunk_ready_callback = callback
 
     def set_model_loading_callback(self, callback: Callable[[str], None]):
-        """Set callback for model loading start (emits message)."""
+        """
+        Set callback for model loading start (emits message).
+
+        If model is currently loading (e.g., during startup before UI connected),
+        the callback is immediately invoked with the current loading message.
+        """
         self._model_loading_callback = callback
+        # Replay current state if model is loading (Fix: startup indicator timing)
+        if self._is_model_loading and self._last_model_loading_message and callback:
+            self.logger.debug(f"Replaying model loading state to newly connected callback: {self._last_model_loading_message}")
+            callback(self._last_model_loading_message)
 
     def set_model_ready_callback(self, callback: Callable[[str], None]):
-        """Set callback for model ready (emits model name)."""
+        """
+        Set callback for model ready (emits model name).
+
+        If model was loaded before UI connected (e.g., during startup),
+        the callback is immediately invoked with the loaded model name.
+        """
         self._model_ready_callback = callback
+        # Replay ready state if model was loaded during startup (Fix: startup indicator timing)
+        if not self._is_model_loading and self._last_model_ready_name and callback:
+            self.logger.debug(f"Replaying model ready state to newly connected callback: {self._last_model_ready_name}")
+            callback(self._last_model_ready_name)
 
     def set_health_status_callback(
         self,
@@ -2392,6 +2635,28 @@ class QwenTTSService(BaseService):
     def get_current_model_type(self) -> Optional[QwenModelType]:
         """Get the currently loaded model type."""
         return self._model_registry.current_model_type
+
+    async def set_quality_tier(self, tier: str) -> bool:
+        """
+        Set the model quality tier dynamically.
+
+        Unloads the current model if loaded, so the next generation
+        request will load the correct tier's model (lazy loading).
+
+        Args:
+            tier: Quality tier ("small" or "quality")
+
+        Returns:
+            bool: True if tier was changed, False if already set
+        """
+        changed = await self._model_registry.set_quality_tier(tier)
+        if changed:
+            self.logger.info(f"TTS quality tier set to '{tier}' - will take effect on next generation")
+        return changed
+
+    def get_quality_tier(self) -> str:
+        """Get the current quality tier."""
+        return self._model_registry.quality_tier.value
 
     def get_cached_audio_path(self) -> Optional[Path]:
         """Get path to the current cached audio file."""

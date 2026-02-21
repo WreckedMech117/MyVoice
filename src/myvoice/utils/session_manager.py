@@ -22,8 +22,14 @@ Session Directory Structure:
                         selected.wav
                     ... (other emotions)
                 embeddings/           # Extracted embeddings during session
-                    neutral/embedding.pt
-                    happy/embedding.pt
+                    neutral/
+                        1.7/embedding.pt   # 1.7B model tier
+                        0.6/embedding.pt   # 0.6B model tier
+                        source_audio.wav   # Shared source audio
+                    happy/
+                        1.7/embedding.pt
+                        0.6/embedding.pt
+                        source_audio.wav
                     ...
 
 Cleanup Behavior (Story 4.1 REVISED + QA4):
@@ -272,21 +278,46 @@ class SessionManager:
         emotion_dir.mkdir(parents=True, exist_ok=True)
         return emotion_dir / "selected.wav"
 
-    def get_emotion_embedding_path(self, emotion: str) -> Path:
+    def get_emotion_embedding_path(self, emotion: str, tier: str = None) -> Path:
         """
         Get the path for an emotion's extracted embedding.
 
         Emotion Variants: Embeddings are stored during the session for preview.
+        If tier is specified, returns tier-specific path, otherwise returns
+        legacy path for backwards compatibility.
+
+        Args:
+            emotion: Emotion name (e.g., "neutral", "happy")
+            tier: Optional tier string "1.7" or "0.6". If None, returns legacy path.
+
+        Returns:
+            Path to the embedding:
+              - With tier: session_dir/embeddings/{emotion}/{tier}/embedding.pt
+              - Without tier: session_dir/embeddings/{emotion}/embedding.pt (legacy)
+        """
+        if tier:
+            embedding_dir = self._session_dir / "embeddings" / emotion / tier
+        else:
+            embedding_dir = self._session_dir / "embeddings" / emotion
+        embedding_dir.mkdir(parents=True, exist_ok=True)
+        return embedding_dir / "embedding.pt"
+
+    def get_emotion_source_audio_path(self, emotion: str) -> Path:
+        """
+        Get the path for an emotion's source audio file (shared across tiers).
+
+        The source audio is stored at the emotion level, not per-tier, since it's
+        used as fallback when embeddings don't match the current model tier.
 
         Args:
             emotion: Emotion name (e.g., "neutral", "happy")
 
         Returns:
-            Path to the embedding: session_dir/embeddings/{emotion}/embedding.pt
+            Path to source audio: session_dir/embeddings/{emotion}/source_audio.wav
         """
         embedding_dir = self._session_dir / "embeddings" / emotion
         embedding_dir.mkdir(parents=True, exist_ok=True)
-        return embedding_dir / "embedding.pt"
+        return embedding_dir / "source_audio.wav"
 
     def get_existing_emotion_variants(self, emotion: str) -> List[Path]:
         """
@@ -320,9 +351,13 @@ class SessionManager:
         selected_path = self.get_emotion_variants_dir() / emotion / "selected.wav"
         return selected_path.exists()
 
-    def get_existing_emotion_embeddings(self) -> dict:
+    def get_existing_emotion_embeddings(self, tier: str = None) -> dict:
         """
         QA Round 2 Item #6: Get existing emotion embeddings from session.
+
+        Args:
+            tier: Optional tier string "1.7" or "0.6". If specified, looks
+                  for tier-specific embeddings first, then falls back to legacy.
 
         Returns:
             Dict mapping emotion name to embedding Path if exists
@@ -333,7 +368,15 @@ class SessionManager:
 
         result = {}
         for emotion_dir in embeddings_dir.iterdir():
-            if emotion_dir.is_dir():
+            if emotion_dir.is_dir() and emotion_dir.name not in ("1.7", "0.6"):
+                # First try tier-specific path if tier specified
+                if tier:
+                    tier_embedding_path = emotion_dir / tier / "embedding.pt"
+                    if tier_embedding_path.exists():
+                        result[emotion_dir.name] = tier_embedding_path
+                        continue
+
+                # Fall back to legacy path
                 embedding_path = emotion_dir / "embedding.pt"
                 if embedding_path.exists():
                     result[emotion_dir.name] = embedding_path

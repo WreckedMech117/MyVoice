@@ -73,6 +73,11 @@ class AppSettings:
     tts_service_url: str = "http://localhost:9880"
     tts_service_timeout: int = 30
 
+    # TTS Model Quality Tier (Small 0.6B vs Quality 1.7B)
+    # Small: Lower VRAM (~1.2 GB), faster inference
+    # Quality: Higher output quality (~3.4 GB VRAM)
+    model_quality_tier: str = "quality"  # "small" or "quality"
+
     # Audio settings
     enable_audio_monitoring: bool = True
     monitor_device_id: Optional[str] = None
@@ -310,6 +315,17 @@ class AppSettings:
                         severity=ValidationStatus.WARNING
                     ))
 
+            # Validate model quality tier
+            valid_quality_tiers = ["small", "quality"]
+            if self.model_quality_tier not in valid_quality_tiers:
+                warnings.append(ValidationIssue(
+                    field="model_quality_tier",
+                    message=f"Invalid model quality tier '{self.model_quality_tier}', defaulting to 'quality'",
+                    code="INVALID_QUALITY_TIER",
+                    severity=ValidationStatus.WARNING
+                ))
+                self.model_quality_tier = "quality"
+
             # Validate TTS service URL
             if not self.tts_service_url or not self.tts_service_url.strip():
                 issues.append(ValidationIssue(
@@ -430,6 +446,7 @@ class AppSettings:
                 "tray_notification_shown": self.tray_notification_shown,
                 "tts_service_url": self.tts_service_url,
                 "tts_service_timeout": self.tts_service_timeout,
+                "model_quality_tier": self.model_quality_tier,
                 "enable_audio_monitoring": self.enable_audio_monitoring,
                 "monitor_device_id": self.monitor_device_id,
                 "monitor_device_name": self.monitor_device_name,
@@ -486,6 +503,7 @@ class AppSettings:
                 tray_notification_shown=data.get("tray_notification_shown", False),
                 tts_service_url=data.get("tts_service_url", "http://localhost:9880"),
                 tts_service_timeout=data.get("tts_service_timeout", 30),
+                model_quality_tier=data.get("model_quality_tier", "quality"),
                 enable_audio_monitoring=data.get("enable_audio_monitoring", True),
                 monitor_device_id=data.get("monitor_device_id"),
                 monitor_device_name=data.get("monitor_device_name"),
@@ -599,7 +617,7 @@ class AppSettings:
             "selected_voice_profile", "voice_files_directory", "recent_voice_profiles",
             "max_voice_duration", "auto_refresh_interval", "config_directory",
             "log_level", "ui_theme", "always_on_top", "window_geometry",
-            "window_transparency", "tts_service_url",
+            "window_transparency", "tts_service_url", "model_quality_tier",
             "tts_service_timeout", "enable_audio_monitoring", "monitor_device_id",
             "monitor_device_name", "monitor_device_host_api",
             "virtual_microphone_device_id", "virtual_microphone_device_name",

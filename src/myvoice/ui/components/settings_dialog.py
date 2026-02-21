@@ -13,7 +13,8 @@ from typing import Optional, List, Dict, Any
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QPushButton, QComboBox, QLabel, QCheckBox, QSlider, QLineEdit,
-    QSpinBox, QTabWidget, QWidget, QMessageBox, QProgressBar, QFileDialog
+    QSpinBox, QTabWidget, QWidget, QMessageBox, QProgressBar, QFileDialog,
+    QRadioButton
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
@@ -467,6 +468,42 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(voice_group)
 
+        # Model Quality Group (Small 0.6B vs Quality 1.7B)
+        model_group = QGroupBox("Model Quality")
+        model_layout = QVBoxLayout(model_group)
+
+        # Description label
+        model_desc = QLabel(
+            "Choose between smaller, faster models or larger, higher-quality models. "
+            "Changes take effect on the next text generation."
+        )
+        model_desc.setWordWrap(True)
+        model_desc.setProperty("class", "description-label")
+        model_layout.addWidget(model_desc)
+
+        # Model quality radio buttons
+        self.model_quality_small = QRadioButton("Small (0.6B) - Lower VRAM (~1.2 GB), faster inference")
+        self.model_quality_quality = QRadioButton("Quality (1.7B) - Higher quality output (~3.4 GB VRAM)")
+        self.model_quality_quality.setChecked(True)  # Default to quality
+
+        model_layout.addWidget(self.model_quality_small)
+        model_layout.addWidget(self.model_quality_quality)
+
+        # Note about VoiceDesign limitation
+        voice_design_note = QLabel(
+            "Note: Voice Design (create voices from descriptions) is only available in Quality tier."
+        )
+        voice_design_note.setWordWrap(True)
+        voice_design_note.setStyleSheet("color: #888; font-style: italic; margin-top: 4px;")
+        model_layout.addWidget(voice_design_note)
+
+        # Info about when changes take effect
+        tier_info = QLabel("ℹ️ New model loads automatically on next generation (may take a moment).")
+        tier_info.setStyleSheet("color: #5dade2; margin-top: 8px;")
+        model_layout.addWidget(tier_info)
+
+        layout.addWidget(model_group)
+
         # Custom Emotion Group (Story 3.4: FR7)
         emotion_group = QGroupBox("Custom Emotion")
         emotion_layout = QVBoxLayout(emotion_group)
@@ -626,6 +663,12 @@ class SettingsDialog(QDialog):
             if self.current_settings.custom_emotion_text:
                 self.custom_emotion_edit.setText(self.current_settings.custom_emotion_text)
 
+            # Model quality tier
+            if self.current_settings.model_quality_tier == "small":
+                self.model_quality_small.setChecked(True)
+            else:
+                self.model_quality_quality.setChecked(True)
+
             self.logger.debug("Loaded current settings into UI")
 
         except Exception as e:
@@ -699,6 +742,12 @@ class SettingsDialog(QDialog):
             # Custom emotion settings (Story 3.4)
             custom_text = self.custom_emotion_edit.text().strip()
             self.current_settings.custom_emotion_text = custom_text if custom_text else None
+
+            # Model quality tier
+            if self.model_quality_small.isChecked():
+                self.current_settings.model_quality_tier = "small"
+            else:
+                self.current_settings.model_quality_tier = "quality"
 
             self.logger.debug("Saved UI values to current settings")
 

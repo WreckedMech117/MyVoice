@@ -8,7 +8,7 @@ samples with validation for audio format and duration constraints.
 import wave
 import logging
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Dict
 from pathlib import Path
 from enum import Enum
 from datetime import datetime
@@ -125,6 +125,10 @@ class VoiceType(Enum):
 # Emotion Variants: EMBEDDING voices can have multiple embeddings, one per emotion
 VALID_EMOTIONS = ["neutral", "happy", "sad", "angry", "flirtatious"]
 
+# Valid model tiers for multi-tier embedding support
+# Multi-tier: Each emotion can have embeddings for different model sizes
+VALID_TIERS = ["1.7", "0.6"]  # 1.7B and 0.6B model tiers
+
 
 # Bundled speaker metadata for CustomVoice model timbres
 # Task: Integrate 9 Template Timbres into Voice Library
@@ -230,6 +234,9 @@ class VoiceProfile:
     description: Optional[str] = None  # Voice description (for DESIGNED/OPTIMIZED)
     # Emotion Variants: Available emotions for EMBEDDING voices
     available_emotions: List[str] = field(default_factory=lambda: ["neutral"])
+    # Multi-tier: Available model tiers per emotion (e.g., {"neutral": ["1.7", "0.6"]})
+    # Keys are emotion names, values are lists of available tier folders
+    available_tiers: Dict[str, List[str]] = field(default_factory=dict)
 
     def __post_init__(self):
         """Initialize and validate the voice profile."""
@@ -786,6 +793,7 @@ class VoiceProfile:
         description: Optional[str] = None,
         preview_audio_path: Optional[Path] = None,
         available_emotions: Optional[List[str]] = None,
+        available_tiers: Optional[Dict[str, List[str]]] = None,
         transcription: Optional[str] = None
     ) -> 'VoiceProfile':
         """
@@ -807,6 +815,9 @@ class VoiceProfile:
             available_emotions: List of emotions this voice supports (Emotion Variants).
                                Valid values: neutral, happy, sad, angry, flirtatious.
                                Default: ["neutral"]
+            available_tiers: Dict mapping emotion -> list of available model tiers.
+                            e.g., {"neutral": ["1.7", "0.6"], "happy": ["1.7"]}
+                            Default: auto-detected or empty dict
             transcription: Reference text used for embedding (ref_text for TTS generation)
 
         Returns:
@@ -857,6 +868,10 @@ class VoiceProfile:
         if available_emotions is None:
             available_emotions = ["neutral"]
 
+        # Default to empty dict for available_tiers if not specified
+        if available_tiers is None:
+            available_tiers = {}
+
         # Create profile with embedding-specific attributes
         # Use embedding:// virtual path marker for consistency
         # Emotion Variants: EMBEDDING voices support emotion via multiple embeddings
@@ -872,10 +887,11 @@ class VoiceProfile:
             checkpoint_path=embedding_path,  # Store embedding path in checkpoint_path field
             speaker_name=None,  # Not used for embeddings
             description=description,
-            available_emotions=available_emotions  # Emotion Variants
+            available_emotions=available_emotions,  # Emotion Variants
+            available_tiers=available_tiers,  # Multi-tier support
         )
 
-        logger.info(f"Created embedding voice profile: {name} (emotions: {available_emotions})")
+        logger.info(f"Created embedding voice profile: {name} (emotions: {available_emotions}, tiers: {available_tiers})")
         return profile
 
     def is_bundled(self) -> bool:
@@ -1189,14 +1205,15 @@ class VoiceProfile:
         Generate metadata.json content for embedding voice storage.
 
         Emotion Variants: Creates the metadata structure for saving embedding voices
-        with emotion subfolders.
+        with emotion subfolders and multi-tier support.
 
-        Schema (version 2.0):
+        Schema (version 3.0):
         {
-            "version": "2.0",
+            "version": "3.0",
             "name": "Voice Name",
             "description": "Voice description text",
             "available_emotions": ["neutral", "happy", "sad"],
+            "available_tiers": {"neutral": ["1.7", "0.6"], "happy": ["1.7"]},
             "created_at": "2024-01-01T00:00:00",
             "updated_at": "2024-01-01T00:00:00"
         }
@@ -1205,10 +1222,11 @@ class VoiceProfile:
             dict: Metadata structure for JSON serialization
         """
         return {
-            "version": "2.0",  # Emotion Variants schema version
+            "version": "3.0",  # Multi-tier schema version
             "name": self.name,
             "description": self.description,
             "available_emotions": self.available_emotions,
+            "available_tiers": self.available_tiers,  # Multi-tier support
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat()
         }
@@ -1222,12 +1240,18 @@ class VoiceProfile:
         Falls back to ["neutral"] for legacy single-embedding structure.
 
         Directory structures supported:
-        1. New (v2.0): emotion subfolders with embedding.pt
+        1. Multi-tier (v3.0): emotion/tier subfolders with embedding.pt
+           voice_dir/neutral/1.7/embedding.pt
+           voice_dir/neutral/0.6/embedding.pt
+           voice_dir/happy/1.7/embedding.pt
+           ...
+
+        2. Emotion-only (v2.0): emotion subfolders with embedding.pt
            voice_dir/neutral/embedding.pt
            voice_dir/happy/embedding.pt
            ...
 
-        2. Legacy (v1.0): single embedding.pt at root
+        3. Legacy (v1.0): single embedding.pt at root
            voice_dir/embedding.pt
 
         Args:
@@ -1244,9 +1268,20 @@ class VoiceProfile:
         # Check for emotion subfolders
         for emotion in VALID_EMOTIONS:
             emotion_dir = voice_dir / emotion
-            embedding_file = emotion_dir / "embedding.pt"
-            if embedding_file.exists():
-                detected.append(emotion)
+
+            # Check for tier subfolders first (v3.0 structure)
+            for tier in VALID_TIERS:
+                tier_embedding = emotion_dir / tier / "embedding.pt"
+                if tier_embedding.exists():
+                    if emotion not in detected:
+                        detected.append(emotion)
+                    break  # Found at least one tier for this emotion
+
+            # Also check for legacy emotion embedding (v2.0 structure)
+            if emotion not in detected:
+                embedding_file = emotion_dir / "embedding.pt"
+                if embedding_file.exists():
+                    detected.append(emotion)
 
         # If emotion subfolders found, return them
         if detected:
@@ -1262,21 +1297,71 @@ class VoiceProfile:
         return []
 
     @staticmethod
+    def detect_available_tiers(voice_dir: Path) -> Dict[str, List[str]]:
+        """
+        Detect available model tiers for each emotion in a voice directory.
+
+        Multi-tier: Scans for tier subfolders (1.7/, 0.6/) containing embedding.pt.
+        Legacy embeddings without tier folders are assumed to be 1.7B.
+
+        Args:
+            voice_dir: Path to the voice's embedding directory
+
+        Returns:
+            Dict[str, List[str]]: Mapping of emotion -> list of available tiers
+                                  e.g., {"neutral": ["1.7", "0.6"], "happy": ["1.7"]}
+        """
+        if not voice_dir.exists() or not voice_dir.is_dir():
+            return {}
+
+        tiers_by_emotion: Dict[str, List[str]] = {}
+
+        for emotion in VALID_EMOTIONS:
+            emotion_dir = voice_dir / emotion
+            if not emotion_dir.exists():
+                continue
+
+            available = []
+
+            # Check for tier subfolders
+            for tier in VALID_TIERS:
+                tier_embedding = emotion_dir / tier / "embedding.pt"
+                if tier_embedding.exists():
+                    available.append(tier)
+
+            # Check for legacy embedding (no tier folder = assumed 1.7B)
+            legacy_embedding = emotion_dir / "embedding.pt"
+            if legacy_embedding.exists() and "1.7" not in available:
+                available.append("1.7")
+
+            if available:
+                # Sort tiers in VALID_TIERS order
+                tiers_by_emotion[emotion] = [t for t in VALID_TIERS if t in available]
+
+        # Check for legacy root embedding
+        root_embedding = voice_dir / "embedding.pt"
+        if root_embedding.exists() and "neutral" not in tiers_by_emotion:
+            tiers_by_emotion["neutral"] = ["1.7"]
+
+        return tiers_by_emotion
+
+    @staticmethod
     def parse_embedding_metadata(metadata_path: Path) -> dict:
         """
         Parse metadata.json from an embedding voice directory.
 
-        Handles both legacy (v1.0) and new (v2.0) metadata formats.
+        Handles legacy (v1.0), v2.0, and v3.0 (multi-tier) metadata formats.
 
         Args:
             metadata_path: Path to metadata.json file
 
         Returns:
             dict: Parsed metadata with normalized fields:
-                - version: "1.0" or "2.0"
+                - version: "1.0", "2.0", or "3.0"
                 - name: Voice name
                 - description: Voice description or None
                 - available_emotions: List of emotions (default ["neutral"] for v1.0)
+                - available_tiers: Dict of emotion -> tier list (v3.0+ only)
         """
         import json
 
@@ -1285,14 +1370,15 @@ class VoiceProfile:
                 "version": "1.0",
                 "name": metadata_path.parent.name,
                 "description": None,
-                "available_emotions": ["neutral"]
+                "available_emotions": ["neutral"],
+                "available_tiers": {}
             }
 
         try:
             with open(metadata_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
-            # Normalize to v2.0 schema
+            # Normalize to v3.0 schema
             version = data.get("version", "1.0")
             name = data.get("name", metadata_path.parent.name)
             description = data.get("description")
@@ -1309,11 +1395,17 @@ class VoiceProfile:
             if not available_emotions:
                 available_emotions = ["neutral"]
 
+            # Handle available_tiers (v3.0+)
+            available_tiers = data.get("available_tiers", {})
+            if not isinstance(available_tiers, dict):
+                available_tiers = {}
+
             return {
                 "version": version,
                 "name": name,
                 "description": description,
-                "available_emotions": available_emotions
+                "available_emotions": available_emotions,
+                "available_tiers": available_tiers
             }
 
         except Exception as e:
@@ -1322,7 +1414,8 @@ class VoiceProfile:
                 "version": "1.0",
                 "name": metadata_path.parent.name,
                 "description": None,
-                "available_emotions": ["neutral"]
+                "available_emotions": ["neutral"],
+                "available_tiers": {}
             }
 
     def to_dict(self) -> dict:
@@ -1353,6 +1446,8 @@ class VoiceProfile:
             'description': self.description,
             # Emotion Variants
             'available_emotions': self.available_emotions,
+            # Multi-tier support
+            'available_tiers': self.available_tiers,
         }
 
     @classmethod
@@ -1415,6 +1510,11 @@ class VoiceProfile:
         if not isinstance(available_emotions, list):
             available_emotions = ["neutral"]
 
+        # Parse available_tiers (Multi-tier support)
+        available_tiers = data.get('available_tiers', {})
+        if not isinstance(available_tiers, dict):
+            available_tiers = {}
+
         return cls(
             file_path=Path(data['file_path']),
             name=data['name'],
@@ -1436,4 +1536,6 @@ class VoiceProfile:
             description=data.get('description'),
             # Emotion Variants
             available_emotions=available_emotions,
+            # Multi-tier support
+            available_tiers=available_tiers,
         )

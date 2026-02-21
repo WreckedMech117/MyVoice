@@ -207,6 +207,59 @@ def get_ffmpeg_path() -> Optional[Path]:
     return None
 
 
+def _copy_bundled_voice_files() -> bool:
+    """
+    Copy bundled voice files from _internal to user voice_files directory.
+
+    PyInstaller bundles data files to _internal/, but the app expects
+    voice files at the app root level. This copies bundled default voices
+    on first run.
+
+    Returns:
+        bool: True if copy successful or not needed, False on error
+    """
+    import shutil
+
+    if not is_portable_mode():
+        return True  # Not in frozen mode, nothing to copy
+
+    # Source: bundled voices in _internal
+    bundled_voices = get_app_root() / "_internal" / "voice_files"
+
+    # Destination: user voice_files directory at app root
+    user_voices = get_voice_files_path()
+
+    if not bundled_voices.exists():
+        logger.debug("No bundled voice files found in _internal")
+        return True
+
+    # Check if user voice_files is empty (first run)
+    existing_files = list(user_voices.glob("*"))
+    if existing_files:
+        logger.debug(f"User voice_files already has {len(existing_files)} items, skipping copy")
+        return True
+
+    try:
+        logger.info(f"Copying bundled voice files from {bundled_voices} to {user_voices}")
+
+        # Copy all files and subdirectories
+        for item in bundled_voices.iterdir():
+            dest = user_voices / item.name
+            if item.is_dir():
+                shutil.copytree(item, dest)
+                logger.info(f"Copied voice directory: {item.name}")
+            else:
+                shutil.copy2(item, dest)
+                logger.info(f"Copied voice file: {item.name}")
+
+        logger.info("Bundled voice files copied successfully")
+        return True
+
+    except Exception as e:
+        logger.exception(f"Failed to copy bundled voice files: {e}")
+        return False
+
+
 def initialize_portable_directories() -> bool:
     """
     Initialize all required directories for portable distribution.
@@ -228,6 +281,9 @@ def initialize_portable_directories() -> bool:
         for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)
             logger.info(f"Initialized directory: {directory}")
+
+        # Copy bundled voice files from _internal on first run
+        _copy_bundled_voice_files()
 
         # Check for optional directories
         ffmpeg = get_ffmpeg_path()
