@@ -12,12 +12,21 @@ Story 2.5: Audio Device Resilience
 - Integrated DeviceResilienceManager for graceful device disconnect/reconnect handling
 - Auto-recovery when devices reconnect
 - User notifications for device changes
+
+Microphone Mixing Integration:
+- MicrophoneCaptureService for real-time mic input capture
+- AudioMixerService for mixing mic + TTS audio streams
+- Mixed audio routing to virtual microphone for Discord/Zoom/Teams
+- Volume controls and mute functionality for mic input
 """
 
 import asyncio
 import logging
+import threading
+import time
+from enum import Enum
 from typing import Optional, Dict, Any, List, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from myvoice.models.audio_device import AudioDevice
@@ -31,6 +40,8 @@ from myvoice.services.device_resilience_manager import (
     DeviceResilienceConfig,
     DeviceRole,
 )
+from myvoice.services.microphone_capture_service import MicrophoneCaptureService, MicrophoneCaptureConfig
+from myvoice.services.audio_mixer_service import AudioMixerService, MixerConfig
 from myvoice.services.core.base_service import BaseService, ServiceStatus
 
 
@@ -62,6 +73,35 @@ class DualStreamResult:
         return monitor_ok or virtual_ok
 
 
+class MicrophoneMixingMode(Enum):
+    """Modes for audio mixing."""
+    TTS_ONLY = "tts_only"          # Only TTS audio (default, backward compatible)
+    MIC_ONLY = "mic_only"          # Only microphone audio
+    MIXED = "mixed"                 # Mix TTS + microphone together
+    MIC_WHEN_SILENT = "mic_when_silent"  # Mic only when TTS is silent
+
+
+@dataclass
+class MicrophoneMixingConfig:
+    """Configuration for microphone mixing behavior."""
+    # Enable/disable mic mixing
+    enabled: bool = False
+
+    # Mixing mode
+    mode: MicrophoneMixingMode = field(default=MicrophoneMixingMode.MIXED)
+
+    # Volume settings (0.0 to 1.0)
+    mic_volume: float = 1.0
+    tts_volume: float = 1.0
+
+    # Ducking: reduce mic volume when TTS plays (0.0 = full ducking, 1.0 = no ducking)
+    enable_ducking: bool = False
+    duck_amount: float = 0.3  # Reduce mic to 30% during TTS
+
+    # Sample rate for mixed output (should match virtual mic)
+    output_sample_rate: int = 48000
+
+
 @dataclass
 class AudioCoordinatorConfig:
     """Configuration for audio coordination behavior."""
@@ -76,6 +116,9 @@ class AudioCoordinatorConfig:
     # Monitoring
     enable_health_monitoring: bool = True
     health_check_interval: float = 60.0
+
+    # Microphone mixing settings
+    mic_mixing: MicrophoneMixingConfig = field(default_factory=MicrophoneMixingConfig)
 
 
 class AudioCoordinator(BaseService):
@@ -111,6 +154,10 @@ class AudioCoordinator(BaseService):
         self.monitor_service: Optional[MonitorAudioService] = None
         self.virtual_service: Optional[VirtualMicrophoneService] = None
 
+        # Microphone mixing services
+        self.mic_capture_service: Optional[MicrophoneCaptureService] = None
+        self.mixer_service: Optional[AudioMixerService] = None
+
         # Story 2.5: Device Resilience Manager for graceful disconnect/reconnect
         self.resilience_manager: Optional[DeviceResilienceManager] = None
 
@@ -127,6 +174,18 @@ class AudioCoordinator(BaseService):
 
         # Story 2.5: Device notification callbacks
         self._device_notification_callbacks: List[Callable[[DeviceNotification], None]] = []
+
+        # Microphone mixing state
+        self._mic_mixing_enabled = False
+        self._tts_sample_rate: Optional[int] = None  # Tracked during streaming
+
+        # Mic monitor state (for "Monitor Mic to Speakers" feature)
+        self._mic_monitor_running = False
+        self._mic_monitor_task: Optional[asyncio.Task] = None
+
+        # Continuous passthrough state (uses threading to avoid qasync conflicts)
+        self._continuous_passthrough_running = False
+        self._passthrough_thread = None  # threading.Thread
 
         self.logger.info("AudioCoordinator initialized")
 
@@ -204,6 +263,7 @@ class AudioCoordinator(BaseService):
                 # Register callbacks for device recovery and notifications
                 self.resilience_manager.add_recovery_callback(self._handle_device_recovery)
                 self.resilience_manager.add_notification_callback(self._handle_device_notification)
+                self.resilience_manager.add_device_change_callback(self._handle_device_change)
             else:
                 self.logger.warning("⚠ DeviceResilienceManager initialization failed - continuing without resilience")
 
@@ -228,6 +288,22 @@ class AudioCoordinator(BaseService):
 
             if virtual_success:
                 self.logger.info("VirtualMicrophoneService initialized successfully")
+
+                # Set current_virtual_device from app_settings if configured
+                virtual_device_id = getattr(self.app_settings, 'virtual_microphone_device_id', None) if self.app_settings else None
+                if virtual_device_id:
+                    try:
+                        virtual_devices = await self.virtual_service.enumerate_virtual_devices()
+                        for device in virtual_devices:
+                            if device.device_id == virtual_device_id:
+                                self.virtual_service.current_virtual_device = device
+                                self.logger.info(f"Set initial current_virtual_device to: {device.name}")
+                                break
+                        else:
+                            self.logger.warning(f"Configured virtual device {virtual_device_id} not found during initialization")
+                    except Exception as e:
+                        self.logger.warning(f"Error setting initial virtual device: {e}")
+
                 # Story 2.5: Register virtual mic device with resilience manager
                 virtual_device = getattr(self.virtual_service, 'current_virtual_device', None)
                 if self.resilience_manager and virtual_device:
@@ -237,6 +313,32 @@ class AudioCoordinator(BaseService):
                     )
             else:
                 self.logger.warning("⚠ VirtualMicrophoneService initialization failed")
+
+            # Initialize MicrophoneCaptureService for mic input
+            mic_config = MicrophoneCaptureConfig(
+                sample_rate=self.config.mic_mixing.output_sample_rate,
+                channels=1,
+                chunk_size=1024,
+            )
+            self.mic_capture_service = MicrophoneCaptureService(
+                app_settings=self.app_settings,
+                config=mic_config
+            )
+            mic_success = await self.mic_capture_service.start()
+
+            if mic_success:
+                self.logger.info("MicrophoneCaptureService initialized successfully")
+            else:
+                self.logger.warning("⚠ MicrophoneCaptureService initialization failed - mic mixing disabled")
+
+            # Initialize AudioMixerService
+            mixer_config = MixerConfig(
+                default_mic_volume=self.config.mic_mixing.mic_volume,
+                default_tts_volume=self.config.mic_mixing.tts_volume,
+                enable_limiter=True,
+            )
+            self.mixer_service = AudioMixerService(config=mixer_config)
+            self.logger.info("AudioMixerService initialized")
 
             # Coordinator succeeds if at least one service succeeds
             if monitor_success or virtual_success:
@@ -259,31 +361,60 @@ class AudioCoordinator(BaseService):
         try:
             self.logger.info("Shutting down AudioCoordinator")
 
+            # Stop mic-related threads FIRST (they read from mic_capture_service)
+            # These have their own PyAudio instances that must be terminated
+            try:
+                if self._continuous_passthrough_running:
+                    self.logger.info("Stopping continuous mic passthrough thread...")
+                    await self.stop_continuous_mic_passthrough()
+            except Exception as e:
+                self.logger.warning(f"Error stopping mic passthrough: {e}")
+                # Force the flag anyway to signal thread to exit
+                self._continuous_passthrough_running = False
+
+            try:
+                if self._mic_monitor_running:
+                    self.logger.info("Stopping mic monitor to speakers...")
+                    await self.stop_mic_monitor_to_speakers()
+            except Exception as e:
+                self.logger.warning(f"Error stopping mic monitor: {e}")
+                self._mic_monitor_running = False
+
             # Stop all active coordinations
             for coordination_id in list(self._active_coordinations.keys()):
                 await self.stop_coordination(coordination_id)
 
-            # Shutdown both services in parallel
+            # Shutdown all services in parallel
             shutdown_tasks = []
+            service_names = []
 
             if self.monitor_service:
                 shutdown_tasks.append(self.monitor_service.shutdown())
+                service_names.append("Monitor")
 
             if self.virtual_service:
                 shutdown_tasks.append(self.virtual_service.shutdown())
+                service_names.append("Virtual")
+
+            if self.mic_capture_service:
+                shutdown_tasks.append(self.mic_capture_service.stop())
+                service_names.append("MicCapture")
 
             if shutdown_tasks:
                 results = await asyncio.gather(*shutdown_tasks, return_exceptions=True)
 
                 # Log results
                 for i, result in enumerate(results):
-                    service_name = "Monitor" if i == 0 else "Virtual"
+                    service_name = service_names[i]
                     if isinstance(result, Exception):
                         self.logger.warning(f"{service_name} service shutdown error: {result}")
                     elif result:
                         self.logger.info(f"{service_name} service shutdown successful")
                     else:
                         self.logger.warning(f"⚠ {service_name} service shutdown failed")
+
+            # Clear mixer service
+            self.mixer_service = None
 
             # Story 2.5: Shutdown resilience manager
             if self.resilience_manager:
@@ -297,6 +428,9 @@ class AudioCoordinator(BaseService):
 
         except Exception as e:
             self.logger.error(f"Error during AudioCoordinator shutdown: {e}")
+            # Ensure flags are cleared even on error
+            self._continuous_passthrough_running = False
+            self._mic_monitor_running = False
             return False
 
     async def play_dual_stream(self,
@@ -494,10 +628,11 @@ class AudioCoordinator(BaseService):
             return False
 
     async def enumerate_all_devices(self) -> Dict[str, List[AudioDevice]]:
-        """Enumerate devices from both services."""
+        """Enumerate devices from all services."""
         devices = {
             "monitor": [],
-            "virtual": []
+            "virtual": [],
+            "mic": []
         }
 
         try:
@@ -506,6 +641,9 @@ class AudioCoordinator(BaseService):
 
             if self.virtual_service:
                 devices["virtual"] = await self.virtual_service.enumerate_virtual_devices()
+
+            if self.mic_capture_service:
+                devices["mic"] = await self.mic_capture_service.enumerate_input_devices()
 
         except Exception as e:
             self.logger.error(f"Error enumerating devices: {e}")
@@ -587,9 +725,29 @@ class AudioCoordinator(BaseService):
                 self.monitor_service.app_settings = new_settings
                 self.logger.debug("Monitor service settings updated")
 
-            # Update virtual service settings
+            # Update virtual service settings and current_virtual_device
             if self.virtual_service:
                 self.virtual_service.app_settings = new_settings
+
+                # Update current_virtual_device if a device is configured
+                virtual_device_id = getattr(new_settings, 'virtual_microphone_device_id', None)
+                if virtual_device_id:
+                    # Find and set the virtual device
+                    try:
+                        virtual_devices = await self.virtual_service.enumerate_virtual_devices()
+                        for device in virtual_devices:
+                            if device.device_id == virtual_device_id:
+                                self.virtual_service.current_virtual_device = device
+                                self.logger.info(f"Set current_virtual_device to: {device.name}")
+                                break
+                        else:
+                            self.logger.warning(f"Virtual device {virtual_device_id} not found in enumeration")
+                    except Exception as e:
+                        self.logger.warning(f"Error setting virtual device: {e}")
+                else:
+                    self.virtual_service.current_virtual_device = None
+                    self.logger.debug("No virtual device configured")
+
                 self.logger.debug("Virtual service settings updated")
 
             self.logger.info("Device settings updated successfully")
@@ -702,6 +860,9 @@ class AudioCoordinator(BaseService):
             return result
 
         try:
+            # Track TTS sample rate for mic resampling
+            self._tts_sample_rate = sample_rate
+
             # Start streaming on monitor service
             if self.monitor_service and await self._is_monitor_service_healthy():
                 monitor_session = await self.monitor_service.start_streaming_session(
@@ -739,28 +900,39 @@ class AudioCoordinator(BaseService):
         Chunks are played without waiting for complete audio, enabling
         low-latency streaming playback (NFR3: no stuttering or gaps).
 
+        When mic mixing is enabled, microphone audio is mixed with TTS audio
+        before being sent to the virtual microphone service.
+
         Args:
             audio_data: Raw audio bytes to play
             is_final: If True, this is the last chunk
 
         Returns:
-            Dict with success status: {"monitor": bool, "virtual": bool}
+            Dict with success status: {"monitor": bool, "virtual": bool, "mic_mixed": bool}
         """
-        result = {"monitor": False, "virtual": False}
+        result = {"monitor": False, "virtual": False, "mic_mixed": False}
 
         try:
-            # Play on monitor service
+            # Play TTS on monitor service (unaffected by mic mixing)
             if self.monitor_service and self.monitor_service.is_streaming_active():
                 result["monitor"] = await self.monitor_service.play_audio_chunk(
                     audio_data, is_final
                 )
 
-            # Play on virtual service (if available)
+            # Handle virtual mic output (possibly with mic mixing)
             if self.virtual_service:
                 if hasattr(self.virtual_service, 'is_streaming_active') and \
                    self.virtual_service.is_streaming_active():
+
+                    # Determine what audio to send to virtual mic
+                    self.logger.debug(f"[MIC_MIX] Virtual mic active, _mic_mixing_enabled={self._mic_mixing_enabled}")
+                    virtual_audio = await self._get_virtual_mic_audio(audio_data)
+                    if virtual_audio != audio_data:
+                        result["mic_mixed"] = True
+                        self.logger.debug(f"[MIC_MIX] Audio was mixed! Original: {len(audio_data)}, Mixed: {len(virtual_audio)}")
+
                     result["virtual"] = await self.virtual_service.play_audio_chunk(
-                        audio_data, is_final
+                        virtual_audio, is_final
                     )
 
             return result
@@ -768,6 +940,114 @@ class AudioCoordinator(BaseService):
         except Exception as e:
             self.logger.error(f"Failed to play audio chunk: {e}")
             return result
+
+    async def _get_virtual_mic_audio(self, tts_audio: bytes) -> bytes:
+        """
+        Get audio for virtual microphone, optionally mixing with mic input.
+
+        Args:
+            tts_audio: TTS audio bytes
+
+        Returns:
+            bytes: Audio to send to virtual mic (TTS-only, mixed, or mic-only)
+        """
+        # If mic mixing is disabled, just return TTS audio
+        if not self._mic_mixing_enabled:
+            return tts_audio
+        if not self.mic_capture_service:
+            self.logger.debug("Mic mixing: capture service unavailable")
+            return tts_audio
+        if not self.mixer_service:
+            self.logger.debug("Mic mixing: mixer service unavailable")
+            return tts_audio
+        if not self.mic_capture_service.is_capturing:
+            self.logger.debug("Mic mixing: not currently capturing")
+            return tts_audio
+
+        mode = self.config.mic_mixing.mode
+        self.logger.debug(f"[MIC_MIX] Mixing mode: {mode}, getting mic chunk...")
+
+        # TTS-only mode - just return TTS audio
+        if mode == MicrophoneMixingMode.TTS_ONLY:
+            return tts_audio
+
+        # Get microphone audio chunk
+        mic_audio = self.mic_capture_service.get_audio_chunk()
+        if mic_audio:
+            self.logger.debug(f"[MIC_MIX] Got mic chunk: {len(mic_audio)} bytes")
+        else:
+            self.logger.debug("[MIC_MIX] No mic audio available")
+
+        # MIC_ONLY mode - return mic audio or silence
+        if mode == MicrophoneMixingMode.MIC_ONLY:
+            if mic_audio:
+                return self._resample_mic_if_needed(mic_audio)
+            else:
+                # Return silence matching TTS length
+                return bytes(len(tts_audio))
+
+        # MIC_WHEN_SILENT mode - use mic only when no TTS
+        if mode == MicrophoneMixingMode.MIC_WHEN_SILENT:
+            if self._is_silence(tts_audio) and mic_audio:
+                return self._resample_mic_if_needed(mic_audio)
+            return tts_audio
+
+        # MIXED mode - mix TTS + mic
+        if mode == MicrophoneMixingMode.MIXED:
+            if not mic_audio:
+                return tts_audio
+
+            try:
+                # Resample mic if needed
+                mic_audio = self._resample_mic_if_needed(mic_audio)
+
+                # Mix using configured volumes
+                if self.config.mic_mixing.enable_ducking:
+                    mixed = self.mixer_service.mix_with_ducking(
+                        mic_audio=mic_audio,
+                        tts_audio=tts_audio,
+                        duck_amount=self.config.mic_mixing.duck_amount,
+                        mic_volume=self.config.mic_mixing.mic_volume,
+                        tts_volume=self.config.mic_mixing.tts_volume,
+                    )
+                else:
+                    mixed = self.mixer_service.mix_streams_bytes(
+                        mic_audio=mic_audio,
+                        tts_audio=tts_audio,
+                        mic_volume=self.config.mic_mixing.mic_volume,
+                        tts_volume=self.config.mic_mixing.tts_volume,
+                    )
+
+                return mixed
+
+            except Exception as e:
+                self.logger.warning(f"Mic mixing failed, using TTS only: {e}")
+                return tts_audio
+
+        return tts_audio
+
+    def _resample_mic_if_needed(self, mic_audio: bytes) -> bytes:
+        """Resample microphone audio if sample rates differ."""
+        if not self.mic_capture_service or not self.mixer_service:
+            return mic_audio
+
+        mic_rate = self.mic_capture_service.config.sample_rate
+        tts_rate = self._tts_sample_rate or 24000  # Default TTS rate
+
+        if mic_rate != tts_rate:
+            return self.mixer_service.resample_bytes(mic_audio, mic_rate, tts_rate)
+
+        return mic_audio
+
+    def _is_silence(self, audio_data: bytes, threshold: float = 0.01) -> bool:
+        """Check if audio data is essentially silence."""
+        import numpy as np
+        try:
+            samples = np.frombuffer(audio_data, dtype=np.int16)
+            rms = np.sqrt(np.mean(samples.astype(np.float32) ** 2)) / 32768.0
+            return rms < threshold
+        except Exception:
+            return False
 
     async def stop_streaming_session(self) -> Dict[str, bool]:
         """
@@ -779,6 +1059,9 @@ class AudioCoordinator(BaseService):
         result = {"monitor": False, "virtual": False}
 
         try:
+            # Clear TTS sample rate tracking
+            self._tts_sample_rate = None
+
             # Stop monitor streaming
             if self.monitor_service:
                 result["monitor"] = await self.monitor_service.stop_streaming_session()
@@ -799,15 +1082,18 @@ class AudioCoordinator(BaseService):
         Check if streaming sessions are active on each service.
 
         Returns:
-            Dict with active status: {"monitor": bool, "virtual": bool}
+            Dict with active status: {"monitor": bool, "virtual": bool, "mic": bool}
         """
-        result = {"monitor": False, "virtual": False}
+        result = {"monitor": False, "virtual": False, "mic": False}
 
         if self.monitor_service:
             result["monitor"] = self.monitor_service.is_streaming_active()
 
         if self.virtual_service and hasattr(self.virtual_service, 'is_streaming_active'):
             result["virtual"] = self.virtual_service.is_streaming_active()
+
+        if self.mic_capture_service:
+            result["mic"] = self.mic_capture_service.is_capturing
 
         return result
 
@@ -822,7 +1108,7 @@ class AudioCoordinator(BaseService):
         Story 2.5 AC: Device reconnect → auto-recovery, no manual reconfiguration
 
         Args:
-            role: Role of the device (MONITOR or VIRTUAL_MIC)
+            role: Role of the device (MONITOR, VIRTUAL_MIC, or MICROPHONE)
             device: The recovered or fallback device
         """
         self.logger.info(f"Handling device recovery for {role.value}: {device.name}")
@@ -838,8 +1124,33 @@ class AudioCoordinator(BaseService):
                 self.virtual_service.current_virtual_device = device
                 self.logger.info(f"Virtual mic device updated to: {device.name}")
 
+            elif role == DeviceRole.MICROPHONE and self.mic_capture_service:
+                # Microphone reconnected - attempt to restart capture
+                self.logger.info(f"Microphone reconnected: {device.name}")
+                # Re-enable mic mixing if it was previously enabled
+                if self.config.mic_mixing.enabled:
+                    asyncio.create_task(self._restart_mic_capture(device))
+
         except Exception as e:
             self.logger.error(f"Error handling device recovery for {role.value}: {e}")
+
+    async def _restart_mic_capture(self, device: AudioDevice) -> None:
+        """
+        Restart microphone capture after device recovery.
+
+        Args:
+            device: The recovered microphone device
+        """
+        try:
+            self.logger.info(f"Restarting mic capture on: {device.name}")
+            success = await self.mic_capture_service.start_capture(device)
+            if success:
+                self._mic_mixing_enabled = True
+                self.logger.info("Mic capture restarted successfully")
+            else:
+                self.logger.warning("Failed to restart mic capture")
+        except Exception as e:
+            self.logger.error(f"Error restarting mic capture: {e}")
 
     def _handle_device_notification(self, notification: DeviceNotification) -> None:
         """
@@ -858,6 +1169,38 @@ class AudioCoordinator(BaseService):
                 callback(notification)
             except Exception as e:
                 self.logger.error(f"Error in device notification callback: {e}")
+
+    def _handle_device_change(self, role: DeviceRole, event) -> None:
+        """
+        Handle device change events for hot-plug support.
+
+        Args:
+            role: Role of the device (MONITOR, VIRTUAL_MIC, or MICROPHONE)
+            event: DeviceChangeEvent with event type and device info
+        """
+        self.logger.debug(f"Device change event: {role.value} - {event.event_type}")
+
+        try:
+            # Handle microphone disconnect - disable mixing
+            if role == DeviceRole.MICROPHONE and event.event_type == "removed":
+                self.logger.warning(f"Microphone disconnected: {event.device_name}")
+                self._mic_mixing_enabled = False
+
+                # Stop capture if running
+                if self.mic_capture_service and self.mic_capture_service.is_capturing:
+                    asyncio.create_task(self._stop_mic_on_disconnect())
+
+        except Exception as e:
+            self.logger.error(f"Error handling device change: {e}")
+
+    async def _stop_mic_on_disconnect(self) -> None:
+        """Stop mic capture when device is disconnected."""
+        try:
+            if self.mic_capture_service:
+                await self.mic_capture_service.stop_capture()
+                self.logger.info("Mic capture stopped due to device disconnect")
+        except Exception as e:
+            self.logger.error(f"Error stopping mic on disconnect: {e}")
 
     def add_device_notification_callback(
         self,
@@ -965,6 +1308,556 @@ class AudioCoordinator(BaseService):
                 return loop.run_until_complete(self.resilience_manager.get_health())
         except Exception as e:
             return {"enabled": True, "error": str(e)}
+
+    # =========================================================================
+    # Microphone Mixing Control Methods
+    # =========================================================================
+
+    async def start_mic_capture(self, device: Optional[AudioDevice] = None) -> bool:
+        """
+        Start microphone capture for mixing with TTS.
+
+        Args:
+            device: Input device to capture from (uses default if None)
+
+        Returns:
+            bool: True if capture started successfully
+        """
+        self.logger.info(f"[MIC_DEBUG] start_mic_capture called with device={device}")
+        self.logger.info(f"[MIC_DEBUG] config.mic_mixing.enabled={self.config.mic_mixing.enabled}")
+
+        if not self.mic_capture_service:
+            self.logger.error("MicrophoneCaptureService not initialized")
+            return False
+
+        try:
+            success = await self.mic_capture_service.start_capture(device)
+            self.logger.info(f"[MIC_DEBUG] mic_capture_service.start_capture returned: {success}")
+            if success:
+                self._mic_mixing_enabled = self.config.mic_mixing.enabled
+                self.logger.info(f"[MIC_DEBUG] _mic_mixing_enabled set to: {self._mic_mixing_enabled}")
+                self.logger.info(f"Microphone capture started (mixing: {self._mic_mixing_enabled})")
+
+                # Register mic device with resilience manager for hot-plug handling
+                if self.resilience_manager and device:
+                    self.resilience_manager.register_device(
+                        DeviceRole.MICROPHONE,
+                        device
+                    )
+                    self.logger.debug(f"Registered mic device for hot-plug monitoring: {device.name}")
+
+            return success
+        except Exception as e:
+            self.logger.error(f"Failed to start mic capture: {e}")
+            return False
+
+    async def stop_mic_capture(self) -> bool:
+        """
+        Stop microphone capture.
+
+        Returns:
+            bool: True if capture stopped successfully
+        """
+        if not self.mic_capture_service:
+            return True  # Nothing to stop
+
+        try:
+            success = await self.mic_capture_service.stop_capture()
+            self._mic_mixing_enabled = False
+
+            # Unregister mic device from resilience manager
+            if self.resilience_manager:
+                self.resilience_manager.unregister_device(DeviceRole.MICROPHONE)
+                self.logger.debug("Unregistered mic device from hot-plug monitoring")
+
+            self.logger.info("Microphone capture stopped")
+            return success
+        except Exception as e:
+            self.logger.error(f"Failed to stop mic capture: {e}")
+            return False
+
+    def enable_mic_mixing(self, enabled: bool = True) -> None:
+        """
+        Enable or disable microphone mixing.
+
+        Args:
+            enabled: True to enable mixing, False to disable
+        """
+        self.config.mic_mixing.enabled = enabled
+        if self.mic_capture_service and self.mic_capture_service.is_capturing:
+            self._mic_mixing_enabled = enabled
+        self.logger.info(f"Mic mixing {'enabled' if enabled else 'disabled'}")
+
+    def set_mixing_mode(self, mode: MicrophoneMixingMode) -> None:
+        """
+        Set the microphone mixing mode.
+
+        Args:
+            mode: MicrophoneMixingMode to use
+        """
+        self.config.mic_mixing.mode = mode
+        self.logger.info(f"Mic mixing mode set to: {mode.value}")
+
+    def set_mic_volume(self, volume: float) -> None:
+        """
+        Set microphone input volume for mixing.
+
+        Args:
+            volume: Volume level (0.0 to 1.0)
+        """
+        self.config.mic_mixing.mic_volume = max(0.0, min(1.0, volume))
+        if self.mic_capture_service:
+            self.mic_capture_service.set_volume(self.config.mic_mixing.mic_volume)
+        self.logger.debug(f"Mic volume set to: {self.config.mic_mixing.mic_volume:.2f}")
+
+    def set_tts_volume_for_mixing(self, volume: float) -> None:
+        """
+        Set TTS volume for the mixed output.
+
+        Note: This affects only the virtual mic output, not the monitor output.
+
+        Args:
+            volume: Volume level (0.0 to 1.0)
+        """
+        self.config.mic_mixing.tts_volume = max(0.0, min(1.0, volume))
+        self.logger.debug(f"TTS mixing volume set to: {self.config.mic_mixing.tts_volume:.2f}")
+
+    def set_mic_muted(self, muted: bool) -> None:
+        """
+        Mute or unmute microphone input.
+
+        Args:
+            muted: True to mute, False to unmute
+        """
+        if self.mic_capture_service:
+            self.mic_capture_service.set_muted(muted)
+        self.logger.debug(f"Mic {'muted' if muted else 'unmuted'}")
+
+    def toggle_mic_mute(self) -> bool:
+        """
+        Toggle microphone mute state.
+
+        Returns:
+            bool: New mute state (True = muted)
+        """
+        if self.mic_capture_service:
+            return self.mic_capture_service.toggle_mute()
+        return False
+
+    def is_mic_muted(self) -> bool:
+        """
+        Check if microphone is muted.
+
+        Returns:
+            bool: True if muted
+        """
+        if self.mic_capture_service:
+            return self.mic_capture_service.is_muted
+        return False
+
+    def is_mic_capturing(self) -> bool:
+        """
+        Check if microphone capture is active.
+
+        Returns:
+            bool: True if capturing
+        """
+        if self.mic_capture_service:
+            return self.mic_capture_service.is_capturing
+        return False
+
+    async def enumerate_mic_devices(self) -> List[AudioDevice]:
+        """
+        Enumerate available microphone input devices.
+
+        Returns:
+            List[AudioDevice]: Available input devices
+        """
+        if not self.mic_capture_service:
+            return []
+
+        try:
+            return await self.mic_capture_service.enumerate_input_devices()
+        except Exception as e:
+            self.logger.error(f"Failed to enumerate mic devices: {e}")
+            return []
+
+    def get_mic_capture_statistics(self) -> Dict[str, Any]:
+        """
+        Get microphone capture statistics.
+
+        Returns:
+            Dict with capture statistics
+        """
+        if not self.mic_capture_service:
+            return {"enabled": False}
+
+        try:
+            stats = self.mic_capture_service.get_statistics()
+            return {
+                "enabled": True,
+                "capturing": self.mic_capture_service.is_capturing,
+                "mixing_enabled": self._mic_mixing_enabled,
+                "mode": self.config.mic_mixing.mode.value,
+                "mic_volume": self.config.mic_mixing.mic_volume,
+                "tts_volume": self.config.mic_mixing.tts_volume,
+                "muted": self.mic_capture_service.is_muted,
+                "chunks_captured": stats.chunks_captured,
+                "chunks_dropped": stats.chunks_dropped,
+                "buffer_overflows": stats.buffer_overflows,
+            }
+        except Exception as e:
+            return {"enabled": True, "error": str(e)}
+
+    def enable_ducking(self, enabled: bool = True, duck_amount: float = 0.3) -> None:
+        """
+        Enable or disable ducking (reduce mic volume during TTS).
+
+        Args:
+            enabled: True to enable ducking
+            duck_amount: How much to reduce mic volume (0.0-1.0)
+        """
+        self.config.mic_mixing.enable_ducking = enabled
+        self.config.mic_mixing.duck_amount = max(0.0, min(1.0, duck_amount))
+        self.logger.debug(
+            f"Ducking {'enabled' if enabled else 'disabled'} "
+            f"(amount: {self.config.mic_mixing.duck_amount:.2f})"
+        )
+
+    # =========================================================================
+    # Continuous Microphone Passthrough
+    # =========================================================================
+    #
+    # NOTE: Continuous passthrough is disabled for now. The mic mixing during
+    # TTS playback works via _get_virtual_mic_audio(). For continuous mic
+    # passthrough when TTS is NOT playing, we need a different architecture
+    # that doesn't conflict with TTS streaming sessions.
+    #
+    # Current behavior with mic_mixing_enabled=True:
+    # - During TTS playback: mic is mixed with TTS and sent to virtual mic
+    # - When TTS is idle: mic audio is NOT sent to virtual mic (limitation)
+    #
+    # To test mic: Use the "Monitor Mic to Speakers" toggle in settings
+    # =========================================================================
+
+    async def start_continuous_mic_passthrough(self) -> bool:
+        """
+        Start continuous microphone passthrough to virtual mic.
+
+        When TTS is playing, mic is mixed via _get_virtual_mic_audio().
+        When TTS is NOT playing, this loop sends mic directly to virtual mic.
+
+        Uses threading to avoid qasync conflicts.
+
+        Returns:
+            bool: True if passthrough started successfully
+        """
+        if self._continuous_passthrough_running:
+            self.logger.debug("Continuous mic passthrough already running")
+            return True
+
+        if not self.mic_capture_service or not self.mic_capture_service.is_capturing:
+            self.logger.warning("Mic capture not active, cannot start passthrough")
+            return False
+
+        if not self.virtual_service:
+            self.logger.warning("Virtual mic service not available")
+            return False
+
+        self._continuous_passthrough_running = True
+
+        # Use a background thread instead of asyncio to avoid qasync conflicts
+        self._passthrough_thread = threading.Thread(
+            target=self._continuous_passthrough_thread_loop,
+            name="MicPassthrough",
+            daemon=True
+        )
+        self._passthrough_thread.start()
+        self.logger.info("[MIC_PASSTHROUGH] Continuous mic passthrough thread started")
+        return True
+
+    async def stop_continuous_mic_passthrough(self) -> bool:
+        """
+        Stop continuous microphone passthrough.
+
+        Returns:
+            bool: True if stopped successfully
+        """
+        if not self._continuous_passthrough_running:
+            return True
+
+        self._continuous_passthrough_running = False
+
+        # Wait for thread to finish
+        if hasattr(self, '_passthrough_thread') and self._passthrough_thread:
+            self._passthrough_thread.join(timeout=2.0)
+            self._passthrough_thread = None
+
+        self.logger.info("[MIC_PASSTHROUGH] Mic passthrough disabled")
+        return True
+
+    def _continuous_passthrough_thread_loop(self):
+        """
+        Background thread for continuous mic passthrough to virtual mic.
+
+        Uses direct PyAudio calls to avoid asyncio/qasync conflicts.
+        Only active when TTS is NOT playing.
+        """
+        try:
+            import pyaudio
+        except ImportError:
+            self.logger.error("[MIC_PASSTHROUGH] PyAudio not available")
+            return
+
+        self.logger.info("[MIC_PASSTHROUGH] Passthrough thread started")
+        self.logger.info(f"[MIC_PASSTHROUGH] mic_capture active: {self.mic_capture_service.is_capturing if self.mic_capture_service else False}")
+        self.logger.info(f"[MIC_PASSTHROUGH] virtual_service available: {self.virtual_service is not None}")
+
+        passthrough_stream = None
+        chunks_sent = 0
+        pyaudio_instance = None
+
+        try:
+            # Get the virtual device
+            virtual_device = getattr(self.virtual_service, 'current_virtual_device', None)
+            if not virtual_device:
+                self.logger.warning("[MIC_PASSTHROUGH] No virtual device configured, trying to find one")
+                # Try to use the first available virtual device
+                try:
+                    loop = asyncio.new_event_loop()
+                    virtual_devices = loop.run_until_complete(self.virtual_service.enumerate_virtual_devices())
+                    loop.close()
+                    if virtual_devices:
+                        virtual_device = virtual_devices[0]
+                        self.logger.info(f"[MIC_PASSTHROUGH] Using first available device: {virtual_device.name}")
+                except Exception as e:
+                    self.logger.error(f"[MIC_PASSTHROUGH] Failed to enumerate virtual devices: {e}")
+                    return
+
+            if not virtual_device:
+                self.logger.error("[MIC_PASSTHROUGH] No virtual device available")
+                return
+
+            # Get device index
+            device_id_str = virtual_device.device_id
+            if device_id_str.startswith("pyaudio_"):
+                device_index = int(device_id_str.split("_")[1])
+            else:
+                device_index = int(device_id_str)
+
+            sample_rate = self.mic_capture_service.config.sample_rate
+            self.logger.info(f"[MIC_PASSTHROUGH] Opening stream to {virtual_device.name} (index {device_index}) at {sample_rate}Hz")
+
+            # Create our own PyAudio instance for the passthrough stream
+            pyaudio_instance = pyaudio.PyAudio()
+
+            while self._continuous_passthrough_running:
+                # Check if TTS streaming is currently active
+                tts_active = (
+                    self.virtual_service.is_streaming_active() and
+                    self.monitor_service and
+                    self.monitor_service.is_streaming_active()
+                )
+
+                if tts_active:
+                    # TTS is playing - mixing handles mic, we just wait
+                    if passthrough_stream:
+                        try:
+                            passthrough_stream.stop_stream()
+                            passthrough_stream.close()
+                        except Exception:
+                            pass
+                        passthrough_stream = None
+                        self.logger.debug(f"[MIC_PASSTHROUGH] Paused (TTS active), sent {chunks_sent} chunks")
+                        chunks_sent = 0
+                    time.sleep(0.05)
+                    continue
+
+                # TTS is NOT playing - send mic directly to virtual mic
+                if not passthrough_stream:
+                    try:
+                        passthrough_stream = pyaudio_instance.open(
+                            format=pyaudio.paInt16,
+                            channels=1,
+                            rate=sample_rate,
+                            output=True,
+                            output_device_index=device_index,
+                            frames_per_buffer=1024
+                        )
+                        self.logger.info(f"[MIC_PASSTHROUGH] Stream opened to device {device_index}")
+                    except Exception as e:
+                        self.logger.error(f"[MIC_PASSTHROUGH] Failed to open stream: {e}")
+                        time.sleep(0.5)
+                        continue
+
+                # Get and send mic audio to VIRTUAL MIC (not monitor!)
+                if self.mic_capture_service and passthrough_stream:
+                    chunk = self.mic_capture_service.get_audio_chunk()
+                    if chunk:
+                        try:
+                            # Write directly to PyAudio stream (synchronous)
+                            passthrough_stream.write(chunk)
+                            chunks_sent += 1
+                            if chunks_sent % 500 == 0:
+                                self.logger.debug(f"[MIC_PASSTHROUGH] Sent {chunks_sent} chunks to virtual mic")
+                        except Exception as e:
+                            self.logger.warning(f"[MIC_PASSTHROUGH] Error sending to virtual: {e}")
+
+                time.sleep(0.005)  # Small sleep to prevent CPU spinning
+
+        except Exception as e:
+            self.logger.error(f"[MIC_PASSTHROUGH] Error in thread: {e}")
+        finally:
+            # Clean up stream
+            if passthrough_stream:
+                try:
+                    passthrough_stream.stop_stream()
+                    passthrough_stream.close()
+                except Exception:
+                    pass
+            if pyaudio_instance:
+                try:
+                    pyaudio_instance.terminate()
+                except Exception:
+                    pass
+            self._continuous_passthrough_running = False
+            self.logger.info(f"[MIC_PASSTHROUGH] Thread ended, sent {chunks_sent} total chunks")
+
+    def is_continuous_passthrough_active(self) -> bool:
+        """Check if continuous mic passthrough is active."""
+        return self._continuous_passthrough_running
+
+    # =========================================================================
+    # Mic Monitor to Speakers (for testing/debugging in settings)
+    # =========================================================================
+
+    async def start_mic_monitor_to_speakers(
+        self,
+        mic_device: Optional[AudioDevice] = None
+    ) -> bool:
+        """
+        Start monitoring microphone audio to speakers (for testing).
+
+        This sends mic audio to the monitor speakers so users can verify
+        their microphone is working. Separate from virtual mic passthrough.
+
+        Args:
+            mic_device: Specific mic device to monitor (uses current if None)
+
+        Returns:
+            bool: True if monitoring started successfully
+        """
+        self.logger.info(f"[MIC_MONITOR] start_mic_monitor_to_speakers called, current running={self._mic_monitor_running}")
+        if self._mic_monitor_running:
+            self.logger.debug("Mic monitor already running")
+            return True
+
+        if not self.monitor_service:
+            self.logger.warning("Monitor service not available")
+            return False
+
+        try:
+            # Start mic capture if not already running
+            if not self.mic_capture_service or not self.mic_capture_service.is_capturing:
+                success = await self.start_mic_capture(mic_device)
+                if not success:
+                    self.logger.error("Failed to start mic capture for monitoring")
+                    return False
+
+            # Start streaming session on monitor
+            sample_rate = self.mic_capture_service.config.sample_rate
+            session_id = await self.monitor_service.start_streaming_session(
+                sample_rate=sample_rate,
+                channels=1,
+                sample_width=2
+            )
+
+            if not session_id:
+                self.logger.error("Failed to start monitor streaming session")
+                return False
+
+            self._mic_monitor_running = True
+            self._mic_monitor_task = asyncio.create_task(
+                self._mic_monitor_loop()
+            )
+            self.logger.info("Mic monitor to speakers started")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to start mic monitor: {e}")
+            return False
+
+    async def stop_mic_monitor_to_speakers(self) -> bool:
+        """
+        Stop monitoring microphone audio to speakers.
+
+        Returns:
+            bool: True if monitoring stopped successfully
+        """
+        if not self._mic_monitor_running:
+            return True
+
+        try:
+            self._mic_monitor_running = False
+
+            # Cancel the monitor task
+            if self._mic_monitor_task:
+                self._mic_monitor_task.cancel()
+                try:
+                    await self._mic_monitor_task
+                except asyncio.CancelledError:
+                    pass
+                self._mic_monitor_task = None
+
+            # Stop monitor streaming
+            if self.monitor_service:
+                await self.monitor_service.stop_streaming_session()
+
+            self.logger.info("Mic monitor to speakers stopped")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Error stopping mic monitor: {e}")
+            return False
+
+    async def _mic_monitor_loop(self):
+        """
+        Background loop for mic-to-speaker monitoring.
+
+        Reads mic audio chunks and plays them to the monitor speakers.
+        ONLY runs when user explicitly enables "Monitor Mic to Speakers".
+        """
+        self.logger.warning("[MIC_MONITOR] ====== MONITOR LOOP STARTED ======")
+        self.logger.warning("[MIC_MONITOR] This should ONLY happen when checkbox is checked!")
+
+        # Double-check we should actually be running
+        if not self._mic_monitor_running:
+            self.logger.error("[MIC_MONITOR] Loop started but _mic_monitor_running is False! Exiting.")
+            return
+
+        try:
+            while self._mic_monitor_running:
+                if self.mic_capture_service:
+                    chunk = self.mic_capture_service.get_audio_chunk()
+                    if chunk:
+                        try:
+                            await self.monitor_service.play_audio_chunk(chunk, is_final=False)
+                        except Exception as e:
+                            self.logger.warning(f"Error playing mic chunk to monitor: {e}")
+
+                # Small delay to prevent busy-waiting
+                await asyncio.sleep(0.01)
+
+        except asyncio.CancelledError:
+            self.logger.debug("Mic monitor loop cancelled")
+        except Exception as e:
+            self.logger.error(f"Error in mic monitor loop: {e}")
+        finally:
+            self._mic_monitor_running = False
+
+    def is_mic_monitor_active(self) -> bool:
+        """Check if mic monitor to speakers is active."""
+        return self._mic_monitor_running
 
     # Required BaseService attribute
     _is_initialized = False

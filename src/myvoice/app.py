@@ -99,6 +99,10 @@ class MyVoiceApp(QObject):
                 return False
 
             self._initialized = True
+
+            # Initialize mic mixing if enabled in settings
+            await self._setup_mic_mixing_from_settings()
+
             self.logger.info("MyVoice application initialization completed successfully")
             return True
 
@@ -320,6 +324,8 @@ class MyVoiceApp(QObject):
             self._main_window.voice_transcription_requested.connect(self._on_voice_transcription_requested)
             self._main_window.replay_last_requested.connect(self._on_replay_last_requested)  # Story 2.4
             self._main_window.whisper_init_requested.connect(self._on_whisper_init_requested)  # QA4
+            self._main_window.mic_device_refresh_requested.connect(self._on_mic_device_refresh_requested)
+            self._main_window.mic_monitor_toggled.connect(self._on_mic_monitor_toggled)
 
             # Connect TTS service to main window and update status
             # This must happen here since _on_tts_service_started's 100ms timer fires
@@ -1863,6 +1869,89 @@ class MyVoiceApp(QObject):
         if self._main_window:
             self._main_window.set_generation_status("Audio system failed to start", False)
 
+    async def _setup_mic_mixing_from_settings(self):
+        """
+        Setup microphone mixing based on current app settings.
+
+        Called during initialization and when settings change to ensure
+        mic mixing state matches the configuration.
+        """
+        if not hasattr(self, '_audio_coordinator') or not self._audio_coordinator:
+            self.logger.debug("Audio coordinator not available, skipping mic setup")
+            return
+
+        if not hasattr(self, '_app_settings') or not self._app_settings:
+            self.logger.debug("App settings not available, skipping mic setup")
+            return
+
+        try:
+            mic_enabled = getattr(self._app_settings, 'mic_mixing_enabled', False)
+            mic_device_id = getattr(self._app_settings, 'mic_input_device_id', None)
+            # Correct setting name for virtual mic
+            virtual_device_id = getattr(self._app_settings, 'virtual_microphone_device_id', None)
+
+            self.logger.info(f"[MIC_DEBUG] ========================================")
+            self.logger.info(f"[MIC_DEBUG] _setup_mic_mixing_from_settings called")
+            self.logger.info(f"[MIC_DEBUG] mic_mixing_enabled: {mic_enabled}")
+            self.logger.info(f"[MIC_DEBUG] mic_input_device_id: {mic_device_id}")
+            self.logger.info(f"[MIC_DEBUG] virtual_microphone_device_id: {virtual_device_id}")
+            self.logger.info(f"[MIC_DEBUG] mic_monitor_running: {self._audio_coordinator._mic_monitor_running}")
+            self.logger.info(f"[MIC_DEBUG] continuous_passthrough_running: {self._audio_coordinator._continuous_passthrough_running}")
+            if not mic_enabled:
+                self.logger.info(f"[MIC_DEBUG] NOTE: Mic mixing is DISABLED - enable 'Enable Microphone Mixing' in settings")
+            self.logger.info(f"[MIC_DEBUG] ========================================")
+
+            if mic_enabled:
+                # Ensure mic monitor to speakers is NOT running (that's a separate feature)
+                self.logger.info("[MIC_DEBUG] Stopping any existing mic monitor...")
+                await self._audio_coordinator.stop_mic_monitor_to_speakers()
+                self.logger.info(f"[MIC_DEBUG] After stop: mic_monitor_running={self._audio_coordinator._mic_monitor_running}")
+
+                # Enable mic mixing in coordinator
+                self._audio_coordinator.enable_mic_mixing(True)
+
+                # Get configured mic device
+                mic_device_id = getattr(self._app_settings, 'mic_input_device_id', None)
+                mic_device = None
+
+                if mic_device_id:
+                    # Find the device by ID
+                    try:
+                        mic_devices = await self._audio_coordinator.enumerate_mic_devices()
+                        for device in mic_devices:
+                            if device.device_id == mic_device_id:
+                                mic_device = device
+                                break
+                    except Exception as e:
+                        self.logger.warning(f"Error enumerating mic devices: {e}")
+
+                # Start mic capture (uses default if no device specified)
+                success = await self._audio_coordinator.start_mic_capture(mic_device)
+
+                if success:
+                    # Set mic volume from settings
+                    mic_volume = getattr(self._app_settings, 'mic_volume', 1.0)
+                    self._audio_coordinator.set_mic_volume(mic_volume)
+
+                    # Start continuous passthrough for mic audio to virtual mic
+                    passthrough_success = await self._audio_coordinator.start_continuous_mic_passthrough()
+                    if passthrough_success:
+                        self.logger.info(f"Mic mixing and passthrough started with volume {mic_volume:.2f}")
+                    else:
+                        self.logger.info(f"Mic mixing started (passthrough pending) with volume {mic_volume:.2f}")
+                else:
+                    self.logger.warning("Failed to start mic capture")
+            else:
+                # Disable mic mixing and stop passthrough
+                await self._audio_coordinator.stop_continuous_mic_passthrough()
+                await self._audio_coordinator.stop_mic_monitor_to_speakers()  # Ensure monitor is stopped
+                self._audio_coordinator.enable_mic_mixing(False)
+                await self._audio_coordinator.stop_mic_capture()
+                self.logger.debug("Mic mixing and passthrough disabled")
+
+        except Exception as e:
+            self.logger.error(f"Error setting up mic mixing: {e}")
+
     def _on_settings_changed(self, new_settings):
         """
         Handle settings changes from the UI.
@@ -1921,6 +2010,13 @@ class MyVoiceApp(QObject):
                     on_error=lambda error: self.logger.error(f"Failed to update audio coordinator settings: {error}")
                 )
 
+                # Handle mic mixing enable/disable based on settings
+                self._run_async_task(
+                    self._setup_mic_mixing_from_settings(),
+                    on_success=lambda _: self.logger.debug("Mic mixing settings applied"),
+                    on_error=lambda error: self.logger.error(f"Failed to apply mic mixing settings: {error}")
+                )
+
         except Exception as e:
             self.logger.error(f"Error handling settings changes: {e}")
 
@@ -1957,6 +2053,11 @@ class MyVoiceApp(QObject):
                 virtual_devices = devices.get("virtual", [])
                 self._main_window.settings_dialog.update_virtual_device_list(virtual_devices)
                 self.logger.info(f"Updated virtual device list with {len(virtual_devices)} devices")
+
+                # Update mic input devices (for microphone mixing)
+                mic_devices = devices.get("mic", [])
+                self._main_window.settings_dialog.update_mic_device_list(mic_devices)
+                self.logger.info(f"Updated mic device list with {len(mic_devices)} devices")
             else:
                 # Fallback for direct device list (backward compatibility)
                 self._main_window.settings_dialog.update_device_list(devices)
@@ -1964,6 +2065,90 @@ class MyVoiceApp(QObject):
     def _on_device_refresh_failed(self, error):
         """Handle device refresh failure."""
         self.logger.error(f"Device refresh failed: {error}")
+
+    def _on_mic_device_refresh_requested(self):
+        """Handle microphone input device refresh request from the UI."""
+        self.logger.info("Microphone device refresh requested")
+
+        try:
+            if hasattr(self, '_audio_coordinator') and self._audio_coordinator:
+                self._run_async_task(
+                    self._audio_coordinator.enumerate_mic_devices(),
+                    on_success=self._on_mic_device_refresh_complete,
+                    on_error=self._on_mic_device_refresh_failed
+                )
+        except Exception as e:
+            self.logger.error(f"Error refreshing mic devices: {e}")
+
+    def _on_mic_device_refresh_complete(self, mic_devices):
+        """Handle completion of microphone device refresh."""
+        self.logger.info(f"Mic device refresh completed with {len(mic_devices) if mic_devices else 0} devices")
+
+        # Update settings dialog mic device list
+        if self._main_window and hasattr(self._main_window, 'settings_dialog') and self._main_window.settings_dialog:
+            self._main_window.settings_dialog.update_mic_device_list(mic_devices or [])
+
+    def _on_mic_device_refresh_failed(self, error):
+        """Handle microphone device refresh failure."""
+        self.logger.error(f"Mic device refresh failed: {error}")
+        # Update UI with empty list on failure
+        if self._main_window and hasattr(self._main_window, 'settings_dialog') and self._main_window.settings_dialog:
+            self._main_window.settings_dialog.update_mic_device_list([])
+
+    def _on_mic_monitor_toggled(self, enabled: bool, device_id: str):
+        """
+        Handle mic monitor toggle from settings dialog.
+
+        Args:
+            enabled: True to start monitoring, False to stop
+            device_id: ID of the microphone device to monitor
+        """
+        self.logger.info(f"Mic monitor toggled: enabled={enabled}, device_id={device_id}")
+
+        try:
+            if not hasattr(self, '_audio_coordinator') or not self._audio_coordinator:
+                self.logger.warning("Audio coordinator not available for mic monitor")
+                return
+
+            if enabled:
+                # Find the device by ID
+                async def start_monitor():
+                    mic_device = None
+                    if device_id:
+                        try:
+                            mic_devices = await self._audio_coordinator.enumerate_mic_devices()
+                            for device in mic_devices:
+                                if device.device_id == device_id:
+                                    mic_device = device
+                                    break
+                        except Exception as e:
+                            self.logger.warning(f"Error finding mic device: {e}")
+
+                    success = await self._audio_coordinator.start_mic_monitor_to_speakers(mic_device)
+                    if success:
+                        self.logger.info("Mic monitor to speakers started")
+                    else:
+                        self.logger.warning("Failed to start mic monitor")
+                        # Update UI to reflect failure
+                        if self._main_window and hasattr(self._main_window, 'settings_dialog'):
+                            dialog = self._main_window.settings_dialog
+                            if dialog:
+                                dialog.mic_monitor_checkbox.blockSignals(True)
+                                dialog.mic_monitor_checkbox.setChecked(False)
+                                dialog.mic_monitor_checkbox.blockSignals(False)
+                                dialog._show_mic_status("Failed to start mic monitor", "error")
+
+                self._run_async_task(start_monitor())
+            else:
+                # Stop monitoring
+                self._run_async_task(
+                    self._audio_coordinator.stop_mic_monitor_to_speakers(),
+                    on_success=lambda _: self.logger.debug("Mic monitor stopped"),
+                    on_error=lambda e: self.logger.error(f"Error stopping mic monitor: {e}")
+                )
+
+        except Exception as e:
+            self.logger.error(f"Error handling mic monitor toggle: {e}")
 
     def _on_device_test_requested(self, device_id):
         """
@@ -2465,12 +2650,14 @@ class MyVoiceApp(QObject):
                 # Get updated device lists from audio coordinator
                 monitor_devices = await self._audio_coordinator.monitor_service.enumerate_monitor_devices()
                 virtual_devices = await self._audio_coordinator.virtual_service.enumerate_virtual_devices()
+                mic_devices = await self._audio_coordinator.enumerate_mic_devices()
 
                 # Update settings dialog device lists on the main thread
                 def update_ui():
                     try:
                         self._main_window.settings_dialog.update_device_list(monitor_devices)
                         self._main_window.settings_dialog.update_virtual_device_list(virtual_devices)
+                        self._main_window.settings_dialog.update_mic_device_list(mic_devices or [])
                         self.logger.debug("Auto-refreshed device lists in settings dialog")
                     except Exception as e:
                         self.logger.error(f"Error updating device lists in UI: {e}")

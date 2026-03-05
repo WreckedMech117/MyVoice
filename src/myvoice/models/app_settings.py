@@ -87,6 +87,13 @@ class AppSettings:
     virtual_microphone_device_name: Optional[str] = None
     virtual_microphone_device_host_api: Optional[str] = None
 
+    # Microphone mixing settings (mic input + TTS mixed to virtual mic)
+    mic_mixing_enabled: bool = False
+    mic_input_device_id: Optional[str] = None
+    mic_input_device_name: Optional[str] = None
+    mic_input_device_host_api: Optional[str] = None
+    mic_volume: float = 1.0  # 0.0 to 1.0
+
     # Advanced settings
     advanced_settings: Dict[str, Any] = field(default_factory=dict)
 
@@ -454,6 +461,11 @@ class AppSettings:
                 "virtual_microphone_device_id": self.virtual_microphone_device_id,
                 "virtual_microphone_device_name": self.virtual_microphone_device_name,
                 "virtual_microphone_device_host_api": self.virtual_microphone_device_host_api,
+                "mic_mixing_enabled": self.mic_mixing_enabled,
+                "mic_input_device_id": self.mic_input_device_id,
+                "mic_input_device_name": self.mic_input_device_name,
+                "mic_input_device_host_api": self.mic_input_device_host_api,
+                "mic_volume": self.mic_volume,
                 "advanced_settings": self.advanced_settings.copy(),
                 "training_enabled": self.training_enabled,
                 "training_workspace_directory": self.training_workspace_directory,
@@ -499,7 +511,7 @@ class AppSettings:
                 always_on_top=data.get("always_on_top", True),
                 window_geometry=data.get("window_geometry"),
                 window_transparency=data.get("window_transparency", 1.0),
-                minimize_to_tray=data.get("minimize_to_tray", True),
+                minimize_to_tray=data.get("minimize_to_tray", False),
                 tray_notification_shown=data.get("tray_notification_shown", False),
                 tts_service_url=data.get("tts_service_url", "http://localhost:9880"),
                 tts_service_timeout=data.get("tts_service_timeout", 30),
@@ -511,6 +523,11 @@ class AppSettings:
                 virtual_microphone_device_id=data.get("virtual_microphone_device_id"),
                 virtual_microphone_device_name=data.get("virtual_microphone_device_name"),
                 virtual_microphone_device_host_api=data.get("virtual_microphone_device_host_api"),
+                mic_mixing_enabled=data.get("mic_mixing_enabled", False),
+                mic_input_device_id=data.get("mic_input_device_id"),
+                mic_input_device_name=data.get("mic_input_device_name"),
+                mic_input_device_host_api=data.get("mic_input_device_host_api"),
+                mic_volume=data.get("mic_volume", 1.0),
                 advanced_settings=data.get("advanced_settings", {}),
                 training_enabled=data.get("training_enabled", True),
                 training_workspace_directory=data.get("training_workspace_directory", "training_workspace"),
@@ -621,7 +638,10 @@ class AppSettings:
             "tts_service_timeout", "enable_audio_monitoring", "monitor_device_id",
             "monitor_device_name", "monitor_device_host_api",
             "virtual_microphone_device_id", "virtual_microphone_device_name",
-            "virtual_microphone_device_host_api", "advanced_settings",
+            "virtual_microphone_device_host_api",
+            "mic_mixing_enabled", "mic_input_device_id", "mic_input_device_name",
+            "mic_input_device_host_api", "mic_volume",
+            "advanced_settings",
             "training_enabled", "training_workspace_directory",
             "custom_emotion_text", "custom_emotion_presets"
         ]:

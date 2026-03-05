@@ -60,6 +60,10 @@ class SettingsDialog(QDialog):
     transparency_preview_requested = pyqtSignal(float)  # Story 7.3: Real-time transparency preview (opacity 0.0-1.0)
     voice_created = pyqtSignal(object)  # VoiceProfile - emitted when voice is created (design/clone)
     voice_deleted = pyqtSignal(str)  # voice_name - emitted when voice is deleted
+    # Microphone mixing signals
+    mic_device_refresh_requested = pyqtSignal()  # Request mic device list refresh
+    mic_test_requested = pyqtSignal(str)  # device_id - Request mic test playback (deprecated)
+    mic_monitor_toggled = pyqtSignal(bool, str)  # (enabled, device_id) - Toggle mic-to-speaker monitor
 
     def __init__(self, settings: AppSettings, parent: Optional[QWidget] = None, quick_speak_service: Optional[QuickSpeakService] = None, audio_client=None):
         """
@@ -82,6 +86,7 @@ class SettingsDialog(QDialog):
         self.audio_devices: List[AudioDevice] = []
         self.output_devices: List[AudioDevice] = []
         self.virtual_input_devices: List[AudioDevice] = []
+        self.mic_input_devices: List[AudioDevice] = []  # Physical microphone devices
 
         # Audio client for smart device matching
         self.audio_client = audio_client
@@ -279,6 +284,91 @@ class SettingsDialog(QDialog):
         vb_cable_layout.addWidget(vb_donation_label)
 
         layout.addWidget(vb_cable_group)
+
+        # Microphone Input Group (for mixing mic audio with TTS)
+        mic_input_group = QGroupBox("Microphone Input (Mix with TTS)")
+        mic_input_layout = QVBoxLayout(mic_input_group)
+
+        # Enable microphone mixing checkbox
+        self.mic_mixing_checkbox = QCheckBox("Enable Microphone Mixing")
+        self.mic_mixing_checkbox.setToolTip(
+            "When enabled, your microphone audio will be mixed with TTS output "
+            "and sent to the virtual microphone for Discord/Zoom/Teams."
+        )
+        self.mic_mixing_checkbox.stateChanged.connect(self._on_mic_mixing_toggled)
+        mic_input_layout.addWidget(self.mic_mixing_checkbox)
+
+        # Mic device selection row
+        mic_device_layout = QHBoxLayout()
+        mic_device_layout.addWidget(QLabel("Input Device:"))
+
+        self.mic_device_combo = QComboBox()
+        self.mic_device_combo.setMinimumWidth(250)
+        self.mic_device_combo.setEnabled(False)  # Disabled until mixing enabled
+        self.mic_device_combo.currentTextChanged.connect(self._on_mic_device_selection_changed)
+        mic_device_layout.addWidget(self.mic_device_combo, 1)
+
+        self.mic_refresh_button = QPushButton("Refresh")
+        self.mic_refresh_button.setMaximumWidth(120)
+        self.mic_refresh_button.setEnabled(False)
+        self.mic_refresh_button.clicked.connect(self._on_refresh_mic_devices)
+        mic_device_layout.addWidget(self.mic_refresh_button)
+
+        mic_input_layout.addLayout(mic_device_layout)
+
+        # Microphone volume slider
+        mic_volume_layout = QHBoxLayout()
+        mic_volume_layout.addWidget(QLabel("Mic Volume:"))
+
+        self.mic_volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self.mic_volume_slider.setMinimum(0)
+        self.mic_volume_slider.setMaximum(100)
+        self.mic_volume_slider.setValue(100)
+        self.mic_volume_slider.setEnabled(False)
+        self.mic_volume_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.mic_volume_slider.setTickInterval(10)
+        self.mic_volume_slider.valueChanged.connect(self._on_mic_volume_changed)
+        mic_volume_layout.addWidget(self.mic_volume_slider, 1)
+
+        self.mic_volume_label = QLabel("100%")
+        self.mic_volume_label.setMinimumWidth(40)
+        mic_volume_layout.addWidget(self.mic_volume_label)
+
+        mic_input_layout.addLayout(mic_volume_layout)
+
+        # Monitor mic to speakers toggle (for testing microphone)
+        mic_monitor_layout = QHBoxLayout()
+        self.mic_monitor_checkbox = QCheckBox("Monitor Mic to Speakers")
+        self.mic_monitor_checkbox.setChecked(False)  # Explicitly unchecked by default
+        self.mic_monitor_checkbox.setEnabled(False)
+        self.mic_monitor_checkbox.setToolTip(
+            "When enabled, plays microphone audio through your speakers so you can "
+            "verify the microphone is working. Turn off when done testing.\n\n"
+            "NOTE: If you hear your mic without this enabled, check Windows Sound "
+            "settings for 'Listen to this device' option."
+        )
+        self.mic_monitor_checkbox.stateChanged.connect(self._on_mic_monitor_toggled)
+        mic_monitor_layout.addWidget(self.mic_monitor_checkbox)
+        mic_monitor_layout.addStretch()
+        mic_input_layout.addLayout(mic_monitor_layout)
+
+        # Mic status label
+        self.mic_status_label = QLabel("")
+        self.mic_status_label.setWordWrap(True)
+        self.mic_status_label.setProperty("class", "status-label")
+        mic_input_layout.addWidget(self.mic_status_label)
+
+        # Windows warning label
+        windows_warning = QLabel(
+            "Tip: If you hear your mic playing through speakers even when 'Monitor Mic to Speakers' "
+            "is off, check Windows Sound Settings: Recording > [Your Mic] > Properties > Listen > "
+            "disable 'Listen to this device'."
+        )
+        windows_warning.setWordWrap(True)
+        windows_warning.setStyleSheet("color: #888888; font-size: 11px; margin-top: 8px;")
+        mic_input_layout.addWidget(windows_warning)
+
+        layout.addWidget(mic_input_group)
 
         layout.addStretch()
         self.tab_widget.addTab(audio_tab, "Audio")
@@ -669,6 +759,14 @@ class SettingsDialog(QDialog):
             else:
                 self.model_quality_quality.setChecked(True)
 
+            # Microphone mixing settings
+            self.mic_mixing_checkbox.setChecked(self.current_settings.mic_mixing_enabled)
+            mic_volume_percent = int(self.current_settings.mic_volume * 100)
+            self.mic_volume_slider.setValue(mic_volume_percent)
+            self.mic_volume_label.setText(f"{mic_volume_percent}%")
+            # Enable/disable mic controls based on checkbox state
+            self._update_mic_controls_enabled(self.current_settings.mic_mixing_enabled)
+
             self.logger.debug("Loaded current settings into UI")
 
         except Exception as e:
@@ -748,6 +846,30 @@ class SettingsDialog(QDialog):
                 self.current_settings.model_quality_tier = "small"
             else:
                 self.current_settings.model_quality_tier = "quality"
+
+            # Microphone mixing settings
+            self.current_settings.mic_mixing_enabled = self.mic_mixing_checkbox.isChecked()
+            self.current_settings.mic_volume = self.mic_volume_slider.value() / 100.0
+
+            # Get selected mic device ID and metadata
+            current_mic_device_id = self.mic_device_combo.currentData()
+            self.current_settings.mic_input_device_id = current_mic_device_id
+
+            # Capture mic device metadata for persistence
+            if current_mic_device_id:
+                selected_mic_device = None
+                for device in self.mic_input_devices:
+                    if device.device_id == current_mic_device_id:
+                        selected_mic_device = device
+                        break
+
+                if selected_mic_device:
+                    self.current_settings.mic_input_device_name = selected_mic_device.name
+                    self.current_settings.mic_input_device_host_api = getattr(selected_mic_device, 'host_api_name', None)
+                    self.logger.debug(f"Saved mic device metadata: {selected_mic_device.name}")
+            else:
+                self.current_settings.mic_input_device_name = None
+                self.current_settings.mic_input_device_host_api = None
 
             self.logger.debug("Saved UI values to current settings")
 
@@ -1863,3 +1985,189 @@ class SettingsDialog(QDialog):
 
         except Exception as e:
             self.logger.error(f"Error handling transparency change: {e}")
+
+    # =========================================================================
+    # Microphone Mixing Methods
+    # =========================================================================
+
+    def _on_mic_mixing_toggled(self, state: int):
+        """
+        Handle microphone mixing checkbox toggle.
+
+        Args:
+            state: Qt checkbox state (Qt.CheckState.Checked or Unchecked)
+        """
+        enabled = state == Qt.CheckState.Checked.value
+        self._update_mic_controls_enabled(enabled)
+
+        if enabled:
+            self._show_mic_status("Microphone mixing enabled. Select an input device.", "info")
+            # Auto-refresh mic devices when enabled
+            self._on_refresh_mic_devices()
+        else:
+            self._show_mic_status("Microphone mixing disabled.", "info")
+
+        self.logger.debug(f"Mic mixing toggled: {'enabled' if enabled else 'disabled'}")
+
+    def _update_mic_controls_enabled(self, enabled: bool):
+        """Enable or disable mic-related controls based on checkbox state."""
+        self.mic_device_combo.setEnabled(enabled)
+        self.mic_refresh_button.setEnabled(enabled)
+        self.mic_volume_slider.setEnabled(enabled)
+        self.mic_monitor_checkbox.setEnabled(enabled and self.mic_device_combo.currentData() is not None)
+
+    def _on_mic_device_selection_changed(self):
+        """Handle mic device selection change."""
+        self._validate_selected_mic_device()
+        # Enable monitor checkbox only if a device is selected
+        device_selected = self.mic_device_combo.currentData() is not None
+        self.mic_monitor_checkbox.setEnabled(
+            self.mic_mixing_checkbox.isChecked() and device_selected
+        )
+        # If device changes while monitoring, stop monitoring
+        if self.mic_monitor_checkbox.isChecked() and device_selected:
+            # Device changed, stop current monitoring
+            self.mic_monitor_checkbox.setChecked(False)
+
+    def _validate_selected_mic_device(self):
+        """Validate the currently selected mic device."""
+        try:
+            device_id = self.mic_device_combo.currentData()
+
+            if device_id is None:
+                self._show_mic_status("Select a microphone input device", "info")
+                return
+
+            # Find device info
+            selected_device = None
+            for device in self.mic_input_devices:
+                if device.device_id == device_id:
+                    selected_device = device
+                    break
+
+            if selected_device:
+                if selected_device.is_available:
+                    status_msg = f"Microphone ready: {selected_device.name}"
+                    self._show_mic_status(status_msg, "success")
+                else:
+                    self._show_mic_status("Microphone not currently available", "warning")
+            else:
+                self._show_mic_status("Microphone not found", "error")
+
+        except Exception as e:
+            self.logger.error(f"Error validating mic device: {e}")
+            self._show_mic_status("Error validating microphone", "error")
+
+    def _on_mic_volume_changed(self, value: int):
+        """Handle mic volume slider change."""
+        self.mic_volume_label.setText(f"{value}%")
+
+    def _on_refresh_mic_devices(self):
+        """Handle mic device refresh button click."""
+        self._show_mic_status("Refreshing microphone devices...", "info")
+        # Emit signal for parent to handle
+        self.mic_device_refresh_requested.emit()
+
+    def _on_test_microphone(self):
+        """Handle test microphone button click (deprecated - use toggle instead)."""
+        device_id = self.mic_device_combo.currentData()
+        if device_id:
+            self._show_mic_status("Testing microphone...", "info")
+            self.mic_test_requested.emit(device_id)
+
+    def _on_mic_monitor_toggled(self, state: int):
+        """Handle mic monitor toggle checkbox change."""
+        from PyQt6.QtCore import Qt
+        enabled = state == Qt.CheckState.Checked.value
+        device_id = self.mic_device_combo.currentData()
+
+        if enabled:
+            if device_id:
+                self._show_mic_status("Monitoring microphone to speakers...", "info")
+                self.mic_monitor_toggled.emit(True, device_id)
+            else:
+                self._show_mic_status("Select a microphone device first", "warning")
+                # Uncheck without triggering signal
+                self.mic_monitor_checkbox.blockSignals(True)
+                self.mic_monitor_checkbox.setChecked(False)
+                self.mic_monitor_checkbox.blockSignals(False)
+        else:
+            self._show_mic_status("Mic monitoring stopped", "info")
+            self.mic_monitor_toggled.emit(False, device_id or "")
+
+    def stop_mic_monitor(self):
+        """
+        Stop mic monitoring if active.
+
+        Called when dialog is closed to cleanup active monitoring.
+        """
+        if self.mic_monitor_checkbox.isChecked():
+            self.mic_monitor_checkbox.setChecked(False)
+
+    def _show_mic_status(self, message: str, status_type: str = "info"):
+        """
+        Show mic configuration feedback to user.
+
+        Args:
+            message: Status message to display
+            status_type: Type of status (info, success, warning, error)
+        """
+        self.mic_status_label.setText(message)
+        self.mic_status_label.setProperty("status", status_type)
+
+    def update_mic_device_list(self, mic_devices: List[AudioDevice]):
+        """
+        Update the microphone device dropdown with available input devices.
+
+        Args:
+            mic_devices: List of microphone input devices to populate dropdown
+        """
+        try:
+            self.mic_input_devices = mic_devices
+
+            # Store current selection for restoration
+            current_mic_device_id = self.current_settings.mic_input_device_id
+            current_mic_device_name = self.current_settings.mic_input_device_name
+
+            # Clear and repopulate combo box
+            self.mic_device_combo.clear()
+            self.mic_device_combo.addItem("(Select microphone...)", None)
+
+            if not mic_devices:
+                self.mic_device_combo.addItem("(No microphones found)", None)
+                self._show_mic_status("No microphone devices found", "warning")
+            else:
+                # Add available microphone devices
+                for device in mic_devices:
+                    if not device.is_available:
+                        continue
+
+                    display_name = f"{device.name}"
+                    if device.is_default:
+                        display_name += " (Default)"
+
+                    self.mic_device_combo.addItem(display_name, device.device_id)
+
+                # Restore selection
+                if current_mic_device_id:
+                    index = self.mic_device_combo.findData(current_mic_device_id)
+                    if index >= 0:
+                        self.mic_device_combo.setCurrentIndex(index)
+                        self._validate_selected_mic_device()
+                        self.logger.debug(f"Restored mic device selection: {current_mic_device_name}")
+                    else:
+                        self._show_mic_status("Previously selected microphone not found", "warning")
+                else:
+                    self._show_mic_status(f"Found {len(mic_devices)} microphone(s). Select one to enable mixing.", "info")
+
+            self.logger.info(f"Updated mic device list with {len(mic_devices)} devices")
+
+        except Exception as e:
+            self.logger.error(f"Error updating mic device list: {e}")
+            self._show_mic_status("Error updating microphone list", "error")
+
+    def closeEvent(self, event):
+        """Handle dialog close event - cleanup mic monitoring."""
+        # Stop mic monitoring if active
+        self.stop_mic_monitor()
+        super().closeEvent(event)

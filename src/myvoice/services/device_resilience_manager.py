@@ -36,6 +36,7 @@ class DeviceRole(Enum):
     """Role of an audio device in the application."""
     MONITOR = "monitor"
     VIRTUAL_MIC = "virtual_mic"
+    MICROPHONE = "microphone"  # Physical microphone for input mixing
 
 
 @dataclass
@@ -108,6 +109,7 @@ class DeviceResilienceManager(BaseService):
         self._device_states: Dict[DeviceRole, DeviceState] = {
             DeviceRole.MONITOR: DeviceState(role=DeviceRole.MONITOR),
             DeviceRole.VIRTUAL_MIC: DeviceState(role=DeviceRole.VIRTUAL_MIC),
+            DeviceRole.MICROPHONE: DeviceState(role=DeviceRole.MICROPHONE),
         }
 
         # Device change handler for business logic
@@ -372,6 +374,11 @@ class DeviceResilienceManager(BaseService):
         # Attempt fallback for monitor device
         if role == DeviceRole.MONITOR and self.config.fallback_to_default_on_disconnect:
             self._attempt_fallback(role, state, event)
+
+        # For microphone, no fallback - just notify that mic mixing will be disabled
+        if role == DeviceRole.MICROPHONE:
+            self.logger.info("Microphone disconnected - mic mixing will be disabled")
+            # Mic-specific notification is handled by the standard notification above
 
     def _handle_device_added(
         self,
@@ -651,6 +658,11 @@ class DeviceResilienceManager(BaseService):
                 "name": self._device_states[DeviceRole.VIRTUAL_MIC].device.name
                     if self._device_states[DeviceRole.VIRTUAL_MIC].device else None,
                 "connected": self._device_states[DeviceRole.VIRTUAL_MIC].is_connected,
+            },
+            "microphone_device": {
+                "name": self._device_states[DeviceRole.MICROPHONE].device.name
+                    if self._device_states[DeviceRole.MICROPHONE].device else None,
+                "connected": self._device_states[DeviceRole.MICROPHONE].is_connected,
             },
             "pending_recoveries": len(self._pending_recoveries),
         }

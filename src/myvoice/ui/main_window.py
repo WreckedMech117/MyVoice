@@ -34,6 +34,7 @@ from myvoice.ui.components.resize_grip import SideGrip, CornerGrip
 from myvoice.ui.components.quick_speak_dialog import QuickSpeakDialog
 from myvoice.ui.components.quick_speak_menu import QuickSpeakMenu
 from myvoice.ui.components.emotion_button_group import EmotionButtonGroup, EmotionPreset
+from myvoice.ui.components.mic_control_widget import MicControlWidget
 from myvoice.models.ui_state import UIState, ServiceStatusInfo, ServiceHealthStatus
 from myvoice.models.app_settings import AppSettings
 from myvoice.services.quick_speak_service import QuickSpeakService
@@ -66,6 +67,11 @@ class MainWindow(QMainWindow):
     voice_refresh_requested = pyqtSignal()  # voice profile refresh
     voice_transcription_requested = pyqtSignal(str)  # voice_profile_name - transcription requested
     replay_last_requested = pyqtSignal()  # Story 2.4: Replay last generated audio (FR28)
+    # Microphone control signals
+    mic_mute_toggled = pyqtSignal(bool)  # is_muted
+    mic_volume_changed = pyqtSignal(float)  # volume 0.0-1.0
+    mic_device_refresh_requested = pyqtSignal()  # Request mic input device enumeration
+    mic_monitor_toggled = pyqtSignal(bool, str)  # (enabled, device_id) - Monitor mic to speakers
 
     def __init__(self, parent: Optional[QWidget] = None):
         """
@@ -275,6 +281,13 @@ class MainWindow(QMainWindow):
         emotion_voice_layout.addWidget(self.settings_button)
 
         content_layout.addLayout(emotion_voice_layout)
+
+        # Microphone control widget (visible only when mic mixing enabled)
+        self.mic_control_widget = MicControlWidget()
+        self.mic_control_widget.mute_toggled.connect(self._on_mic_mute_toggled)
+        self.mic_control_widget.volume_changed.connect(self._on_mic_volume_changed)
+        self.mic_control_widget.setVisible(False)  # Hidden by default
+        content_layout.addWidget(self.mic_control_widget)
 
         # Add content widget to main layout
         main_layout.addWidget(content_widget)
@@ -1676,6 +1689,8 @@ class MainWindow(QMainWindow):
         Handles:
         - ESC: Clear text input
         - Ctrl+R: Replay last audio (Story 2.4: FR28)
+        - Ctrl+S: Open Settings (Story 6.1: FR40)
+        - Ctrl+M: Toggle microphone mute (when mic mixing enabled)
         - F1-F5: Emotion keyboard shortcuts (Story 3.5: FR6)
           - F1: Neutral, F2: Happy, F3: Sad, F4: Angry, F5: Flirtatious
           - Window-scoped (works even when text input focused)
@@ -1707,6 +1722,13 @@ class MainWindow(QMainWindow):
         if key == Qt.Key.Key_S and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self._on_settings_clicked()
             self.logger.debug("Settings opened via Ctrl+S")
+            return
+
+        # Microphone mute toggle: Ctrl+M
+        if key == Qt.Key.Key_M and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            if hasattr(self, 'mic_control_widget') and self.mic_control_widget.isVisible():
+                self.toggle_mic_mute()
+                self.logger.debug("Mic mute toggled via Ctrl+M")
             return
 
         # Story 3.5: F1-F5 Emotion Keyboard Shortcuts
@@ -2022,6 +2044,14 @@ class MainWindow(QMainWindow):
                 # Voice creation/deletion signals (Story 4.2: Voice Design Creation Workflow)
                 self.settings_dialog.voice_created.connect(self._on_voice_created_from_settings)
                 self.settings_dialog.voice_deleted.connect(self._on_voice_deleted_from_settings)
+                # Microphone input device refresh signal
+                self.settings_dialog.mic_device_refresh_requested.connect(
+                    self.mic_device_refresh_requested.emit
+                )
+                # Microphone monitor toggle signal
+                self.settings_dialog.mic_monitor_toggled.connect(
+                    self.mic_monitor_toggled.emit
+                )
             else:
                 # Update with current settings
                 self.settings_dialog.current_settings = AppSettings.from_dict(self.app_settings.to_dict())
@@ -2327,3 +2357,72 @@ class MainWindow(QMainWindow):
                 self.logger.debug("Quick Speak dialog invalidated due to entries/profile change")
         except Exception as e:
             self.logger.error(f"Error handling Quick Speak entries change: {e}")
+
+    # =========================================================================
+    # Microphone Control Methods
+    # =========================================================================
+
+    def _on_mic_mute_toggled(self, is_muted: bool):
+        """
+        Handle mic mute toggle from mic control widget.
+
+        Args:
+            is_muted: True if mic is now muted
+        """
+        self.mic_mute_toggled.emit(is_muted)
+        status_text = "Microphone muted" if is_muted else "Microphone active"
+        self.status_bar.showMessage(status_text, 2000)
+        self.logger.debug(f"Mic mute toggled: {is_muted}")
+
+    def _on_mic_volume_changed(self, volume: float):
+        """
+        Handle mic volume change from mic control widget.
+
+        Args:
+            volume: New volume level (0.0 to 1.0)
+        """
+        self.mic_volume_changed.emit(volume)
+        self.logger.debug(f"Mic volume changed: {volume:.2f}")
+
+    def show_mic_controls(self, visible: bool, device_name: str = ""):
+        """
+        Show or hide microphone controls.
+
+        Called when mic mixing is enabled/disabled in settings.
+
+        Args:
+            visible: True to show mic controls
+            device_name: Name of selected mic device
+        """
+        if hasattr(self, 'mic_control_widget'):
+            self.mic_control_widget.setVisible(visible)
+            if device_name:
+                self.mic_control_widget.set_device_name(device_name)
+            self.logger.debug(f"Mic controls {'shown' if visible else 'hidden'}")
+
+    def set_mic_muted(self, muted: bool):
+        """
+        Set mic mute state from external source.
+
+        Args:
+            muted: True to show muted state
+        """
+        if hasattr(self, 'mic_control_widget'):
+            self.mic_control_widget.set_muted(muted)
+
+    def set_mic_volume(self, volume: float):
+        """
+        Set mic volume from external source.
+
+        Args:
+            volume: Volume level (0.0 to 1.0)
+        """
+        if hasattr(self, 'mic_control_widget'):
+            self.mic_control_widget.set_volume(volume)
+
+    def toggle_mic_mute(self):
+        """Toggle mic mute state (keyboard shortcut handler)."""
+        if hasattr(self, 'mic_control_widget') and self.mic_control_widget.isVisible():
+            current_muted = self.mic_control_widget.is_muted()
+            self.mic_control_widget.set_muted(not current_muted)
+            self._on_mic_mute_toggled(not current_muted)
