@@ -15,6 +15,11 @@ __all__ = [
     'AudioCoordinator',
     'MonitorAudioService',
     'VirtualMicrophoneService',
+    'MicrophoneCaptureService',
+    'AudioMixerService',
+    # Microphone mixing types
+    'MicrophoneMixingMode',
+    'MicrophoneMixingConfig',
     # Device resilience (Story 2.5)
     'DeviceResilienceManager',
     'DeviceResilienceConfig',
@@ -63,6 +68,15 @@ def __getattr__(name):
     elif name == 'VirtualMicrophoneService':
         from .virtual_microphone_service import VirtualMicrophoneService
         return VirtualMicrophoneService
+    elif name == 'MicrophoneCaptureService':
+        from .microphone_capture_service import MicrophoneCaptureService
+        return MicrophoneCaptureService
+    elif name == 'AudioMixerService':
+        from .audio_mixer_service import AudioMixerService
+        return AudioMixerService
+    elif name in ('MicrophoneMixingMode', 'MicrophoneMixingConfig'):
+        from .audio_coordinator import MicrophoneMixingMode, MicrophoneMixingConfig
+        return locals()[name]
     elif name in ('DeviceResilienceManager', 'DeviceResilienceConfig', 'DeviceRole'):
         from .device_resilience_manager import (
             DeviceResilienceManager, DeviceResilienceConfig, DeviceRole

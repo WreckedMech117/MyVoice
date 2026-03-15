@@ -64,6 +64,7 @@ class EmotionTabWidget(QWidget):
     variant_selected = pyqtSignal(str, int)  # emotion, variant_index
     variant_deselected = pyqtSignal(str)  # emotion
     transcription_requested = pyqtSignal(str, str)  # QA6: emotion, audio_path - for Whisper transcription
+    voice_description_changed = pyqtSignal(str, str)  # QA Round 3: emotion, new_description - sync across tabs
 
     def __init__(
         self,
@@ -351,6 +352,8 @@ class EmotionTabWidget(QWidget):
 
         # QA7: Description text changes (now editable)
         self.description_display.textChanged.connect(self._update_generate_button_state)
+        # QA Round 3: Emit signal when user edits description for cross-tab sync
+        self.description_display.textChanged.connect(self._on_description_changed)
 
         # Instruction text changes
         self.instruction_edit.textChanged.connect(self._on_instruction_changed)
@@ -408,6 +411,19 @@ class EmotionTabWidget(QWidget):
         if template_text:  # Default template
             self.instruction_edit.setPlainText(template_text)
         # Custom template leaves current text as-is
+
+    def _on_description_changed(self):
+        """
+        QA Round 3: Handle voice description text changes.
+
+        Emits signal so EmotionsPanel can sync the description to all other
+        emotion tabs. This ensures edits in any tab propagate to all tabs.
+        """
+        new_description = self.description_display.toPlainText().strip()
+        # Only emit if description actually changed (avoid infinite loops)
+        if new_description != self._voice_description:
+            self._voice_description = new_description
+            self.voice_description_changed.emit(self._emotion, new_description)
 
     def _on_instruction_changed(self):
         """Handle instruction text changes."""
@@ -786,6 +802,7 @@ class EmotionsPanel(QWidget):
     proceed_to_refinement_requested = pyqtSignal()
     neutral_selection_changed = pyqtSignal(bool)  # has_selection
     transcription_requested = pyqtSignal(str, str)  # QA6: emotion, audio_path
+    voice_description_changed = pyqtSignal(str)  # QA Round 3: new_description - emitted when any tab's description changes
 
     def __init__(self, parent: Optional[QWidget] = None):
         """
@@ -892,6 +909,9 @@ class EmotionsPanel(QWidget):
             # QA6: Connect transcription request
             tab.transcription_requested.connect(self._on_transcription_requested)
 
+            # QA Round 3: Connect voice description changes for cross-tab sync
+            tab.voice_description_changed.connect(self._on_voice_description_changed)
+
         # Proceed button
         self.proceed_button.clicked.connect(self._on_proceed_clicked)
 
@@ -899,6 +919,34 @@ class EmotionsPanel(QWidget):
         """QA6: Handle transcription request from emotion tab."""
         self.logger.debug(f"Transcription requested for {emotion}: {audio_path}")
         self.transcription_requested.emit(emotion, audio_path)
+
+    def _on_voice_description_changed(self, source_emotion: str, new_description: str):
+        """
+        QA Round 3: Handle voice description change from any emotion tab.
+
+        Syncs the new description to all OTHER emotion tabs and emits signal
+        to notify external code (e.g., to sync with Description-Imagine tab).
+
+        Args:
+            source_emotion: The emotion tab where the change originated
+            new_description: The new voice description text
+        """
+        self.logger.debug(f"Voice description changed from {source_emotion}, syncing to all tabs")
+
+        # Sync to all other emotion tabs (skip the source to avoid infinite loops)
+        for emotion_id, tab in self._emotion_tabs.items():
+            if emotion_id != source_emotion:
+                # Temporarily disconnect signal to prevent feedback loop
+                tab.description_display.blockSignals(True)
+                tab.description_display.setPlainText(new_description)
+                tab._voice_description = new_description
+                tab.description_display.blockSignals(False)
+                # QA Round 4 Bug 1: Explicitly update button state since blockSignals
+                # prevented textChanged from triggering _update_generate_button_state
+                tab._update_generate_button_state()
+
+        # Emit panel-level signal for external sync (e.g., Description-Imagine tab)
+        self.voice_description_changed.emit(new_description)
 
     def _setup_accessibility(self):
         """Configure accessibility properties."""

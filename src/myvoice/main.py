@@ -354,7 +354,11 @@ def main() -> int:
             exit_code = loop.run_until_complete(async_main(qt_app, logger))
 
         logger.info(f"MyVoice application exited with code: {exit_code}")
-        return exit_code
+
+        # Force terminate - PyAudio may leave non-daemon threads that prevent clean exit
+        logger.info("Forcing process termination...")
+        import os as _os
+        _os._exit(exit_code)
 
     except Exception as e:
         print(f"Fatal error starting MyVoice: {e}", file=sys.stderr)

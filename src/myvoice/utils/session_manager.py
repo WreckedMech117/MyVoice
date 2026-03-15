@@ -474,7 +474,8 @@ class SessionManager:
         voice_name: str = "",
         language: str = "Auto",
         clone_transcript: str = "",
-        current_tab_index: int = 0
+        current_tab_index: int = 0,
+        emotion_preview_texts: dict = None
     ) -> bool:
         """
         QA7: Save session data for recovery.
@@ -489,6 +490,7 @@ class SessionManager:
             language: The selected language
             clone_transcript: QA8: Transcript from Clone tab for embedding extraction
             current_tab_index: QA Round 2 Item #6: Current main tab index
+            emotion_preview_texts: QA Round 3: Dict mapping emotion -> preview_text used during generation
 
         Returns:
             True if save was successful, False otherwise
@@ -512,6 +514,11 @@ class SessionManager:
             session_data["clone_transcript"] = clone_transcript
         if current_tab_index > 0:
             session_data["current_tab_index"] = current_tab_index
+        # QA Round 3: Store preview_text per emotion for correct extraction ref_text
+        if emotion_preview_texts:
+            existing_emotion_texts = session_data.get("emotion_preview_texts", {})
+            existing_emotion_texts.update(emotion_preview_texts)
+            session_data["emotion_preview_texts"] = existing_emotion_texts
         session_data["saved_at"] = datetime.now().isoformat()
 
         session_data_path = self._session_dir / "session_data.json"

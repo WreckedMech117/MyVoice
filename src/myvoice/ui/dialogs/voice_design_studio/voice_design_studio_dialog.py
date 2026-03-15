@@ -418,6 +418,8 @@ class VoiceDesignStudioDialog(QDialog):
         self.emotions_panel.neutral_selection_changed.connect(self._on_neutral_selection_changed)
         # QA6: Connect transcription request for per-emotion transcripts
         self.emotions_panel.transcription_requested.connect(self._on_emotion_transcribe_requested)
+        # QA Round 4 Bug 2: Sync voice description back to From Description-Imagine tab
+        self.emotions_panel.voice_description_changed.connect(self._on_emotions_voice_description_changed)
 
         self.tab_widget.addTab(self.emotions_panel, "Emotions")
 
@@ -721,22 +723,28 @@ class VoiceDesignStudioDialog(QDialog):
             )
             return
 
-        # Get voice description from Description panel
-        # QA: Support Clone workflow - use clone_transcript as description fallback
-        description = self.description_panel.get_description()
+        # Get voice description from Description panel or Emotions panel
+        # QA Round 3: Check emotions panel first since user may have edited it there
+        description = self.emotions_panel.get_emotion_tab(emotion).get_voice_description()
         if not description:
-            # Check if Clone workflow is active (has transcript and neutral embedding)
+            description = self.description_panel.get_description()
+
+        if not description:
+            # Check if Clone workflow is active (has clone_transcript in session)
+            # QA Round 3: Removed neutral_embedding.exists() check - embedding is created
+            # in Refinement step AFTER emotion generation, not before
             session_data = self._session_manager.load_session_data()
             clone_transcript = session_data.get("clone_transcript") if session_data else None
-            neutral_embedding = self._session_manager.get_emotion_embedding_path("neutral")
 
-            if clone_transcript and neutral_embedding and neutral_embedding.exists():
-                # Clone workflow: use transcript-based description for emotion generation
-                description = f"Voice cloned from audio sample. Original transcript: {clone_transcript}"
-                self.logger.info(f"Using clone transcript as description for emotion generation")
+            if clone_transcript:
+                # Clone workflow: use generic description, NOT the transcript
+                # QA Round 3: Transcript is what was SPOKEN, not voice characteristics
+                # User can enter their own voice description in the Emotions tab if needed
+                description = "Natural speaking voice cloned from audio sample"
+                self.logger.info(f"Using generic description for Clone workflow emotion generation")
             else:
                 self.emotions_panel.set_generation_error(
-                    emotion, "Please generate a voice in the Description tab first."
+                    emotion, "Please enter a voice description or generate a voice in the Description tab first."
                 )
                 return
 
@@ -756,6 +764,14 @@ class VoiceDesignStudioDialog(QDialog):
             'current_variant': 0,
             'cancelled': False
         }
+
+        # QA Round 3: Store preview_text per emotion for correct extraction ref_text
+        # This prevents mismatch when generated emotion audio speaks preview_text
+        # but extraction incorrectly uses clone_transcript as ref_text
+        self._session_manager.save_session_data(
+            emotion_preview_texts={emotion: preview_text}
+        )
+        self.logger.debug(f"Stored preview_text for {emotion}: {preview_text[:50]}...")
 
         self._generate_next_emotion_variant()
 
@@ -894,6 +910,25 @@ class VoiceDesignStudioDialog(QDialog):
         """Handle neutral selection state change."""
         self.logger.debug(f"Neutral selection changed: {has_selection}")
         # Neutral selection is required to proceed to Refinement
+
+    def _on_emotions_voice_description_changed(self, new_description: str):
+        """
+        QA Round 4 Bug 2: Handle voice description changes from Emotions panel.
+
+        Syncs the voice description back to the From Description-Imagine tab
+        to prevent data loss when navigating between tabs.
+
+        Args:
+            new_description: The new voice description text
+        """
+        self.logger.debug(f"Emotions voice description changed, syncing to Description panel: {len(new_description)} chars")
+        # Sync to description panel without triggering loops
+        # Use blockSignals to prevent recursive updates
+        self.description_panel.description_edit.blockSignals(True)
+        self.description_panel.description_edit.setPlainText(new_description)
+        self.description_panel.description_edit.blockSignals(False)
+        # Update button states
+        self.description_panel._update_generate_button_state()
 
     def _on_proceed_to_refinement(self):
         """
@@ -1071,13 +1106,14 @@ class VoiceDesignStudioDialog(QDialog):
         tier_suffix = f" ({tier_short})" if tier_short else ""
         self.logger.debug(f"Extracting embedding from {audio_path}{tier_suffix}")
 
-        # QA6: Get ref_text - priority order:
+        # QA Round 3: Get ref_text - priority order:
         # 1. Per-emotion transcript from Emotions panel (for uploaded samples with different audio per emotion)
-        # 2. clone_transcript from session (Clone workflow - same audio for all)
-        # 3. preview_text from session (From Scratch workflow - generated audio)
+        # 2. emotion_preview_texts[emotion] from session (generated emotions - text that was actually spoken)
+        # 3. clone_transcript from session (Clone workflow - for Neutral uploaded sample)
+        # 4. preview_text from session (From Scratch workflow - fallback)
         ref_text = ""
 
-        # First, try per-emotion transcript from emotions panel
+        # First, try per-emotion transcript from emotions panel (for uploaded samples)
         emotion_transcript = self.emotions_panel.get_emotion_transcript(emotion)
         if emotion_transcript:
             ref_text = emotion_transcript
@@ -1086,7 +1122,13 @@ class VoiceDesignStudioDialog(QDialog):
             # Fall back to session data
             session_data = self._session_manager.load_session_data()
             if session_data:
-                if session_data.get("clone_transcript"):
+                # QA Round 3: Check emotion_preview_texts first - this is what generated emotions actually speak
+                # This fixes GPU hang caused by mismatch between spoken audio and ref_text
+                emotion_preview_texts = session_data.get("emotion_preview_texts", {})
+                if emotion in emotion_preview_texts:
+                    ref_text = emotion_preview_texts[emotion]
+                    self.logger.info(f"Using stored emotion preview_text for {emotion}{tier_suffix} extraction: {ref_text[:50]}...")
+                elif session_data.get("clone_transcript"):
                     ref_text = session_data["clone_transcript"]
                     self.logger.info(f"Using clone transcript for {emotion}{tier_suffix} extraction: {ref_text[:50]}...")
                 elif session_data.get("preview_text"):
@@ -1627,13 +1669,14 @@ class VoiceDesignStudioDialog(QDialog):
         if voice_name:
             self.refinement_panel.set_voice_name(voice_name)
 
-        # Set voice description from transcript (if available)
-        if transcript:
-            self.emotions_panel.set_voice_description(
-                f"Voice cloned from sample. Original transcript: {transcript}"
-            )
+        # QA Round 3: Don't set voice_description from transcript
+        # Voice Description = voice characteristics (e.g., "warm female voice")
+        # Transcript = what was spoken (e.g., "Hello, this is a sample")
+        # These are different things and should not be linked.
+        # Leave voice_description empty - user can enter their own if needed for non-neutral emotions.
 
         # Set preview text in emotions panel from transcript
+        # This IS correct - preview_text is what the generated audio should speak
         if transcript:
             preview_text = transcript[:100] + "..." if len(transcript) > 100 else transcript
             self.emotions_panel.set_preview_text(preview_text)
@@ -1648,8 +1691,8 @@ class VoiceDesignStudioDialog(QDialog):
             self.logger.info(f"Transferred sample to Neutral tab: {audio_path}")
 
         # Save session data for recovery (QA8: include clone_transcript for extraction)
+        # QA Round 3: Don't save transcript as voice_description - they are different things
         self._session_manager.save_session_data(
-            voice_description=transcript or "",
             preview_text=transcript[:100] if transcript else "",
             voice_name=voice_name or "",
             language="Auto",

@@ -93,8 +93,8 @@ class DescriptionPathPanel(QWidget):
     clone_transcribe_requested = pyqtSignal(str)  # file_path - Emitted when Auto-Transcribe clicked
     clone_proceed_requested = pyqtSignal(str, str, str)  # audio_path, transcript, voice_name - To transfer to Emotions tab
 
-    # Default preview text suggestion
-    DEFAULT_PREVIEW_TEXT = "Hello, this is a preview of my voice."
+    # QA Round 3: Longer sample text for better embedding quality
+    DEFAULT_PREVIEW_TEXT = "Hello, This is a sample of my voice. I hope you like it."
 
     # Supported languages for Qwen3-TTS (full names required)
     SUPPORTED_LANGUAGES = [
