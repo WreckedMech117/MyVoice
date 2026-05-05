@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="MyVoice-TTS Feature Guide - Learn how to use all features including Voice Design Studio, Quick Speak, and Settings.">
+    <meta name="keywords" content="TTS, text-to-speech, guide, tutorial, MyVoice, voice design, settings">
+    <meta name="author" content="MyVoice-TTS">
+
+    <title>MyVoice-TTS - Feature Guide</title>
+    <link rel="icon" type="image/png" href="images/favicon.png">
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/guide.css">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav>
+        <div class="container">
+            <a href="index.html" class="logo">
+                <img src="images/logo.png" alt="MyVoice Logo">
+                <span>MyVoice</span>
+            </a>
+            <ul class="nav-links">
+                <li><a href="index.html#features">Features</a></li>
+                <li><a href="index.html#use-cases">Use Cases</a></li>
+                <li><a href="index.html#download">Download</a></li>
+                <li><a href="#" class="active">Guide</a></li>
+                <li><a href="index.html#donate" class="nav-cta">Support Us</a></li>
+            </ul>
+            <button class="mobile-menu-btn" aria-label="Menu">&#9776;</button>
+        </div>
+    </nav>
+
+    <!-- Guide Hero -->
+    <section class="guide-hero">
+        <div class="container">
+            <h1>Feature Guide</h1>
+            <p>Everything you need to get started with MyVoice-TTS</p>
+        </div>
+    </section>
+
+    <!-- Important Notes -->
+    <section class="guide-section important-notes" id="important-notes">
+        <div class="container">
+            <div class="section-header">
+                <h2>Before You Start</h2>
+                <p>Important information for new users</p>
+            </div>
+            <div class="notes-grid">
+                <div class="note-card warning">
+                    <div class="note-icon">&#9888;</div>
+                    <h3>First-Time Startup</h3>
+                    <p>The <strong>first time you generate speech</strong>, MyVoice will automatically download the Qwen3-TTS models. This is a one-time download of approximately 2-3GB and may take several minutes depending on your internet connection.</p>
+                    <p class="note-detail">Subsequent generations will be instant as models are cached locally.</p>
+                </div>
+                <div class="note-card info">
+                    <div class="note-icon">&#128274;</div>
+                    <h3>Installation Location</h3>
+                    <p>If you install MyVoice to the <strong>Program Files</strong> directory, you may need to run the application as <strong>Administrator</strong> to allow proper file access and model storage.</p>
+                    <p class="note-detail">We recommend installing to a user-accessible location like Documents or a custom folder to avoid permission issues.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Quick Start -->
+    <section class="guide-section" id="quickstart">
+        <div class="container">
+            <div class="section-header">
+                <h2>Quick Start Overview</h2>
+                <p>Get familiar with the interface at a glance</p>
+            </div>
+            <div class="quickstart-image">
+                <img src="images/QuickStart-MyVoiceV2.png" alt="MyVoice Quick Start Guide">
+            </div>
+        </div>
+    </section>
+
+    <!-- Main Window -->
+    <section class="guide-section alt-bg" id="main-window">
+        <div class="container">
+            <div class="section-header">
+                <h2>Main Window</h2>
+                <p>Your command center for text-to-speech</p>
+            </div>
+            <div class="feature-detail">
+                <div class="feature-image">
+                    <img src="images/main-window.png" alt="MyVoice Main Window">
+                </div>
+                <div class="feature-content">
+                    <h3>Core Controls</h3>
+                    <ul>
+                        <li><strong>Text Input:</strong> Type or paste the text you want to speak</li>
+                        <li><strong>Voice Selector:</strong> Choose from bundled, designed, or cloned voices</li>
+                        <li><strong>Emotion Presets:</strong> Quick buttons for Neutral, Happy, Sad, Angry, Flirtatious (F1-F5)</li>
+                        <li><strong>Generate:</strong> Create speech from your text</li>
+                        <li><strong>Replay:</strong> Replay the last generated audio</li>
+                        <li><strong>Quick Speak:</strong> Access saved phrases</li>
+                        <li><strong>Clear:</strong> Clears text (or appends apostrophe ' for Quick Speak)</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Settings - Audio -->
+    <section class="guide-section" id="settings-audio">
+        <div class="container">
+            <div class="section-header">
+                <h2>Settings: Audio</h2>
+                <p>Configure your audio devices and virtual microphone</p>
+            </div>
+            <div class="feature-detail reverse">
+                <div class="feature-image">
+                    <img src="images/MyVoice-Settings_Audio.png" alt="Audio Settings">
+                </div>
+                <div class="feature-content">
+                    <h3>Audio Configuration</h3>
+                    <ul>
+                        <li><strong>Monitor Device:</strong> Your speakers/headphones for hearing playback</li>
+                        <li><strong>Virtual Device:</strong> The virtual microphone for routing to other apps</li>
+                        <li><strong>Dual Routing:</strong> When enabled, audio plays through both devices simultaneously</li>
+                    </ul>
+                    <div class="tip-box">
+                        <strong>VB-Cable Required:</strong> To use MyVoice with Discord, Zoom, or other voice apps, install <a href="https://vb-audio.com/Cable/" target="_blank">VB-Cable</a> and select "CABLE Input (VB-Audio Virtual C)" as your Virtual Device.
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Settings - Voices -->
+    <section class="guide-section alt-bg" id="settings-voices">
+        <div class="container">
+            <div class="section-header">
+                <h2>Settings: Voices</h2>
+                <p>Manage your voice library</p>
+            </div>
+            <div class="feature-detail">
+                <div class="feature-image">
+                    <img src="images/MyVoice-Settings_Voices.png" alt="Voice Settings">
+                </div>
+                <div class="feature-content">
+                    <h3>Voice Library</h3>
+                    <ul>
+                        <li><strong>Bundled Voices:</strong> 9 pre-trained voices with full emotion support</li>
+                        <li><strong>Designed Voices:</strong> Custom voices created from text descriptions</li>
+                        <li><strong>Cloned Voices:</strong> Voices created from audio samples</li>
+                    </ul>
+                    <p>Select the Voices tab in Settings and click <strong>Design Voice</strong> to open Voice Design Studio, or use <strong>Delete</strong> to remove custom voices.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Settings - TTS -->
+    <section class="guide-section" id="settings-tts">
+        <div class="container">
+            <div class="section-header">
+                <h2>Settings: TTS</h2>
+                <p>Fine-tune text-to-speech behavior</p>
+            </div>
+            <div class="feature-detail reverse">
+                <div class="feature-image">
+                    <img src="images/MyVoice-Settings_TTS.png" alt="TTS Settings">
+                </div>
+                <div class="feature-content">
+                    <h3>TTS Parameters</h3>
+                    <p>Advanced settings for controlling speech generation quality and performance. Includes <strong>model size switching</strong> to balance between quality and speed. Most users can leave these at default values.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Settings - Interface -->
+    <section class="guide-section alt-bg" id="settings-interface">
+        <div class="container">
+            <div class="section-header">
+                <h2>Settings: Interface</h2>
+                <p>Customize the application appearance</p>
+            </div>
+            <div class="feature-detail">
+                <div class="feature-image">
+                    <img src="images/MyVoice-Settings_Interface.png" alt="Interface Settings">
+                </div>
+                <div class="feature-content">
+                    <h3>Interface Options</h3>
+                    <ul>
+                        <li><strong>Light/Dark Theme:</strong> Choose your preferred color scheme</li>
+                        <li><strong>Always on Top:</strong> Keep MyVoice visible above other windows</li>
+                        <li><strong>Window Transparency:</strong> Adjust window opacity for overlay use</li>
+                        <li><strong>Log Level:</strong> Control diagnostic logging detail</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Settings - Quick Speak -->
+    <section class="guide-section" id="settings-quickspeak">
+        <div class="container">
+            <div class="section-header">
+                <h2>Settings: Quick Speak</h2>
+                <p>Save phrases for instant playback</p>
+            </div>
+            <div class="feature-detail reverse">
+                <div class="feature-image">
+                    <img src="images/MyVoice-Settings_QuickSpeak.png" alt="Quick Speak Settings">
+                </div>
+                <div class="feature-content">
+                    <h3>Quick Speak Profiles</h3>
+                    <ul>
+                        <li><strong>Profiles:</strong> Create multiple phrase collections for different contexts</li>
+                        <li><strong>Entries:</strong> Add common phrases with labels for easy identification</li>
+                        <li><strong>Append Mode:</strong> End text with apostrophe (') then select Quick Speak to append the phrase</li>
+                    </ul>
+                    <div class="tip-box">
+                        <strong>Example:</strong> Type "Hello" and end with apostrophe, then select "How are you?" from Quick Speak. Result: "Hello How are you?"
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Voice Design Studio -->
+    <section class="guide-section alt-bg" id="voice-design">
+        <div class="container">
+            <div class="section-header">
+                <h2>Voice Design Studio</h2>
+                <p>Create custom voices from descriptions or audio samples</p>
+            </div>
+
+            <!-- Step 1: Imagine -->
+            <div class="studio-step">
+                <div class="step-header">
+                    <span class="step-number">1</span>
+                    <h3>Imagine Your Voice</h3>
+                </div>
+                <div class="feature-detail">
+                    <div class="feature-image">
+                        <img src="images/MyVoice-Voice_Design_Studio-Imagine.png" alt="Voice Design - Imagine Step">
+                    </div>
+                    <div class="feature-content">
+                        <p>Describe the voice you want to create using natural language. Be specific about characteristics like age, gender, tone, and personality.</p>
+                        <div class="example-box">
+                            <strong>Example descriptions:</strong>
+                            <ul>
+                                <li>"A warm, friendly female voice in her 30s with a slight British accent"</li>
+                                <li>"A deep, authoritative male narrator voice"</li>
+                                <li>"A cheerful, energetic young voice perfect for gaming"</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 2: Emotions -->
+            <div class="studio-step">
+                <div class="step-header">
+                    <span class="step-number">2</span>
+                    <h3>Generate Emotion Samples</h3>
+                </div>
+                <div class="feature-detail reverse">
+                    <div class="feature-image">
+                        <img src="images/MyVoice-Voice_Design_Studio-Emotions.png" alt="Voice Design - Emotions Step">
+                    </div>
+                    <div class="feature-content">
+                        <p>Generate sample audio for each emotion preset. Listen to how your voice sounds with different emotional expressions.</p>
+                        <p>You can also <strong>upload custom audio samples</strong> if you have specific reference recordings.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 3: Refinement -->
+            <div class="studio-step">
+                <div class="step-header">
+                    <span class="step-number">3</span>
+                    <h3>Refine Your Voice</h3>
+                </div>
+                <div class="feature-detail">
+                    <div class="feature-image">
+                        <img src="images/MyVoice-Voice_Design_Studio-Refinement.png" alt="Voice Design - Refinement Step">
+                    </div>
+                    <div class="feature-content">
+                        <p>Fine-tune your voice with additional adjustments. Preview different variations and save your favorite.</p>
+                        <p>Once satisfied, your custom voice will be available in the voice selector for all future speech generation.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Back to Download -->
+    <section class="guide-cta">
+        <div class="container">
+            <h2>Ready to Get Started?</h2>
+            <p>Download MyVoice and start creating expressive speech today.</p>
+            <a href="index.html#download" class="btn btn-primary">
+                <span>&#11015;</span> Download MyVoice
+            </a>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-logo">
+                    <img src="images/logo.png" alt="MyVoice Logo">
+                    <span>MyVoice-TTS</span>
+                </div>
+                <div class="footer-links">
+                    <a href="https://github.com/WreckedMech117/MyVoice" target="_blank" rel="noopener">GitHub</a>
+                    <a href="https://github.com/WreckedMech117/MyVoice/issues" target="_blank" rel="noopener">Report Issue</a>
+                    <a href="https://github.com/WreckedMech117/MyVoice/blob/main/LICENSE" target="_blank" rel="noopener">License</a>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2026 MyVoice-TTS. Open source software released under MIT License.</p>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Mobile Menu Toggle -->
+    <script>
+        document.querySelector('.mobile-menu-btn').addEventListener('click', function() {
+            const navLinks = document.querySelector('.nav-links');
+            navLinks.style.display = navLinks.style.display === 'flex' ? 'none' : 'flex';
+            navLinks.style.flexDirection = 'column';
+            navLinks.style.position = 'absolute';
+            navLinks.style.top = '70px';
+            navLinks.style.right = '24px';
+            navLinks.style.background = 'rgba(15, 23, 42, 0.98)';
+            navLinks.style.padding = '24px';
+            navLinks.style.borderRadius = '12px';
+            navLinks.style.gap = '16px';
+        });
+    </script>
+</body>
+</html>

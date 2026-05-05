@@ -1,0 +1,137 @@
+# MyVoice Production Build Dependencies
+# Optimized for minimal executable size in PyInstaller builds
+# Python 3.10+ required
+
+# =============================================================================
+# GUI Framework (Required)
+# =============================================================================
+PyQt6>=6.6.0
+# Size: ~100MB
+# Note: PyInstaller will only bundle used modules
+
+qasync>=0.27.0
+# PyQt6 + asyncio integration
+
+# =============================================================================
+# HTTP Client (Required)
+# =============================================================================
+requests>=2.31.0
+# Size: ~5MB (includes urllib3, certifi, charset-normalizer, idna)
+
+
+# =============================================================================
+# Speech Recognition (Required)
+# =============================================================================
+openai-whisper>=20231117
+# Size: ~50MB (library only, models downloaded at runtime)
+# Dependencies: tiktoken, more-itertools, regex, tqdm, ffmpeg-python
+
+tiktoken>=0.5.0
+# Required by whisper for tokenization
+
+
+# =============================================================================
+# Machine Learning (Required - CPU ONLY)
+# =============================================================================
+# IMPORTANT: Use CPU-only version to save ~1GB of CUDA libraries
+torch>=2.0.0; sys_platform == 'win32'
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# Alternative explicit CPU installation:
+# pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# Size comparison:
+# - Full PyTorch (CUDA): ~2.5GB
+# - CPU-only PyTorch: ~150-200MB
+# Savings: ~2.3GB
+
+
+# =============================================================================
+# Qwen3-TTS (V2 - Embedded Voice Cloning)
+# =============================================================================
+# Install from GitHub for latest version:
+#   pip install git+https://github.com/QwenLM/Qwen3-TTS.git
+qwen-tts @ git+https://github.com/QwenLM/Qwen3-TTS.git
+# Size: ~50MB (library only, models downloaded at runtime ~3.4GB per model)
+# NOTE: Requires Python 3.9+ (3.10 confirmed working)
+
+soundfile>=0.12.1
+# Audio I/O for Qwen3-TTS
+
+
+# =============================================================================
+# Audio Processing (Required)
+# =============================================================================
+pyaudio>=0.2.13
+# Size: ~2MB
+# Note: Requires PortAudio DLL (bundled with package)
+
+numpy>=1.24.0
+# Size: ~50MB
+# Required by torch, whisper, qwen-tts, and audio processing
+
+
+# =============================================================================
+# Excluded from Production (Not needed for runtime)
+# =============================================================================
+# These packages should NOT be installed in production build environment:
+# - pytest, pytest-*, testing frameworks
+# - black, flake8, mypy, linters and formatters
+# - sphinx, documentation generators
+# - jupyter, notebook environments
+# - matplotlib, scipy, pandas (if not used)
+# - pillow, opencv (if not used for image processing)
+
+
+# =============================================================================
+# Build Tools (Install separately, not bundled)
+# =============================================================================
+# pyinstaller>=6.0.0
+# upx (optional, for compression)
+
+
+# =============================================================================
+# Installation Instructions
+# =============================================================================
+#
+# 1. Create clean virtual environment:
+#    python -m venv venv-production
+#    venv-production\Scripts\activate
+#
+# 2. Install production dependencies:
+#    pip install -r requirements-production.txt
+#
+# 3. Install PyInstaller (not bundled):
+#    pip install pyinstaller>=6.0.0
+#
+# 4. Build executable:
+#    cd build_tools
+#    pyinstaller myvoice.spec
+#
+# =============================================================================
+# Expected Sizes After Optimization
+# =============================================================================
+#
+# Component Breakdown:
+# - PyQt6: ~100MB
+# - Torch (CPU): ~150MB
+# - Whisper: ~50MB
+# - Qwen3-TTS: ~50MB
+# - NumPy: ~50MB
+# - Other deps: ~50MB
+# - MyVoice code: ~5MB
+# -------------------------
+# Total (uncompressed): ~455MB
+# Total (with UPX): ~280-320MB
+#
+# Whisper Models (downloaded at runtime, not bundled):
+# - tiny: 39M params (~75MB)
+# - base: 74M params (~140MB)
+# - small: 244M params (~470MB)
+# - medium: 769M params (~1.5GB)
+# - large: 1550M params (~3GB)
+#
+# Recommendation: Let users download models on first run
+# Default model: "base" (good balance of quality and size)
+#
+# =============================================================================

@@ -1,7 +1,5 @@
 # MyVoice V2 - Expressive Voice Communication for Everyone
 
-(https://MyVoiceTTS.com)
-
 MyVoice is a Windows desktop application that enables mute individuals and content creators to communicate in voice chats using emotionally expressive text-to-speech. Powered by embedded Qwen3-TTS technology, it works fully offline with no external service dependencies.
 
 ## Screenshots
@@ -43,6 +41,7 @@ MyVoice is a Windows desktop application that enables mute individuals and conte
 - **Voice Cloning**: Clone any voice from a 3-second audio sample (WAV/MP3/M4A)
 - **9 Bundled Voices**: Pre-trained timbres (Vivian, Serena, Dylan, Eric, Ryan, Aiden, and more) with full emotion support
 - **Dual Audio Output**: Simultaneous playback to monitor speakers AND virtual microphone
+- **Microphone Passthrough**: Route your real microphone through the virtual mic device for seamless voice chat mixing
 - **Quick Speak**: Configure common phrases for instant generation
 - **Virtual Microphone**: Route speech directly to Discord, Zoom, Teams, and other apps
 - **Audio Transcription**: Automatic transcription using OpenAI Whisper
@@ -382,5 +381,5 @@ MyVoice would not be possible without **VB-Cable** by VB-Audio. Their virtual au
 
 ## Version
 
-Current version: **2.0.0**
+Current version: **2.1.0**
 ---

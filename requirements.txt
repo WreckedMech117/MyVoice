@@ -43,3 +43,24 @@ pyaudio>=0.2.13; sys_platform != 'win32'
 
 # Windows COM Support (Windows only)
 pywin32>=306; sys_platform == 'win32'
+
+# ===============================================
+# Dev-only test tooling
+# ===============================================
+# Story 12.3 added pytest-cov to enable the indicator-suite coverage gate (AC #6).
+# No formal dev-manifest exists in tree (no requirements-dev.txt, no pyproject.toml,
+# no [tool.pytest] block), so pytest-cov lives here behind a `# dev-only` comment
+# per Story 12.3's Open Question #1 default. Production builds use
+# build_tools/requirements-production.txt, which already excludes pytest-* per
+# its own comment block — so this entry will not be bundled into the
+# PyInstaller artifact. A future maintainer is welcome to normalize this into
+# a dedicated requirements-dev.txt; the choice is flagged in the Story 12.3
+# Change Log.
+#
+# WINDOWS NOTE: invoking pytest with `--cov=...` directly fails with
+# `OSError [WinError 1114]` because pytest-cov's tracer activates before
+# tests/conftest.py's torch-DLL preamble can fire. Use the wrapper script
+# `tools/run_cov.py` instead — it imports torch first then invokes
+# pytest.main(). Example:
+#   python tools/run_cov.py --cov=myvoice.ui.main_window tests/ui/test_status_indicators.py
+pytest-cov>=4.1  # dev-only — Story 12.3 indicator-suite coverage gate (AC #6); use tools/run_cov.py on Windows

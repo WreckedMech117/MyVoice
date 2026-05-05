@@ -1,4 +1,6 @@
+# ===========================================================================
 # Python
+# ===========================================================================
 __pycache__/
 *.py[cod]
 *$py.class
@@ -23,7 +25,9 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# Virtual Environment
+# ===========================================================================
+# Virtual environments
+# ===========================================================================
 .venv/
 venv/
 ENV/
@@ -31,21 +35,30 @@ env/
 env.bak/
 venv.bak/
 
-# Bundled Python (for portable releases)
+# Bundled Python (for portable releases) — large; users install Python themselves
 python310/
 
-# PyInstaller
+# ===========================================================================
+# PyInstaller / packaging
+# ===========================================================================
 *.manifest
-*.spec
+# Note: myvoice.spec is tracked — do not ignore all .spec files
 
+# ===========================================================================
 # Build outputs
-build/
-dist/
+# ===========================================================================
 build_tools/build/
 build_tools/dist/
 installer_output/
+validation_output/
 
-# Unit test / coverage reports
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ===========================================================================
+# Test / coverage reports
+# ===========================================================================
 htmlcov/
 .tox/
 .nox/
@@ -59,58 +72,110 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 
+# ===========================================================================
+# Type checkers
+# ===========================================================================
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+
+# ===========================================================================
+# Translations
+# ===========================================================================
+*.mo
+*.pot
+
+# ===========================================================================
 # Logs
+# ===========================================================================
 logs/
 *.log
-*.log.*
 
+# ===========================================================================
+# Application runtime state (user-specific — should not be committed)
+# ===========================================================================
+config/settings.json
+config/settings.bak*
+config/.voice_cache.json
+src/config/
+profiles/
+cache/
+temp/
+
+# Stale backups from prior workflows
+*.backup
+
+# ===========================================================================
+# Audio files
+# ===========================================================================
+# Test outputs / runtime cache at root and elsewhere — but the bundled voice
+# library at voice_files/ is part of the project and IS tracked.
+*.wav
+*.mp3
+*.flac
+!voice_files/**/*.wav
+!voice_files/**/*.mp3
+!voice_files/**/*.flac
+
+# ===========================================================================
+# Models (downloadable — not committed; users install separately)
+# ===========================================================================
+models/
+whisper_models/
+
+# ===========================================================================
+# Vendored binaries
+# ===========================================================================
+ffmpeg/
+
+# ===========================================================================
+# Local-only working directories
+# ===========================================================================
+backup/
+
+# ===========================================================================
+# AI-assisted development workflow (internal — see DEVELOPER.md)
+# ===========================================================================
+# The BMAD framework is vendored locally during development but is installed
+# separately if forking. Internal planning + retrospective artifacts under
+# _bmad-output/ are kept out of the public repo to keep the release surface
+# focused on the functioning program.
+_bmad/
+_bmad-output/
+
+# ===========================================================================
+# User-specific Claude Code config / launchers
+# ===========================================================================
+.claude/
+CLAUDE.md
+00_Start_Claude.bat
+01_Start_Claude.bat
+
+# ===========================================================================
 # IDE
+# ===========================================================================
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# OS
 .DS_Store
+
+# ===========================================================================
+# Windows
+# ===========================================================================
 Thumbs.db
 ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
-
-# MyVoice Application Data
-config/*.json
-!config/*.json.example
-whisper_models/
-*.wav
-*.mp3
-*.flac
-!voice_files/*.wav
-!voice_files/*.mp3
-
-# Temporary and backup files
-*.tmp
-*.bak
-*.backup
 nul
-backup/
-temp/
-cache/
 
-# Development tools (not for public release)
-.claude/
-_bmad/
-_bmad-output/
-CLAUDE.md
-DEVELOPER.md
-00_Start_Claude.bat
-validation_output/
-testingdata/
-
-# Downloaded archives
-*.zip
-*.7z
-
-# Test outputs
-test_output.wav
+# ===========================================================================
+# Stray dev artifacts (one-off scripts; not part of the project)
+# ===========================================================================
+c*temp*.txt
 startup_test_output.txt
+fix_validation.py
+test_startup.py
+test_output.wav

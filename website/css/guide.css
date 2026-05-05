@@ -1,0 +1,271 @@
+/* Guide Page Specific Styles */
+
+/* Guide Hero */
+.guide-hero {
+    padding: 140px 0 60px;
+    background: linear-gradient(180deg, var(--darker-blue) 0%, var(--dark-blue) 100%);
+    text-align: center;
+}
+
+.guide-hero h1 {
+    font-size: 3rem;
+    font-weight: 700;
+    margin-bottom: 16px;
+    background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.guide-hero p {
+    color: var(--text-secondary);
+    font-size: 1.25rem;
+}
+
+/* Guide Sections */
+.guide-section {
+    padding: 80px 0;
+}
+
+.guide-section.alt-bg {
+    background: var(--darker-blue);
+}
+
+/* Important Notes */
+.important-notes {
+    background: var(--dark-blue);
+}
+
+.notes-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 32px;
+}
+
+.note-card {
+    background: var(--card-bg);
+    border-radius: 16px;
+    padding: 32px;
+    border: 1px solid var(--card-border);
+}
+
+.note-card.warning {
+    border-color: #f59e0b;
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.1) 0%, var(--card-bg) 100%);
+}
+
+.note-card.info {
+    border-color: var(--primary-blue);
+    background: linear-gradient(135deg, rgba(37, 99, 235, 0.1) 0%, var(--card-bg) 100%);
+}
+
+.note-icon {
+    font-size: 2.5rem;
+    margin-bottom: 16px;
+}
+
+.note-card h3 {
+    font-size: 1.25rem;
+    margin-bottom: 12px;
+}
+
+.note-card p {
+    color: var(--text-secondary);
+    line-height: 1.7;
+}
+
+.note-card .note-detail {
+    margin-top: 12px;
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+/* Quick Start Image */
+.quickstart-image {
+    text-align: center;
+}
+
+.quickstart-image img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 16px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+}
+
+/* Feature Detail Layout */
+.feature-detail {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 48px;
+    align-items: center;
+}
+
+.feature-detail.reverse {
+    direction: rtl;
+}
+
+.feature-detail.reverse > * {
+    direction: ltr;
+}
+
+.feature-image img {
+    width: 100%;
+    height: auto;
+    border-radius: 12px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+}
+
+.feature-content h3 {
+    font-size: 1.5rem;
+    margin-bottom: 16px;
+}
+
+.feature-content ul {
+    list-style: none;
+    padding: 0;
+}
+
+.feature-content li {
+    color: var(--text-secondary);
+    padding: 8px 0;
+    padding-left: 24px;
+    position: relative;
+}
+
+.feature-content li::before {
+    content: ">";
+    position: absolute;
+    left: 0;
+    color: var(--accent-green);
+    font-weight: bold;
+}
+
+.feature-content p {
+    color: var(--text-secondary);
+    margin-bottom: 16px;
+}
+
+/* Tip Box */
+.tip-box {
+    background: rgba(16, 185, 129, 0.1);
+    border-left: 4px solid var(--accent-green);
+    padding: 16px 20px;
+    margin-top: 20px;
+    border-radius: 0 8px 8px 0;
+}
+
+.tip-box a {
+    color: var(--accent-green);
+}
+
+/* Example Box */
+.example-box {
+    background: var(--card-bg);
+    padding: 20px;
+    border-radius: 12px;
+    margin-top: 16px;
+}
+
+.example-box ul {
+    margin-top: 12px;
+}
+
+.example-box li {
+    font-style: italic;
+    color: var(--text-muted);
+}
+
+/* Voice Design Studio Steps */
+.studio-step {
+    margin-bottom: 64px;
+}
+
+.studio-step:last-child {
+    margin-bottom: 0;
+}
+
+.step-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 32px;
+}
+
+.step-number {
+    width: 48px;
+    height: 48px;
+    background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.5rem;
+    font-weight: 700;
+}
+
+.step-header h3 {
+    font-size: 1.75rem;
+}
+
+/* Guide CTA */
+.guide-cta {
+    padding: 80px 0;
+    text-align: center;
+    background: linear-gradient(180deg, var(--dark-blue) 0%, var(--darker-blue) 100%);
+}
+
+.guide-cta h2 {
+    font-size: 2rem;
+    margin-bottom: 16px;
+}
+
+.guide-cta p {
+    color: var(--text-secondary);
+    margin-bottom: 32px;
+}
+
+/* Active nav link */
+.nav-links a.active {
+    color: var(--accent-green);
+}
+
+/* Responsive */
+@media (max-width: 1024px) {
+    .feature-detail {
+        grid-template-columns: 1fr;
+        gap: 32px;
+    }
+
+    .feature-detail.reverse {
+        direction: ltr;
+    }
+
+    .notes-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 768px) {
+    .guide-hero {
+        padding: 120px 0 40px;
+    }
+
+    .guide-hero h1 {
+        font-size: 2rem;
+    }
+
+    .guide-section {
+        padding: 48px 0;
+    }
+
+    .step-header h3 {
+        font-size: 1.25rem;
+    }
+
+    .step-number {
+        width: 40px;
+        height: 40px;
+        font-size: 1.25rem;
+    }
+}
