@@ -25,9 +25,15 @@ import logging
 import threading
 import time
 from enum import Enum
-from typing import Optional, Dict, Any, List, Callable
+from typing import Optional, Dict, Any, List, Callable, TYPE_CHECKING
 from dataclasses import dataclass, field
 from datetime import datetime
+
+if TYPE_CHECKING:
+    # Story 12.1: registry import is type-only to avoid forcing PyQt6 onto
+    # this module's import chain (the audio coordinator runs in async
+    # contexts that don't otherwise require Qt).
+    from myvoice.services.sessions.session_registry import SessionRegistry
 
 from myvoice.models.audio_device import AudioDevice
 from myvoice.models.error import MyVoiceError, ErrorSeverity
@@ -137,18 +143,36 @@ class AudioCoordinator(BaseService):
     - Health monitoring for both services
     """
 
-    def __init__(self, app_settings: Optional[AppSettings] = None):
+    def __init__(
+        self,
+        app_settings: Optional[AppSettings] = None,
+        *,
+        session_registry: Optional["SessionRegistry"] = None,
+    ):
         """
         Initialize the Audio Coordinator.
 
         Args:
             app_settings: Application settings for device preferences
+            session_registry: Optional SessionRegistry for Story 12.1 playback-
+                side lifecycle wiring. When provided, ``play_dual_stream``
+                posts ``mark_playing`` / ``mark_audible`` mutations through
+                the registry so the indicator's substate (driven by
+                ``MainWindow._redraw_tts_indicator_from_focal``) reflects
+                actual audio dispatch. When None, the coordinator runs the
+                legacy code path unchanged.
         """
         super().__init__("AudioCoordinator")
 
         self.app_settings = app_settings
         self.config = AudioCoordinatorConfig()
         self.logger = logging.getLogger(__name__)
+
+        # Story 12.1: SessionRegistry wiring (D-20 Phase 2). Mirrors the
+        # injection pattern Story 11.4 used for QwenTTSService.
+        self._session_registry = session_registry
+        if self._session_registry is not None:
+            self.logger.info("AudioCoordinator using SessionRegistry")
 
         # Service instances
         self.monitor_service: Optional[MonitorAudioService] = None
@@ -437,7 +461,9 @@ class AudioCoordinator(BaseService):
                              audio_data: bytes,
                              monitor_device: Optional[AudioDevice] = None,
                              virtual_device: Optional[AudioDevice] = None,
-                             volume: float = 1.0) -> DualStreamResult:
+                             volume: float = 1.0,
+                             *,
+                             session_id: Optional[str] = None) -> DualStreamResult:
         """
         Execute coordinated dual-stream playback to both services.
 
@@ -446,10 +472,23 @@ class AudioCoordinator(BaseService):
             monitor_device: Target monitor device (uses service default if None)
             virtual_device: Target virtual device (uses service default if None)
             volume: Volume level (0.0 to 1.0)
+            session_id: Story 12.1 — when provided alongside a registry
+                injected at construction, the coordinator posts
+                ``mark_playing`` before dispatch and ``mark_audible`` once
+                the streams are running. When None, no registry mutations
+                are posted (legacy callers continue unchanged per D-14).
 
         Returns:
             DualStreamResult: Result of coordinated playback
         """
+        # AI-Review H2 (2026-05-04): mark_playing was previously posted
+        # unconditionally at the top of this method, which leaked sessions
+        # in PLAYING state on every failure branch (not-initialized,
+        # no-healthy-services, exception during dispatch) because no
+        # terminal mutation followed. The post is now deferred until we
+        # have actually committed to dispatching, and every failure path
+        # cleans up via set_error+discard if mark_playing was already
+        # queued.
         if not self._is_initialized:
             return DualStreamResult(
                 monitor_task=None,
@@ -466,6 +505,7 @@ class AudioCoordinator(BaseService):
 
         self.logger.info(f"Starting coordinated dual-stream playback {coordination_id}")
 
+        mark_playing_posted = False
         try:
             # Start both services in parallel
             tasks = []
@@ -491,6 +531,17 @@ class AudioCoordinator(BaseService):
                     success=False,
                     error_message="No healthy services available"
                 )
+
+            # Story 12.1: post mark_playing now that we are committed to
+            # dispatching. Posted via post_mutation so it crosses the
+            # worker→Qt-main boundary safely (P-3). The session is in
+            # READY_TO_PLAY when this method is called (qwen_tts_service
+            # finalized it), and mark_playing transitions it to PLAYING —
+            # required before mark_audible (which checks the state) can be
+            # posted below.
+            if session_id is not None and self._session_registry is not None:
+                self._session_registry.post_mutation('mark_playing', session_id)
+                mark_playing_posted = True
 
             # Wait for all tasks to complete
             results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
@@ -522,6 +573,25 @@ class AudioCoordinator(BaseService):
             # Track active coordination
             self._active_coordinations[coordination_id] = dual_result
 
+            # Story 12.1 / AI-Review H2: pair mark_playing with either
+            # mark_audible (success) or set_error+discard (failure). Gating
+            # mark_audible on `any_successful` rather than `success` is
+            # tighter — a task object that came back in 'failed'/'pending'
+            # status did not actually start streaming, and posting
+            # mark_audible there would leave a session stuck PLAYING+audible
+            # with no real playback to ever fire mark_done.
+            if mark_playing_posted:
+                if dual_result.any_successful:
+                    self._session_registry.post_mutation('mark_audible', session_id)
+                else:
+                    self.logger.warning(
+                        f"Coordinated playback {coordination_id} produced "
+                        "no audible streams; closing registry session via "
+                        "set_error+discard."
+                    )
+                    self._session_registry.post_mutation('set_error', session_id)
+                    self._session_registry.post_mutation('discard', session_id)
+
             success_msg = []
             if monitor_task:
                 success_msg.append("monitor")
@@ -533,6 +603,12 @@ class AudioCoordinator(BaseService):
 
         except Exception as e:
             self.logger.error(f"Coordinated dual-stream playback failed: {e}")
+            # AI-Review H2: clean up the registry session if mark_playing
+            # was queued before the exception fired. Without this, the
+            # session leaks in PLAYING state forever.
+            if mark_playing_posted:
+                self._session_registry.post_mutation('set_error', session_id)
+                self._session_registry.post_mutation('discard', session_id)
             return DualStreamResult(
                 monitor_task=None,
                 virtual_task=None,
@@ -626,6 +702,47 @@ class AudioCoordinator(BaseService):
         except Exception as e:
             self.logger.error(f"Error stopping coordination {coordination_id}: {e}")
             return False
+
+    async def stop_all_playback(self) -> int:
+        """
+        Stop every active playback task across both monitor and virtual
+        microphone outputs.
+
+        Story 11.4 follow-up: invoked by the main window's Stop button
+        (the dual-mode Clear/Stop control) when audio is currently
+        playing. Both underlying ``AudioService`` instances expose their
+        own ``stop_all_playback`` / ``stop_all_virtual_microphone_playback``
+        helpers; this coordinator method just fans out to them and sums
+        the count.
+
+        Returns:
+            int: Total number of playback tasks stopped (0 if nothing
+                 was active — safe to call as a no-op).
+        """
+        total = 0
+        try:
+            if self.monitor_service is not None:
+                try:
+                    total += await self.monitor_service.stop_all_playback()
+                except Exception as exc:
+                    self.logger.error(
+                        f"Error stopping monitor playback: {exc}"
+                    )
+            if self.virtual_service is not None:
+                try:
+                    total += await self.virtual_service.stop_all_virtual_microphone_playback()
+                except Exception as exc:
+                    self.logger.error(
+                        f"Error stopping virtual playback: {exc}"
+                    )
+            if total:
+                self.logger.info(
+                    f"stop_all_playback: stopped {total} task(s)"
+                )
+            return total
+        except Exception as exc:
+            self.logger.error(f"stop_all_playback failed: {exc}")
+            return total
 
     async def enumerate_all_devices(self) -> Dict[str, List[AudioDevice]]:
         """Enumerate devices from all services."""

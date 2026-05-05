@@ -4,6 +4,7 @@ MyVoice UI Components Module
 Contains reusable UI components and widgets.
 """
 
+from .queue_depth_badge import QueueDepthBadge
 from .service_status_indicator import ServiceStatusIndicator, ServiceStatusBar
 from .voice_selector import VoiceSelector
 from .emotion_button_group import EmotionButtonGroup, EmotionButton, EmotionPreset
@@ -16,5 +17,5 @@ __all__ = [
     'EmotionButtonGroup', 'EmotionButton', 'EmotionPreset',
     'VoiceLibraryWidget', 'VoiceListItem',
     'ModelLoadingIndicator', 'ModelLoadingOverlay',
-    'QuickSpeakMenu'
+    'QuickSpeakMenu', 'QueueDepthBadge'
 ]

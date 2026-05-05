@@ -16,6 +16,7 @@ import asyncio
 import logging
 import re
 import tempfile
+import threading
 import time
 from enum import Enum
 from pathlib import Path
@@ -52,6 +53,10 @@ class GenerationMode(Enum):
     STREAMING = "streaming"   # Generate in chunks progressively
 
 
+# Legacy: still consumed by get_service_metrics() and the existing UI
+# status indicator. Story 12.1 (Epic 12) rewires UI subscribers to
+# SessionRegistry.session_state_changed; once Epic 12 ships, this enum
+# becomes a candidate for removal in a subsequent pass (D-14).
 class GenerationState(Enum):
     """Current state of TTS generation."""
     IDLE = "idle"
@@ -234,6 +239,10 @@ from myvoice.services.model_registry import ModelRegistry, ModelLoadProgress
 from myvoice.models.service_enums import ModelState, QwenModelType
 from myvoice.models.error import MyVoiceError, ErrorSeverity
 from myvoice.models.ui_state import ServiceHealthStatus
+from myvoice.observability import metrics, MetricRecord
+# Story 11.4: Phase 1 D-20 — wire SessionRegistry into the generation flow.
+from myvoice.services.sessions.session_registry import SessionRegistry
+from myvoice.services.sessions.generation_session import SessionSource
 
 
 @dataclass
@@ -315,6 +324,71 @@ class QwenTTSResponse:
     first_chunk_latency: Optional[float] = None
 
 
+class _FirstChunkLatencyAggregator:
+    """
+    Derives ``_avg_first_chunk_latency`` from the metrics stream (Story 11.3).
+
+    The architecture (P-9) mandates that running averages over telemetry
+    aggregate from the metric stream, not from inline arithmetic at the call
+    site. This aggregator subscribes to ``metrics.record(...)`` and updates
+    the service's ``_avg_first_chunk_latency`` field whenever a
+    ``first_chunk_latency_ms`` record fires.
+
+    Note on units (AC #13): the metric is emitted in **milliseconds**
+    (architecture's chosen unit) but ``_avg_first_chunk_latency`` is held in
+    **seconds** for backward-compat with the public ``get_service_metrics()``
+    surface (key ``"avg_first_chunk_latency"``). The aggregator divides by
+    1000 before applying the running-average update.
+
+    Note on the denominator (AC #15): ``_streaming_requests`` is incremented
+    at request entry (``try:`` block at the top of the streaming generation
+    path), not at successful completion. The aggregator reads the live
+    counter from the service rather than maintaining its own — this
+    preserves the pre-migration semantics ("requests attempted" not
+    "requests completed") that the inline math relied on. Migrating the
+    counter into the metric stream would shift increment timing on
+    early-failure paths, which is a behavior change AC #18 forbids.
+
+    Thread safety: ``__call__`` guards its read-then-write of
+    ``_avg_first_chunk_latency`` with a per-aggregator ``threading.Lock``
+    so two listener invocations cannot interleave their running-average
+    update. The increment of ``_streaming_requests`` itself is NOT under
+    this lock — it lives on the streaming generation path and is part of
+    the service's pre-existing single-threaded streaming contract; the
+    pre-migration inline math had the same boundary.
+    """
+
+    def __init__(self, service: "QwenTTSService") -> None:
+        self._service = service
+        # Guard the read-modify-write of ``_avg_first_chunk_latency`` so
+        # concurrent listener invocations cannot lose updates. Cheap;
+        # uncontended in the current single-threaded streaming path.
+        self._lock = threading.Lock()
+        # Register synchronously so any record() emitted between this line
+        # and a later cleanup is captured. The unsubscribe must be invoked
+        # in the service's stop() path (or wherever shutdown teardown runs).
+        self.unsubscribe: Callable[[], None] = metrics.add_listener(self)
+
+    def __call__(self, record: MetricRecord) -> None:
+        if record.name != "first_chunk_latency_ms":
+            return
+        # ms → s. The roundtrip * 1000 / 1000 introduces float noise on the
+        # order of 1e-13 — well within AC #13's 1e-9 tolerance.
+        value_seconds = record.value / 1000.0
+        with self._lock:
+            n = self._service._streaming_requests
+            if n <= 0:
+                # Defensive — the metric is only emitted from the streaming
+                # path AFTER ``_streaming_requests += 1``, so n must be >= 1.
+                # Returning silently keeps a misuse from corrupting the
+                # running average.
+                return
+            prior = self._service._avg_first_chunk_latency
+            self._service._avg_first_chunk_latency = (
+                prior * (n - 1) + value_seconds
+            ) / n
+
+
 class QwenTTSService(BaseService):
     """
     Core Text-to-Speech service using embedded Qwen3-TTS.
@@ -362,6 +436,36 @@ class QwenTTSService(BaseService):
     MAX_TEXT_LENGTH_WARNING = 5000  # Warn but allow
     MAX_TEXT_LENGTH_HARD = 50000    # Hard limit to prevent OOM
 
+    # ----- Story 11.4: session-label resolvers (AC #12) ----------------- #
+
+    @staticmethod
+    def _resolve_voice_label(request: "QwenTTSRequest") -> str:
+        """Map a request's identity fields to a single human-readable voice
+        label for SessionRegistry.create_session(voice=...) (Story 11.4).
+
+        Resolution order: speaker → voice_description → checkpoint stem →
+        ``"unknown"``. Mirrors the existing log-line context used at the top
+        of ``_generate`` and ``_generate_streaming``.
+        """
+        if request.speaker:
+            return request.speaker
+        if request.voice_description:
+            return request.voice_description
+        if request.checkpoint_path:
+            return Path(request.checkpoint_path).stem
+        return "unknown"
+
+    @staticmethod
+    def _resolve_model_type_label(request: "QwenTTSRequest") -> str:
+        """Resolve ``request.model_type.display_name`` (Story 11.3 metric tag
+        convention) for SessionRegistry.create_session(model_type=...).
+
+        Defensive ``"default"`` fallback if model_type is unexpectedly None.
+        """
+        if request.model_type is None:
+            return "default"
+        return request.model_type.display_name
+
     def __init__(
         self,
         audio_coordinator: Optional['AudioCoordinator'] = None,
@@ -371,6 +475,8 @@ class QwenTTSService(BaseService):
         cache_dir: Optional[Path] = None,
         max_concurrent_requests: int = 1,
         quality_tier: str = "quality",
+        *,
+        session_registry: Optional[SessionRegistry] = None,
     ):
         """
         Initialize the Qwen TTS service.
@@ -383,6 +489,10 @@ class QwenTTSService(BaseService):
             cache_dir: Directory for caching generated audio
             max_concurrent_requests: Maximum concurrent TTS requests (default 1)
             quality_tier: Model quality tier ("small" or "quality")
+            session_registry: Optional SessionRegistry for Story 11.4 session
+                lifecycle wiring. When None, the service runs the legacy
+                code path unchanged (registry-disabled fallback for tests
+                or environments where Qt isn't available).
         """
         super().__init__("QwenTTSService")
 
@@ -390,6 +500,11 @@ class QwenTTSService(BaseService):
         self.audio_coordinator = audio_coordinator
         if self.audio_coordinator:
             self.logger.info("QwenTTSService using AudioCoordinator")
+
+        # Story 11.4: SessionRegistry wiring (D-20 Phase 1).
+        self._session_registry: Optional[SessionRegistry] = session_registry
+        if self._session_registry is not None:
+            self.logger.info("QwenTTSService using SessionRegistry")
 
         # Model registry for lazy loading
         self._model_registry = ModelRegistry(
@@ -446,6 +561,12 @@ class QwenTTSService(BaseService):
         self._streaming_requests = 0
         self._avg_first_chunk_latency: float = 0.0
         self._fallback_count = 0  # Count of streaming->batch fallbacks
+
+        # Story 11.3: derive _avg_first_chunk_latency from the metric stream
+        # via the single-chokepoint helper (architecture P-9). The aggregator
+        # subscribes in its __init__; ``stop()`` calls ``unsubscribe`` to
+        # drop the registration.
+        self._latency_aggregator = _FirstChunkLatencyAggregator(self)
 
         # Voice clone prompt cache (for reusing voice clone prompts)
         self._voice_clone_prompts: Dict[str, Any] = {}
@@ -759,6 +880,13 @@ class QwenTTSService(BaseService):
         try:
             await self._update_status(ServiceStatus.STOPPING)
             self.logger.info("Stopping QwenTTSService")
+
+            # Story 11.3: drop the metric-listener registration so this
+            # service can be garbage-collected after stop().
+            try:
+                self._latency_aggregator.unsubscribe()
+            except Exception:
+                self.logger.exception("Failed to unsubscribe latency aggregator")
 
             # Unload all models
             await self._model_registry.unload_all()
@@ -1623,6 +1751,25 @@ class QwenTTSService(BaseService):
         start_time = time.time()
         self._generation_state = GenerationState.IDLE
 
+        # Story 11.4: create the session at the very top of the entry point
+        # for telemetry symmetry — even early-rejected requests get a
+        # PENDING → ERROR → DISCARDED state trail. Local `sid` is None when
+        # registry is absent (legacy code path runs unchanged).
+        sid: Optional[str] = None
+        if self._session_registry is not None:
+            sid = self._session_registry.create_session(
+                text=request.text,
+                voice=self._resolve_voice_label(request),
+                model_type=self._resolve_model_type_label(request),
+                source=SessionSource.GENERATED,
+            )
+
+        # Story 11.4 review fix (F1): publish the running asyncio task so
+        # cancel_generation() can call task.cancel() — the only mechanism
+        # that gets CancelledError into the batch path (which never polls
+        # _cancel_requested). Cleared in the outer finally below.
+        self._current_generation_task = asyncio.current_task()
+
         try:
             # Validate text input (FR5)
             validation = self.validate_text(request.text)
@@ -1639,6 +1786,10 @@ class QwenTTSService(BaseService):
                     is_recoverable=True,
                 )
                 self._last_error = tts_error
+                # Story 11.4: clean up the PENDING session — telemetry trail.
+                if sid is not None and self._session_registry is not None:
+                    self._session_registry.post_mutation('set_error', sid)
+                    self._session_registry.post_mutation('discard', sid)
                 return QwenTTSResponse(
                     success=False,
                     error_message=str(tts_error),
@@ -1658,6 +1809,10 @@ class QwenTTSService(BaseService):
                     is_recoverable=True,
                 )
                 self._last_error = tts_error
+                # Story 11.4: clean up the PENDING session — telemetry trail.
+                if sid is not None and self._session_registry is not None:
+                    self._session_registry.post_mutation('set_error', sid)
+                    self._session_registry.post_mutation('discard', sid)
                 return QwenTTSResponse(
                     success=False,
                     error_message=str(tts_error),
@@ -1687,6 +1842,10 @@ class QwenTTSService(BaseService):
                 if not success:
                     self._failed_requests += 1
                     self._generation_state = GenerationState.ERROR
+                    # Story 11.4: model-load-failed → ERROR → DISCARDED.
+                    if sid is not None and self._session_registry is not None:
+                        self._session_registry.post_mutation('set_error', sid)
+                        self._session_registry.post_mutation('discard', sid)
                     if self._generation_failed_callback:
                         self._generation_failed_callback(f"Failed to load model: {error}")
                     return QwenTTSResponse(
@@ -1700,6 +1859,9 @@ class QwenTTSService(BaseService):
 
                 # Notify generation started
                 self._generation_state = GenerationState.GENERATING
+                # Story 11.4: PENDING → GENERATING in parallel to legacy state.
+                if sid is not None and self._session_registry is not None:
+                    self._session_registry.post_mutation('start_generation', sid)
                 if self._generation_started_callback:
                     self._generation_started_callback()
 
@@ -1718,6 +1880,20 @@ class QwenTTSService(BaseService):
             self._successful_requests += 1
             self._last_generation_time = generation_time
             self._generation_state = GenerationState.COMPLETE
+
+            # Story 11.4: append the entire batch buffer as one chunk, then
+            # finalize. The registry needs at least one chunk for finalize
+            # to succeed. Note: post_mutation() is QueuedConnection — the
+            # legacy completion callback below fires synchronously while
+            # these slot calls sit in the Qt event queue, so a subscriber
+            # connected to both observes the callback first and the
+            # session_state_changed(READY_TO_PLAY) emission on the next
+            # event-loop iteration. Documented in Dev Notes ("QueuedConnection
+            # ordering implications") and accepted by Story 12.1's
+            # 5-second focal-decay window.
+            if sid is not None and self._session_registry is not None:
+                self._session_registry.post_mutation('append_chunk', sid, audio_data)
+                self._session_registry.post_mutation('finalize', sid)
 
             self.logger.info(
                 f"TTS generation complete (batch): {len(audio_data)} samples, "
@@ -1741,6 +1917,10 @@ class QwenTTSService(BaseService):
             self.logger.info("TTS generation cancelled")
             self._generation_state = GenerationState.CANCELLED
             # Note: text input is retained - only generation is aborted
+            # Story 11.4: cancel → discard one-tick chain (P-7).
+            if sid is not None and self._session_registry is not None:
+                self._session_registry.post_mutation('cancel', sid)
+                self._session_registry.post_mutation('discard', sid)
             if self._generation_cancelled_callback:
                 self._generation_cancelled_callback()
             return QwenTTSResponse(
@@ -1752,6 +1932,10 @@ class QwenTTSService(BaseService):
             self.logger.exception(f"TTS generation failed: {e}")
             self._failed_requests += 1
             self._generation_state = GenerationState.ERROR
+            # Story 11.4: set_error → discard one-tick chain.
+            if sid is not None and self._session_registry is not None:
+                self._session_registry.post_mutation('set_error', sid)
+                self._session_registry.post_mutation('discard', sid)
 
             tts_error = self._handle_generation_error(e, used_fallback=False)
 
@@ -1759,6 +1943,12 @@ class QwenTTSService(BaseService):
                 success=False,
                 error_message=str(tts_error),
             )
+        finally:
+            # Story 11.4 review fix (F1): drop the task reference so a
+            # later cancel_generation() doesn't try to cancel a finished
+            # task. Set unconditionally — applies to every return path
+            # above, including handler returns.
+            self._current_generation_task = None
 
     async def _generate_streaming(self, request: QwenTTSRequest) -> QwenTTSResponse:
         """
@@ -1787,6 +1977,24 @@ class QwenTTSService(BaseService):
         sample_rate = 24000
         chunk_count = 0
 
+        # Story 11.4: create the session at the very top of the entry point.
+        # Local `sid` is None when registry is absent (legacy code path).
+        sid: Optional[str] = None
+        if self._session_registry is not None:
+            sid = self._session_registry.create_session(
+                text=request.text,
+                voice=self._resolve_voice_label(request),
+                model_type=self._resolve_model_type_label(request),
+                source=SessionSource.GENERATED,
+            )
+
+        # Story 11.4 review fix (F1): publish the running asyncio task so
+        # cancel_generation() can call task.cancel(). Streaming has the
+        # _cancel_requested poll as a fallback path, but task.cancel() is
+        # the canonical mechanism — and the only one that interrupts an
+        # in-flight `await loop.run_in_executor(...)` chunk generation.
+        self._current_generation_task = asyncio.current_task()
+
         try:
             # Validate text input (FR5)
             validation = self.validate_text(request.text)
@@ -1803,6 +2011,10 @@ class QwenTTSService(BaseService):
                     is_recoverable=True,
                 )
                 self._last_error = tts_error
+                # Story 11.4: clean up the PENDING session — telemetry trail.
+                if sid is not None and self._session_registry is not None:
+                    self._session_registry.post_mutation('set_error', sid)
+                    self._session_registry.post_mutation('discard', sid)
                 return QwenTTSResponse(
                     success=False,
                     error_message=str(tts_error),
@@ -1823,6 +2035,10 @@ class QwenTTSService(BaseService):
                     is_recoverable=True,
                 )
                 self._last_error = tts_error
+                # Story 11.4: clean up the PENDING session — telemetry trail.
+                if sid is not None and self._session_registry is not None:
+                    self._session_registry.post_mutation('set_error', sid)
+                    self._session_registry.post_mutation('discard', sid)
                 return QwenTTSResponse(
                     success=False,
                     error_message=str(tts_error),
@@ -1854,6 +2070,10 @@ class QwenTTSService(BaseService):
                 if not success:
                     self._failed_requests += 1
                     self._generation_state = GenerationState.ERROR
+                    # Story 11.4: model-load-failed → ERROR → DISCARDED.
+                    if sid is not None and self._session_registry is not None:
+                        self._session_registry.post_mutation('set_error', sid)
+                        self._session_registry.post_mutation('discard', sid)
                     if self._generation_failed_callback:
                         self._generation_failed_callback(f"Failed to load model: {error}")
                     return QwenTTSResponse(
@@ -1867,6 +2087,10 @@ class QwenTTSService(BaseService):
 
                 # Notify generation started
                 self._generation_state = GenerationState.STREAMING
+                # Story 11.4: legacy STREAMING maps to session GENERATING
+                # (registry has no STREAMING substate per AC #2 table).
+                if sid is not None and self._session_registry is not None:
+                    self._session_registry.post_mutation('start_generation', sid)
                 if self._generation_started_callback:
                     self._generation_started_callback()
 
@@ -1878,6 +2102,8 @@ class QwenTTSService(BaseService):
                     if self._cancel_requested:
                         self.logger.info("Streaming generation cancelled by user")
                         self._generation_state = GenerationState.CANCELLED
+                        # Story 11.4: cancel/discard handled in the outer
+                        # except asyncio.CancelledError handler (one site).
                         raise asyncio.CancelledError()
 
                     # Skip empty chunks
@@ -1911,6 +2137,9 @@ class QwenTTSService(BaseService):
 
                     sample_rate = sr
                     all_chunks.append(audio_data)
+                    # Story 11.4: registry append after local accumulator.
+                    if sid is not None and self._session_registry is not None:
+                        self._session_registry.post_mutation('append_chunk', sid, audio_data)
                     chunk_count += 1
 
                     # Track first chunk latency
@@ -1939,6 +2168,21 @@ class QwenTTSService(BaseService):
                 complete_audio = np.concatenate(all_chunks)
             else:
                 complete_audio = np.array([], dtype=np.float32)
+            # Story 11.4: D-7 memory hygiene — clear the local accumulator
+            # immediately after concat so only `complete_audio` remains.
+            # Applies even in legacy mode (registry-less). The registry
+            # session's own `chunks` list is cleared inside `finalize()`.
+            all_chunks.clear()
+            if sid is not None and self._session_registry is not None:
+                if chunk_count > 0:
+                    self._session_registry.post_mutation('finalize', sid)
+                else:
+                    # Degenerate case (empty text_chunks): the session is
+                    # in GENERATING with no chunks; finalize would raise.
+                    # Clean up via set_error → discard for a bounded
+                    # registry collection.
+                    self._session_registry.post_mutation('set_error', sid)
+                    self._session_registry.post_mutation('discard', sid)
 
             # Save to cache file
             audio_file = self._save_audio_to_cache(complete_audio, sample_rate)
@@ -1948,11 +2192,26 @@ class QwenTTSService(BaseService):
             self._last_generation_time = generation_time
             self._generation_state = GenerationState.COMPLETE
 
-            # Update average first chunk latency
+            # Story 11.3: emit through the single-chokepoint helper (P-9).
+            # The _FirstChunkLatencyAggregator subscribes in __init__ and
+            # updates ``_avg_first_chunk_latency`` synchronously inside
+            # record(), so the field is already current by the time control
+            # returns here. Story 11.4 wires the registry-issued session_id.
             if first_chunk_time is not None:
-                self._avg_first_chunk_latency = (
-                    (self._avg_first_chunk_latency * (self._streaming_requests - 1) + first_chunk_time)
-                    / self._streaming_requests
+                metrics.record(
+                    "first_chunk_latency_ms",
+                    first_chunk_time * 1000.0,
+                    session_id=sid,  # Story 11.4: registry-issued session id
+                    model_type=(
+                        request.model_type.display_name
+                        if request.model_type is not None
+                        else "default"
+                    ),
+                    hardware=(
+                        "gpu"
+                        if "cuda" in str(self._model_registry.device).lower()
+                        else "cpu"
+                    ),
                 )
 
             self.logger.info(
@@ -1980,6 +2239,13 @@ class QwenTTSService(BaseService):
             self.logger.info("Streaming generation cancelled")
             self._generation_state = GenerationState.CANCELLED
             # Note: text input is retained - only generation is aborted
+            # Story 11.4: cancel → discard one-tick chain (P-7). Defensive
+            # `sid is not None` because cancellation can fire before
+            # create_session if the asyncio task is cancelled extremely
+            # early; in that case the legacy code path runs unchanged.
+            if sid is not None and self._session_registry is not None:
+                self._session_registry.post_mutation('cancel', sid)
+                self._session_registry.post_mutation('discard', sid)
             if self._generation_cancelled_callback:
                 self._generation_cancelled_callback()
             return QwenTTSResponse(
@@ -1991,6 +2257,13 @@ class QwenTTSService(BaseService):
 
         except Exception as e:
             self.logger.exception(f"Streaming generation failed: {e}")
+            # Story 11.4: the streaming session is doomed; mark + discard
+            # NOW so the recursive batch fallback below creates a fresh
+            # session via `_generate(request)` (Task 3 wiring) rather than
+            # racing with this one in the registry.
+            if sid is not None and self._session_registry is not None:
+                self._session_registry.post_mutation('set_error', sid)
+                self._session_registry.post_mutation('discard', sid)
 
             # Try batch fallback (FR3, NFR7: graceful degradation)
             self.logger.warning("[QwenTTS] Streaming failed, falling back to batch")
@@ -2057,6 +2330,13 @@ class QwenTTSService(BaseService):
                     chunks_generated=chunk_count,
                 )
 
+        finally:
+            # Story 11.4 review fix (F1): drop the task reference so a
+            # later cancel_generation() doesn't try to cancel a finished
+            # task. The recursive batch-fallback _generate() also sets and
+            # clears this field, but the outer clear is idempotent.
+            self._current_generation_task = None
+
     def _split_text_for_streaming(self, text: str) -> List[str]:
         """
         Split text into chunks suitable for streaming generation.
@@ -2119,6 +2399,19 @@ class QwenTTSService(BaseService):
             self.logger.info("Cancellation requested")
             self._cancel_requested = True
             self._generation_state = GenerationState.CANCELLED
+
+            # Story 11.4 review fix (F1): propagate the cancel into the
+            # running asyncio task so the batch path actually receives
+            # CancelledError. Without this, _generate's
+            # `await loop.run_in_executor(...)` runs to completion, the
+            # session reaches READY_TO_PLAY in the registry, and the
+            # legacy/registry states diverge. Streaming has the
+            # _cancel_requested poll as a separate bail-out path; both
+            # converge on the existing except-CancelledError handlers
+            # which post the registry cancel/discard mutations.
+            task = self._current_generation_task
+            if task is not None and not task.done():
+                task.cancel()
 
             # Notify cancellation callback
             if self._generation_cancelled_callback:
@@ -2666,8 +2959,11 @@ class QwenTTSService(BaseService):
 
     def get_service_metrics(self) -> Dict[str, Any]:
         """Get service performance metrics."""
-        metrics = self.get_status_info()
-        metrics.update({
+        # Local var name avoids shadowing the imported ``metrics`` module
+        # (line 237) — Story 11.4 may add ``metrics.record(...)`` calls in
+        # this method body.
+        status = self.get_status_info()
+        status.update({
             "total_requests": self._total_requests,
             "successful_requests": self._successful_requests,
             "failed_requests": self._failed_requests,
@@ -2682,8 +2978,17 @@ class QwenTTSService(BaseService):
             "generation_state": self._generation_state.value,
             "last_error": self._last_error.to_dict() if self._last_error else None,
             "registry_status": self._model_registry.get_registry_status(),
+            # Story 11.4 AC #17: operational visibility into the in-flight
+            # session set. Reaches into ``_sessions`` deliberately — adding
+            # ``__len__`` to SessionRegistry is acceptable but out of scope
+            # for this pass.
+            "session_registry_in_flight": (
+                len(self._session_registry._sessions)
+                if self._session_registry is not None
+                else 0
+            ),
         })
-        return metrics
+        return status
 
     def get_last_error(self) -> Optional[TTSError]:
         """Get the last error that occurred."""

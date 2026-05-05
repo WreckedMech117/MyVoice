@@ -8,16 +8,78 @@ application lifecycle, initialization, and coordination between services and UI.
 import gc
 import logging
 import sys
+import uuid
 import asyncio
+from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 from datetime import datetime
 
 from PyQt6.QtWidgets import QApplication, QMessageBox
-from PyQt6.QtCore import QObject, QTimer
+from PyQt6.QtCore import QMetaObject, QObject, Qt, QTimer, pyqtSlot
 
 from myvoice.models.ui_state import ServiceStatusInfo, ServiceHealthStatus
 from myvoice.models.service_enums import ServiceStatus, QwenModelType
+
+
+class _BoundedDedupSet:
+    """Story 13.2 follow-up: LRU-evicting dedup set with O(1) membership.
+
+    Backs ``MyVoiceApp._closed_session_ids`` and
+    ``_advanced_replay_tokens`` so the dual-fire callback dedup memory
+    stays bounded over the lifetime of a long-running app. Default cap
+    (256) gives a comfortable buffer for the dual-fire window (typically
+    milliseconds between the monitor and virtual-mic callbacks) even at
+    sustained 1Hz generation. Eviction is FIFO: the oldest entry is
+    dropped when a new one would exceed the cap.
+
+    Provides only the surface ``MyVoiceApp`` consumes (``add``,
+    ``__contains__``, ``__len__``) — drop-in replacement for ``set[str]``
+    at those call sites.
+    """
+
+    __slots__ = ("_max", "_items")
+
+    def __init__(self, max_size: int = 256) -> None:
+        self._max = max_size
+        self._items: "OrderedDict[str, None]" = OrderedDict()
+
+    def add(self, key: str) -> None:
+        if key in self._items:
+            return
+        if len(self._items) >= self._max:
+            self._items.popitem(last=False)
+        self._items[key] = None
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._items
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+
+@dataclass
+class _PendingDispatch:
+    """Story 13.2: parked dispatch context for a session that was enqueued
+    but cannot dispatch yet because the queue head is a different session.
+
+    The playback-complete callback chain pulls this entry from
+    ``MyVoiceApp._pending_dispatches`` once the queue advances to this
+    session. Keys are the queue token (the session id, or a synthetic
+    ``replay-<uuid>`` token for the registry-less replay path).
+
+    ``queue_token`` is preserved separately from ``session_id`` so the
+    re-entry path through ``_play_generated_audio`` reuses the original
+    token (registry-tracked sessions: token == session_id; replay path:
+    token is a synthetic ``replay-<uuid>``). Without preserving it, the
+    re-entry would mint a fresh synthetic token for replay and the
+    re-entry guard ``queue_token == _dispatching_session_id`` would fail.
+    """
+
+    audio_data: bytes
+    session_id: Optional[str]
+    queue_token: str
 
 
 class MyVoiceApp(QObject):
@@ -47,6 +109,50 @@ class MyVoiceApp(QObject):
         self._initialized = False
         self._main_window = None
         self._services = {}
+
+        # Story 12.1: bookkeeping for the playback-side registry close path
+        # (Task 3.5). The audio services fire playback-complete once for
+        # the monitor task and once for the virtual-mic task — we only
+        # want to post mark_done+discard once per session. The set
+        # short-circuits the second call; the dict maps task ids to
+        # session ids so the callback can resolve session id from task id
+        # without changing the audio-service callback signature.
+        self._task_to_session: dict[str, str] = {}
+        # Story 13.2 follow-up: bounded dedup set (FIFO-evicting at 256
+        # entries) prevents unbounded growth across long-running sessions.
+        # The dual-fire callback window is milliseconds; 256 entries is
+        # ample headroom even at sustained generation rates.
+        self._closed_session_ids: _BoundedDedupSet = _BoundedDedupSet()
+
+        # Story 13.2 — Phase 3 of D-20 (OFR-C): PlaybackQueue integration
+        # state. The queue itself is constructed in
+        # _initialize_services_async (it requires QApplication.instance() to
+        # be alive, which is asserted by PlaybackQueue.__init__).
+        #
+        # _pending_dispatches: when a session arrives at _play_generated_audio
+        # while another session is currently dispatching, we park the audio
+        # bytes here keyed by the queue token. _dispatch_next_pending pulls
+        # from this map when the queue advances.
+        #
+        # _dispatching_session_id: the session whose play_dual_stream is in
+        # flight (or about to be invoked). Mirrors the queue head while the
+        # head is actively playing; None when no playback is active. The
+        # _play_generated_audio re-entry guard reads this to avoid double-
+        # enqueueing on the deferred-dispatch re-entry path.
+        self._playback_queue = None  # type: Optional[QObject]
+        self._pending_dispatches: Dict[str, _PendingDispatch] = {}
+        self._dispatching_session_id: Optional[str] = None
+        # Story 13.2: parallel to _task_to_session for the replay path
+        # (session_id is None, but we still need to advance the queue
+        # exactly once per replay despite the dual-fire callback). Maps
+        # task_id → synthetic "replay-XXXXXXXX" token. _advanced_replay_tokens
+        # is the dedup set: the second dual-fire finds the token already
+        # present and skips the queue advance.
+        self._task_to_replay_token: Dict[str, str] = {}
+        # Story 13.2 follow-up: bounded dedup (see _closed_session_ids
+        # above) prevents the replay-token dedup memory from growing
+        # forever across many Replay clicks.
+        self._advanced_replay_tokens: _BoundedDedupSet = _BoundedDedupSet()
 
         # Connect application signals
         self.qt_app.aboutToQuit.connect(self._on_about_to_quit)
@@ -190,15 +296,74 @@ class MyVoiceApp(QObject):
         try:
             self.logger.debug("Initializing services asynchronously")
 
-            # Initialize Audio Coordinator (dual-service architecture)
+            # Story 11.4: Construct SessionRegistry on the Qt main thread
+            # (its __init__ enforces this) before any consumer that holds a
+            # reference to it. The registry is the in-flight session
+            # collection (D-1) and the sole signal emitter for session
+            # lifecycle (D-2). Story 11.4 wires QwenTTSService to populate
+            # it; later stories (12.1, 13.1, 14.1, 15.x) subscribe to its
+            # signals. AI-Review H1 (2026-05-04): construction MUST precede
+            # AudioCoordinator and QwenTTSService — both consume it via
+            # constructor injection, and the previous ordering passed `None`
+            # to AudioCoordinator, silently disabling its registry posts in
+            # the dual-stream production path.
+            from myvoice.services.sessions import SessionRegistry
+            self._session_registry = SessionRegistry(parent=self)
+            self.register_service("session_registry", self._session_registry)
+            self.logger.info("SessionRegistry constructed on Qt main thread")
+
+            # Story 13.2 — Phase 3 of D-20 (OFR-C): construct the PlaybackQueue
+            # on the Qt main thread, after SessionRegistry (so we can forward
+            # the depth signal) and before AudioCoordinator (so the playback-
+            # complete callback wired below can advance the queue). Story 13.1
+            # sealed the queue's invariants in isolation; this story activates
+            # them in the dispatch path. Construction asserts QApplication is
+            # alive and currentThread() is the Qt main thread; both are
+            # satisfied here because _initialize_services_async runs through
+            # qasync's asyncSlot (Qt main thread) after QApplication is up.
+            from myvoice.services.sessions import PlaybackQueue
+            self._playback_queue = PlaybackQueue(parent=self)
+            self.register_service("playback_queue", self._playback_queue)
+            self.logger.info("PlaybackQueue constructed on Qt main thread")
+
+            # Story 13.2 AC #7: forward queue.playback_queue_depth_changed
+            # to registry.playback_queue_depth_changed so the existing
+            # MainWindow slot wired in Story 12.1 (main_window.py:1741-1745,
+            # slot at 1826-1835) receives depth events without rewiring.
+            # Both queue and registry live on the Qt main thread, so
+            # AutoConnection collapses to DirectConnection — synchronous,
+            # zero-loss re-emission. The registry's signal at
+            # session_registry.py:152 was declared inert in Story 11.2
+            # ("13.1 will emit from PlaybackQueue") — 13.2 closes that loop.
+            self._playback_queue.playback_queue_depth_changed.connect(
+                self._session_registry.playback_queue_depth_changed.emit
+            )
+
+            # Initialize Audio Coordinator (dual-service architecture).
+            # Story 12.1: thread the SessionRegistry into the coordinator so
+            # play_dual_stream can post mark_playing/mark_audible mutations
+            # alongside the existing dispatch path (D-20 Phase 2).
             from myvoice.services.audio_coordinator import AudioCoordinator
-            self._audio_coordinator = AudioCoordinator(app_settings=getattr(self, '_app_settings', None))
+            self._audio_coordinator = AudioCoordinator(
+                app_settings=getattr(self, '_app_settings', None),
+                session_registry=self._session_registry,
+            )
             self.register_service("audio_coordinator", self._audio_coordinator)
 
             # Start audio coordinator (DIRECT AWAIT)
             await self._audio_coordinator.start()
             self.logger.info("Audio coordinator started successfully")
             self._on_audio_coordinator_started(None)
+
+            # Story 11.4 follow-up: hook the real playback-complete signal
+            # so the Stop button stays visible for the entire duration of
+            # actual audio playback. Without this, the only "playback
+            # done" signal app.py receives is the start-task's on_success
+            # callback, which fires the moment ``play_dual_stream``
+            # returns — long before the audio finishes.
+            self._audio_coordinator.set_playback_complete_callback(
+                self._on_playback_complete
+            )
 
             # Auto-detect and configure VB-Cable on first boot if no virtual device configured
             await self._auto_detect_and_configure_vb_cable()
@@ -208,7 +373,10 @@ class MyVoiceApp(QObject):
             from myvoice.services.qwen_tts_service import QwenTTSService
             quality_tier = getattr(self._app_settings, 'model_quality_tier', 'quality') if self._app_settings else 'quality'
             self.logger.info(f"Initializing TTS service with quality tier: {quality_tier}")
-            self._tts_service = QwenTTSService(quality_tier=quality_tier)
+            self._tts_service = QwenTTSService(
+                quality_tier=quality_tier,
+                session_registry=self._session_registry,  # Story 11.4
+            )
             self.register_service("tts", self._tts_service)
 
             # Set up health status callback BEFORE starting service
@@ -293,8 +461,15 @@ class MyVoiceApp(QObject):
             self.logger.debug("Initializing UI")
 
             # Create and show main window
+            # Story 12.1: thread the SessionRegistry into MainWindow so the
+            # TTS indicator's substate is driven by registry signals (D-20
+            # Phase 2). The registry was constructed earlier on the Qt main
+            # thread; passing it through __init__ keeps the wiring explicit
+            # and matches the injection pattern Story 11.4 used for QwenTTSService.
             from myvoice.ui.main_window import MainWindow
-            self._main_window = MainWindow()
+            self._main_window = MainWindow(
+                session_registry=getattr(self, '_session_registry', None)
+            )
 
             # Connect voice manager if already available (after service startup)
             if hasattr(self, '_voice_manager'):
@@ -323,6 +498,7 @@ class MyVoiceApp(QObject):
             self._main_window.voice_refresh_requested.connect(self._on_voice_refresh_requested)
             self._main_window.voice_transcription_requested.connect(self._on_voice_transcription_requested)
             self._main_window.replay_last_requested.connect(self._on_replay_last_requested)  # Story 2.4
+            self._main_window.cancel_generation_requested.connect(self._on_cancel_generation_requested)  # Story 11.4 follow-up
             self._main_window.whisper_init_requested.connect(self._on_whisper_init_requested)  # QA4
             self._main_window.mic_device_refresh_requested.connect(self._on_mic_device_refresh_requested)
             self._main_window.mic_monitor_toggled.connect(self._on_mic_monitor_toggled)
@@ -817,6 +993,148 @@ class MyVoiceApp(QObject):
             if self._main_window:
                 self._main_window.set_generation_status(f"Generation failed: {str(e)}", False)
 
+    def _on_cancel_generation_requested(self):
+        """
+        Handle user-initiated Stop click — cancel generation and/or
+        stop playback, whichever is in flight.
+
+        Story 11.4 follow-up wiring: the main window's Clear button
+        doubles as a Stop button while either generation or playback
+        is active. This handler fires both intents unconditionally:
+
+          * ``QwenTTSService.cancel_generation()`` — propagates
+            ``task.cancel()`` into the running asyncio task and posts
+            the ``cancel`` + ``discard`` registry mutations (Story 11.4
+            F1 fix). No-op when the service is idle.
+          * ``AudioCoordinator.stop_all_playback()`` — stops every
+            active monitor + virtual playback task. No-op when nothing
+            is playing.
+
+        Both calls are idempotent under "nothing to stop", so we do
+        not need to disambiguate which state the UI was actually in.
+
+        UI-flip note: cancel-during-generation flips back to idle via
+        the ``_run_async_task`` ``on_error`` chain (CancelledError →
+        ``_on_tts_generation_failed`` → ``set_generation_status(...,
+        False)``). Cancel-during-playback has no analogous callback
+        because ``stop_playback`` marks tasks as failed and the worker
+        thread exits without firing ``_playback_complete_callback``.
+        We therefore flip ``set_playback_active(False)`` synchronously
+        here so the button reverts immediately on click; the async
+        stops complete in the background.
+        """
+        self.logger.info("Cancel/stop requested")
+        try:
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                self.logger.error("No asyncio event loop available for cancel")
+                return
+
+            if hasattr(self, '_tts_service') and self._tts_service is not None:
+                # Fire-and-forget — the signal handler is synchronous,
+                # but the cancel coroutine has its own UI-flip lifecycle.
+                asyncio.ensure_future(
+                    self._tts_service.cancel_generation(), loop=loop
+                )
+            else:
+                self.logger.debug("Cancel requested but TTS service not available")
+
+            if (
+                hasattr(self, '_audio_coordinator')
+                and self._audio_coordinator is not None
+            ):
+                asyncio.ensure_future(
+                    self._audio_coordinator.stop_all_playback(), loop=loop
+                )
+            else:
+                self.logger.debug("Stop requested but audio coordinator not available")
+
+            # Story 12.1 Task 3.7: cancel-during-playback registry close.
+            # qwen_tts_service.cancel_generation only posts cancel+discard
+            # when _generation_state is GENERATING or STREAMING. A session
+            # that has reached PLAYING (generation done, audio dispatched)
+            # is past that gate, so cancel_generation is a no-op and the
+            # registry session would otherwise stay in PLAYING forever.
+            # Post cancel+discard explicitly here for PLAYING sessions.
+            # State-guarded so we don't double-post over the
+            # qwen_tts_service paths (which fire for GENERATING/STREAMING
+            # via the except-CancelledError handlers).
+            if (
+                hasattr(self, '_session_registry')
+                and self._session_registry is not None
+            ):
+                focal_id = self._session_registry.focal_session_id
+                if focal_id is not None:
+                    session = self._session_registry.get(focal_id)
+                    if session is not None and session.state.value == "playing":
+                        self._session_registry.post_mutation('cancel', focal_id)
+                        self._session_registry.post_mutation('discard', focal_id)
+                        # Story 13.2 follow-up — defend against the cancel-
+                        # then-natural-complete race. If the audio worker
+                        # finishes the buffer before stop_all_playback's
+                        # cancellation propagates, _playback_complete_callback
+                        # fires on the now-discarded session and
+                        # _on_playback_complete posts mark_done → KeyError on
+                        # _guard_and_lookup. Adding focal_id to
+                        # _closed_session_ids makes the post-cancel callback
+                        # a no-op (the existing dual-fire dedup uses the same
+                        # set; this just extends the same guard to the
+                        # cancel-vs-natural-complete race). Latent since
+                        # Story 12.1; surfaced during Story 13.2 manual
+                        # acceptance because the queue makes cancel timing
+                        # more deterministic.
+                        self._closed_session_ids.add(focal_id)
+
+            # Story 13.2 AC #9: cancel-during-playback does NOT fire the
+            # audio coordinator's playback-complete callback (per the
+            # docstring above: "stop_playback marks tasks as failed and
+            # the worker thread exits without firing
+            # _playback_complete_callback"). The PlaybackQueue would
+            # therefore stay stuck on the cancelled session as the head.
+            # Advance the queue explicitly here. We are on the Qt main
+            # thread (the cancel signal is delivered via Qt slot), so we
+            # can call cancel_current and _dispatch_next_pending directly
+            # rather than going through QMetaObject.invokeMethod.
+            if (
+                self._playback_queue is not None
+                and self._dispatching_session_id is not None
+            ):
+                cancelled_token = self._dispatching_session_id
+                self._playback_queue.cancel_current()
+                # Drop any pending dispatch keyed on the cancelled token
+                # so it doesn't replay later (the session has been told
+                # to stop — playing it would defy the user's intent).
+                self._pending_dispatches.pop(cancelled_token, None)
+                self._dispatching_session_id = None
+                self._dispatch_next_pending()
+                # Story 13.2 follow-up — extend the cancel-then-natural-
+                # complete race protection (see focal-cancel block above)
+                # to the queue token. _closed_session_ids covers
+                # registry-tracked sessions; _advanced_replay_tokens
+                # covers synthetic replay tokens. The focal-cancel block
+                # already added focal_id to _closed_session_ids when
+                # focal_id == _dispatching_session_id (the common case);
+                # adding cancelled_token here is idempotent for that case
+                # AND covers the (rare) case where the dispatching token
+                # is a registry-tracked session distinct from focal, OR
+                # a replay token (focal-cancel skips replay because the
+                # focal isn't in PLAYING state for replay dispatches).
+                if cancelled_token.startswith("replay-"):
+                    self._advanced_replay_tokens.add(cancelled_token)
+                else:
+                    self._closed_session_ids.add(cancelled_token)
+
+            # Synchronous UI flip — see docstring. Safe regardless of
+            # which (or no) state was active; ``set_playback_active``
+            # is idempotent.
+            if self._main_window is not None:
+                self._main_window.set_playback_active(False)
+                self._main_window.set_generation_status("Stopped", False)
+
+        except Exception as e:
+            self.logger.exception(f"Error handling cancel request: {e}")
+
     def _on_replay_last_requested(self):
         """
         Handle replay last audio request (Story 2.4: FR28, FR29, FR31, FR32).
@@ -850,6 +1168,13 @@ class MyVoiceApp(QObject):
 
             # Play using the same dual-stream playback (FR31, FR32)
             if self._audio_coordinator:
+                # Story 12.1 L3 (closed by Story 12.3, 2026-05-04): replay
+                # deliberately skips registry mutations — by the time replay
+                # fires there is no in-flight READY_TO_PLAY session, so
+                # _play_generated_audio's focal snapshot returns None and the
+                # dispatch runs without registry coupling. Don't "fix" this
+                # without first reading the H4 long-term follow-up in Story
+                # 12.1 (thread session_id through QwenTTSResponse).
                 self._run_async_task(
                     self._play_generated_audio(audio_data),
                     on_success=self._on_replay_success,
@@ -1575,7 +1900,12 @@ class MyVoiceApp(QObject):
             if self._main_window:
                 self._main_window.set_generation_status(f"Generation failed: {response.error_message}", False)
 
-    async def _play_generated_audio(self, audio_data: bytes):
+    async def _play_generated_audio(
+        self,
+        audio_data: bytes,
+        session_id: Optional[str] = None,
+        _queue_token: Optional[str] = None,
+    ):
         """
         Play generated TTS audio using AudioCoordinator dual-service architecture.
 
@@ -1584,9 +1914,76 @@ class MyVoiceApp(QObject):
 
         Args:
             audio_data: WAV audio data from TTS generation
+            session_id: Optional registry session id (Story 12.1). When None
+                and a registry is available, the focal session is used as
+                a load-bearing approximation per Open Question #2 approach
+                (b) — the just-finalized session is the focal under tier-(b)
+                of validation gap #1 at the moment dispatch begins.
+            _queue_token: Internal — Story 13.2. Used by ``_dispatch_next_pending``
+                to re-enter this method after the queue advances and the
+                pending dispatch is being executed. The leading underscore
+                signals "internal use only"; external callers (post-generation
+                dispatch at ``app.py:_on_tts_generation_completed`` and the
+                replay path at ``app.py:_on_replay_last_requested``) leave
+                this as ``None`` and the queue_token is derived from
+                ``session_id`` (or minted as a synthetic ``replay-XXXXXXXX``
+                token for the replay path).
         """
         try:
             self.logger.info("Starting audio playback via AudioCoordinator")
+
+            # Story 12.1 Task 3.6 — approach (b): if no explicit session_id
+            # was threaded through (the response-side QwenTTSResponse does
+            # not currently carry it; threading it would touch ~17 response-
+            # construction sites in qwen_tts_service.py, exceeding the
+            # story's call-site budget), snapshot focal_session_id now. The
+            # session that just transitioned to READY_TO_PLAY is the focal
+            # by validation gap #1 ordering.
+            #
+            # AI-Review H4 (2026-05-04): guard the snapshot with a state
+            # check. Under back-to-back generation (a successor's
+            # start_generation queued before this dispatch runs), focal
+            # could be a sibling session in GENERATING — posting
+            # mark_playing against it would raise InvalidSessionStateError
+            # in the slot, leaving the actually-dispatching session
+            # untracked. If the focal is not in READY_TO_PLAY, we leave
+            # session_id None and proceed without registry coupling for
+            # this dispatch; the leaked READY_TO_PLAY entry falls out of
+            # focal-eligibility within the 5s decay. The proper fix is
+            # to thread the id through QwenTTSResponse (approach a); this
+            # is tracked as a Review Follow-up.
+            if session_id is None and getattr(self, '_session_registry', None) is not None:
+                from myvoice.services.sessions.generation_session import SessionState
+                focal_id = self._session_registry.focal_session_id
+                if focal_id is not None:
+                    focal_session = self._session_registry.get(focal_id)
+                    if (
+                        focal_session is not None
+                        and focal_session.state == SessionState.READY_TO_PLAY
+                    ):
+                        session_id = focal_id
+
+            # Story 13.2 — Phase 3 (OFR-C): queue gating. The queue serializes
+            # inter-session dispatch (P-8) so three rapid-fire generations
+            # play in submission order rather than overlapping. Token
+            # derivation and the head/re-entry decision are factored into
+            # ``_derive_queue_token`` and ``_claim_queue_slot_or_defer`` so
+            # the gating logic is testable in isolation (see
+            # ``tests/integration/test_session_lifecycle.py::TestPlaybackQueueGatingHelpers``).
+            #
+            # _dispatch_started must be initialized BEFORE the gating block
+            # so the ``finally`` clause can read it on the defer-path early
+            # return (without this, the early ``return`` from the deferral
+            # branch raises UnboundLocalError when finally reads the flag).
+            # When the defer path takes the early return, the slot is
+            # owned by a different token and ``_release_queue_slot_on_failure``
+            # short-circuits via its token-mismatch guard.
+            _dispatch_started = False
+            queue_token = self._derive_queue_token(session_id, _queue_token)
+            if not self._claim_queue_slot_or_defer(
+                queue_token, audio_data, session_id
+            ):
+                return
 
             # Get device preferences from settings
             monitor_device_id = (
@@ -1755,23 +2152,57 @@ class MyVoiceApp(QObject):
                 else:
                     self.logger.error(f"[WIN11-DEBUG] COLLISION CHECK SKIPPED! monitor_device={monitor_device}, virtual_device={virtual_device}")
 
-                # Execute dual-stream routing through coordinator
+                # Execute dual-stream routing through coordinator.
+                # Story 12.1: pass session_id so the coordinator posts
+                # mark_playing/mark_audible mutations to the registry.
                 self.logger.info(f"[WIN11-DEBUG] Calling play_dual_stream with monitor_device={monitor_device.name if monitor_device else 'None'}, virtual_device={virtual_device.name if virtual_device else 'None'}")
                 dual_result = await self._audio_coordinator.play_dual_stream(
                     audio_data=audio_data,
                     monitor_device=monitor_device,
                     virtual_device=virtual_device,
-                    volume=1.0
+                    volume=1.0,
+                    session_id=session_id,
                 )
 
                 if dual_result and dual_result.any_successful:
                     self.logger.info("Dual-stream playback started successfully (monitor + virtual mic)")
+                    # Story 13.2: mark dispatch started — the dual-fire
+                    # _on_playback_complete callbacks will drive the queue
+                    # advance from here. If dispatch had failed before this
+                    # point the finally-block would advance the queue.
+                    _dispatch_started = True
+                    # Story 12.1: map both task ids to the session id so
+                    # _on_playback_complete can post mark_done+discard
+                    # exactly once (the dual-fire dedup uses
+                    # _closed_session_ids to absorb the second callback).
+                    if session_id is not None:
+                        if dual_result.monitor_task is not None:
+                            self._task_to_session[dual_result.monitor_task.playback_id] = session_id
+                        if dual_result.virtual_task is not None:
+                            self._task_to_session[dual_result.virtual_task.playback_id] = session_id
+                    else:
+                        # Story 13.2: replay path — no registry session, but we
+                        # still need to drive the queue advance exactly once
+                        # despite the dual-fire callback. _task_to_replay_token
+                        # gives _on_playback_complete the synthetic queue token
+                        # to dedup against (_advanced_replay_tokens).
+                        if dual_result.monitor_task is not None:
+                            self._task_to_replay_token[dual_result.monitor_task.playback_id] = queue_token
+                        if dual_result.virtual_task is not None:
+                            self._task_to_replay_token[dual_result.virtual_task.playback_id] = queue_token
                     if self._main_window:
+                        # Story 12.1: legacy substate path; registry-driven path now coexists
                         self._main_window.set_generation_status("Playing audio on speakers and virtual microphone", False)
+                        # Story 11.4 follow-up: keep the Stop button live
+                        # through playback so the user can interrupt audio.
+                        # Story 12.1: legacy substate path; registry-driven path now coexists
+                        self._main_window.set_playback_active(True)
                 else:
                     self.logger.warning("Dual-stream playback failed")
                     if self._main_window:
                         self._main_window.set_generation_status("Audio playback failed", False)
+                        # Story 12.1: legacy substate path; registry-driven path now coexists
+                        self._main_window.set_playback_active(False)
 
             else:
                 # Monitor speakers only (fallback)
@@ -1794,7 +2225,25 @@ class MyVoiceApp(QObject):
                     target_device = monitor_devices[0]
                     self.logger.info(f"Using default monitor device: {target_device.name}")
 
+                # Story 12.1: post mark_playing on the monitor-only fallback
+                # path mirroring play_dual_stream's behavior. This path
+                # bypasses the coordinator's own posts because it calls
+                # monitor_service.play_monitor_audio directly.
+                #
+                # AI-Review H2 (2026-05-04): defer the post until we have
+                # a target device AND track whether it was posted so we
+                # can clean up via set_error+discard on failure. The
+                # previous unconditional post-before-dispatch leaked the
+                # session in PLAYING state when no device was available
+                # or play_monitor_audio returned None.
+                mark_playing_posted = False
                 if target_device:
+                    if (
+                        session_id is not None
+                        and getattr(self, '_session_registry', None) is not None
+                    ):
+                        self._session_registry.post_mutation('mark_playing', session_id)
+                        mark_playing_posted = True
                     monitor_task = await self._audio_coordinator.monitor_service.play_monitor_audio(
                         audio_data=audio_data,
                         device=target_device,
@@ -1806,23 +2255,66 @@ class MyVoiceApp(QObject):
 
                 if monitor_task:
                     self.logger.info("Monitor speakers playback started")
+                    # Story 13.2: mark dispatch started — the monitor-only
+                    # fallback fires _on_playback_complete the same way the
+                    # dual-stream path does, so the queue advance is driven
+                    # from there rather than the finally-block.
+                    _dispatch_started = True
+                    # Story 12.1: post mark_audible once the stream is
+                    # running and map the task id back to session id for
+                    # the playback-complete close path.
+                    if mark_playing_posted:
+                        self._session_registry.post_mutation('mark_audible', session_id)
+                        self._task_to_session[monitor_task.playback_id] = session_id
+                    elif session_id is None:
+                        # Story 13.2: monitor-only fallback for the replay
+                        # path. Map the task id to the synthetic token so
+                        # the queue advance fires exactly once.
+                        self._task_to_replay_token[monitor_task.playback_id] = queue_token
                     if self._main_window:
+                        # Story 12.1: legacy substate path; registry-driven path now coexists
                         self._main_window.set_generation_status("Playing audio on speakers", False)
+                        # Story 12.1: legacy substate path; registry-driven path now coexists
+                        self._main_window.set_playback_active(True)
                 else:
                     self.logger.warning("No audio devices available for playback")
+                    # AI-Review H2: clean up the registry session if
+                    # mark_playing was already queued.
+                    if mark_playing_posted:
+                        self._session_registry.post_mutation('set_error', session_id)
+                        self._session_registry.post_mutation('discard', session_id)
                     if self._main_window:
                         self._main_window.set_generation_status("No audio devices available", False)
+                        # Story 12.1: legacy substate path; registry-driven path now coexists
+                        self._main_window.set_playback_active(False)
 
         except Exception as e:
             self.logger.error(f"Error during audio playback: {e}")
             if self._main_window:
                 self._main_window.set_generation_status(f"Playback failed: {str(e)}", False)
+                # Story 12.1: legacy substate path; registry-driven path now coexists
+                self._main_window.set_playback_active(False)
+        finally:
+            # Story 13.2: failure-path cleanup. If we claimed the dispatch
+            # slot but never reached play_dual_stream / play_monitor_audio
+            # (no devices, exception, any_successful=False), the dual-fire
+            # _on_playback_complete chain that would normally drive the
+            # advance never runs, so we must release the slot ourselves.
+            if not _dispatch_started:
+                self._release_queue_slot_on_failure(queue_token)
 
     def _on_audio_playback_success(self, result):
-        """Handle successful audio playback completion."""
-        self.logger.info("Audio playback completed successfully")
+        """Handle successful return from the playback START task.
+
+        Note: this fires when ``_play_generated_audio`` returns — i.e.
+        once ``play_dual_stream`` has dispatched the playback into the
+        underlying audio services and yielded back. The audio is still
+        playing at this point. The Stop-mode exit lives in
+        ``_on_playback_complete``, which is wired to the audio
+        coordinator's per-task completion callback.
+        """
+        self.logger.info("Audio playback dispatched successfully")
         if self._main_window:
-            self._main_window.set_generation_status("Audio playback completed", False)
             # Story 2.4: Enable replay button after successful playback (FR29)
             self._main_window.set_replay_enabled(True)
 
@@ -1831,6 +2323,314 @@ class MyVoiceApp(QObject):
         self.logger.error(f"Audio playback failed: {error}")
         if self._main_window:
             self._main_window.set_generation_status(f"Audio playback failed: {str(error)}", False)
+            # Story 12.1: legacy substate path; registry-driven path now coexists
+            self._main_window.set_playback_active(False)
+
+    def _on_playback_complete(self, task_id: str):
+        """Handle the audio coordinator's real playback-complete signal.
+
+        Fires once per playback task — both the monitor-service task and
+        the virtual-microphone task fire independently. We only need to
+        flip the UI back to idle once, which is naturally idempotent
+        because ``set_playback_active(False)`` is a no-op when already
+        False. The logger output is kept terse to avoid log spam from
+        the dual-task case.
+
+        Story 11.4 follow-up: replaces the premature flip that used to
+        live in ``_on_audio_playback_success``.
+
+        Story 12.1: also posts ``mark_done`` + ``discard`` to close the
+        registry session (Task 3.5). Dedup uses ``_closed_session_ids``
+        because the dual-fire would otherwise post the close mutations
+        twice for the same session. ``mark_done`` requires PLAYING per
+        the transition graph, so a second post would raise
+        ``InvalidSessionStateError`` — the dedup is load-bearing, not
+        cosmetic.
+        """
+        self.logger.debug(f"Playback task complete: {task_id}")
+
+        # Story 12.1: registry-side close path. Resolve session_id from the
+        # mapping populated at dispatch time; if unknown, the session was
+        # not registry-tracked (legacy path or replay) and we skip the posts.
+        session_id = self._task_to_session.pop(task_id, None)
+        # Story 13.2: parallel resolution for replay-path dispatches.
+        # _task_to_replay_token only has entries for synthetic "replay-X"
+        # tokens; pops to None for registry-tracked sessions and unknown
+        # task ids alike.
+        replay_token = self._task_to_replay_token.pop(task_id, None)
+
+        # Story 13.2: drive the queue advance exactly once per session
+        # despite the dual-fire callback. For registry-tracked sessions the
+        # dedup is the existing _closed_session_ids set (load-bearing for
+        # the registry close path too); for replay tokens it is the
+        # _advanced_replay_tokens set. We compute should_advance here and
+        # invoke the queue mutations once below the registry close block.
+        should_advance_queue = False
+
+        if (
+            session_id is not None
+            and session_id not in self._closed_session_ids
+            and getattr(self, '_session_registry', None) is not None
+        ):
+            self._closed_session_ids.add(session_id)
+            self._session_registry.post_mutation('mark_done', session_id)
+            self._session_registry.post_mutation('discard', session_id)
+            should_advance_queue = True
+        elif (
+            session_id is None
+            and replay_token is not None
+            and replay_token not in self._advanced_replay_tokens
+        ):
+            # Story 13.2: replay path — no registry mutations, but the queue
+            # still needs to advance exactly once. The dedup set absorbs the
+            # second dual-fire callback for the same replay token.
+            self._advanced_replay_tokens.add(replay_token)
+            should_advance_queue = True
+
+        # Story 13.2: advance the queue cross-thread-safely. _on_playback_complete
+        # fires from the audio worker thread (per
+        # monitor_audio_service.py:786-790's _emit_playback_complete site
+        # invoked from the playback worker), so direct mutation of the queue
+        # would trigger PlaybackQueue._assert_owner_thread's RuntimeError
+        # (D-2 / P-3). QMetaObject.invokeMethod with QueuedConnection
+        # marshals the call onto the queue's owner thread (Qt main) via
+        # the event loop; the cancel_current and _dispatch_next_pending
+        # invocations execute in submission order on the next event-loop
+        # drain (per Epic 11 retrospective Insight #3 — "queued before"
+        # implies "fires before" once the loop drains).
+        if should_advance_queue and self._playback_queue is not None:
+            QMetaObject.invokeMethod(
+                self._playback_queue,
+                'cancel_current',
+                Qt.ConnectionType.QueuedConnection,
+            )
+            QMetaObject.invokeMethod(
+                self,
+                '_dispatch_next_pending',
+                Qt.ConnectionType.QueuedConnection,
+            )
+
+        if self._main_window:
+            # Story 12.1: legacy substate path; registry-driven path now coexists
+            self._main_window.set_playback_active(False)
+            # Story 12.1: legacy substate path; registry-driven path now coexists
+            self._main_window.set_generation_status("Audio playback completed", False)
+
+    def _derive_queue_token(
+        self,
+        session_id: Optional[str],
+        _queue_token: Optional[str],
+    ) -> str:
+        """Story 13.2: compute the queue token for a dispatch request.
+
+        Three sources, in priority order:
+
+          1. ``_queue_token`` — re-entry path from
+             ``_dispatch_next_pending`` preserves the original token across
+             the deferred-then-resumed dispatch (a fresh uuid would fail
+             the re-entry guard in ``_claim_queue_slot_or_defer``).
+          2. ``session_id`` — registry-tracked sessions use their session
+             id verbatim as the queue token.
+          3. Synthetic ``replay-XXXXXXXX`` — the registry-less replay
+             path mints a uuid token so it participates in queue ordering
+             without requiring registry state.
+
+        Pure function (no side effects) — safe to call from any thread.
+        Tested directly in
+        ``TestPlaybackQueueGatingHelpers::test_derive_queue_token_*``.
+        """
+        if _queue_token is not None:
+            return _queue_token
+        if session_id is not None:
+            return session_id
+        return f"replay-{uuid.uuid4().hex[:8]}"
+
+    def _claim_queue_slot_or_defer(
+        self,
+        queue_token: str,
+        audio_data: bytes,
+        session_id: Optional[str],
+    ) -> bool:
+        """Story 13.2: gate dispatch on the PlaybackQueue head.
+
+        Returns ``True`` if the caller should proceed with dispatch
+        (queue is absent, OR we are at the queue head and no other
+        session is currently dispatching, OR this is a re-entry from
+        ``_dispatch_next_pending``); ``False`` if the dispatch was
+        parked in ``_pending_dispatches`` for later resumption.
+
+        Re-entry from ``_dispatch_next_pending`` is detected via
+        ``_dispatching_session_id == queue_token`` and short-circuits
+        the enqueue — we already claimed the slot upstream. Without
+        this guard the re-entry would loop: enqueue → check head →
+        defer (non-empty queue) → park → … .
+
+        Side effects when called: enqueues ``queue_token`` (unless
+        re-entry), sets ``_dispatching_session_id = queue_token`` on
+        success, parks ``_PendingDispatch`` in ``_pending_dispatches``
+        on defer.
+
+        Tested directly in
+        ``TestPlaybackQueueGatingHelpers::test_claim_queue_slot_*``.
+        """
+        if self._playback_queue is None:
+            return True
+        is_reentry = (
+            self._dispatching_session_id is not None
+            and self._dispatching_session_id == queue_token
+        )
+        if is_reentry:
+            return True
+        self._playback_queue.enqueue(queue_token)
+        # Head check + currently-dispatching check. We dispatch only if
+        # (a) the queue head is this token AND (b) no other session is
+        # in the middle of play_dual_stream. Depth alone cannot
+        # distinguish "head is currently playing" from "head is waiting"
+        # because the head occupies one slot in both cases.
+        if (
+            self._dispatching_session_id is not None
+            or self._playback_queue.peek() != queue_token
+        ):
+            self._pending_dispatches[queue_token] = _PendingDispatch(
+                audio_data=audio_data,
+                session_id=session_id,
+                queue_token=queue_token,
+            )
+            self.logger.debug(
+                f"Story 13.2: dispatch deferred for token={queue_token} "
+                f"(queue depth={self._playback_queue.depth}, "
+                f"current={self._dispatching_session_id})"
+            )
+            return False
+        self._dispatching_session_id = queue_token
+        return True
+
+    def _release_queue_slot_on_failure(self, queue_token: str) -> None:
+        """Story 13.2: failure-path cleanup for ``_play_generated_audio``.
+
+        Invoked from the method's ``finally`` block when dispatch
+        claimed the slot (set ``_dispatching_session_id``) but never
+        reached ``play_dual_stream`` / ``play_monitor_audio`` (no
+        devices, exception, ``any_successful=False``). Without this
+        cleanup the queue would stay stuck on this token because the
+        dual-fire ``_on_playback_complete`` chain that normally drives
+        the advance never runs.
+
+        Safe to call unconditionally — a no-op when the queue is
+        absent or this token is not the dispatching one. We are on the
+        Qt main thread (qasync runs the coroutine body here), so direct
+        queue calls are safe — no ``QMetaObject.invokeMethod``
+        indirection required.
+
+        Tested directly in
+        ``TestPlaybackQueueGatingHelpers::test_release_queue_slot_*``.
+        """
+        if (
+            self._playback_queue is None
+            or self._dispatching_session_id != queue_token
+        ):
+            return
+        self._dispatching_session_id = None
+        self._playback_queue.cancel_current()
+        self._pending_dispatches.pop(queue_token, None)
+        self._dispatch_next_pending()
+
+    @pyqtSlot()
+    def _dispatch_next_pending(self) -> None:
+        """Story 13.2: pull the next pending dispatch when the queue advances.
+
+        Invoked via ``QMetaObject.invokeMethod(... QueuedConnection)`` from
+        ``_on_playback_complete`` (worker-thread origin), so this slot
+        always executes on the Qt main thread on the next event-loop drain
+        — directly after the paired ``cancel_current`` invocation drained
+        the head off the queue.
+
+        The peek+pop sequence is safe-by-construction:
+          * ``cancel_current`` ran before us (queued in order; Epic 11
+            retro Insight #3) so the head is now the next session.
+          * If ``peek()`` returns ``None``, the queue is empty (no pending
+            dispatches either) — clear ``_dispatching_session_id`` and
+            return.
+          * If ``peek()`` returns a token but ``_pending_dispatches`` has
+            no entry for it, the dispatch was never deferred — this is
+            the "head was always the dispatching session" case and is a
+            defensive no-op.
+          * Otherwise we set ``_dispatching_session_id`` to the new head
+            and re-enter ``_play_generated_audio`` via ``_run_async_task``.
+            The re-entry guard inside ``_play_generated_audio`` (token ==
+            ``_dispatching_session_id`` → ``is_reentry=True``) skips the
+            enqueue and head check.
+        """
+        if self._playback_queue is None:
+            self._dispatching_session_id = None
+            return
+        next_token = self._playback_queue.peek()
+        if next_token is None:
+            self._dispatching_session_id = None
+            return
+        pending = self._pending_dispatches.pop(next_token, None)
+        if pending is None:
+            # The new head was never deferred (its dispatch path took the
+            # synchronous "head matches and no other dispatch in flight"
+            # branch), so there is no audio to replay here. Defensive
+            # no-op — leave _dispatching_session_id as it was set by the
+            # synchronous path.
+            return
+        self._dispatching_session_id = next_token
+        self._run_async_task(
+            self._play_generated_audio(
+                audio_data=pending.audio_data,
+                session_id=pending.session_id,
+                _queue_token=pending.queue_token,
+            ),
+            on_success=self._on_audio_playback_success,
+            on_error=self._on_audio_playback_error,
+        )
+
+    @pyqtSlot(str)
+    def _dispatch_streaming_session(self, session_id: str) -> None:
+        """P-8 streaming exception (Story 13.2): dispatch a
+        ``GENERATING + is_streaming=True`` session if the queue is empty.
+
+        Architectural contract (architecture-optimization-pass.md, line 461):
+        a session in the streaming substate may dispatch to the audio
+        coordinator while still ``GENERATING`` *if and only if* the queue
+        is empty. The streaming session counts as one queue slot, not zero.
+
+        This entry point is hookable by Story 16.6 (TRUE_STREAM dispatch).
+        It is currently unused — Epic 16 has not landed. The method exists
+        to lock the integration contract: when streaming sessions become
+        load-bearing, they call THIS, not ``_play_generated_audio``, to
+        take the single queue slot allowed by P-8.
+
+        TODO(Story 16.6): activate this path. Until then, calling this
+        method records the queue slot but does not start streaming-chunk
+        dispatch (no chunked plumbing exists pre-Epic-16). The defensive
+        ``getattr(session, 'is_streaming', False)`` pattern referenced in
+        the AC #6 implementation guidance is not exercised here because
+        Story 13.2's ``_play_generated_audio`` path does not consult
+        ``is_streaming`` at all.
+        """
+        if self._playback_queue is None:
+            return
+        if self._playback_queue.depth != 0:
+            # Queue is non-empty — the streaming exception is denied.
+            # The caller (Story 16.6) is expected to fall back to the
+            # standard deferred path; this method does not auto-fall-back
+            # because that would silently mask the policy decision.
+            self.logger.debug(
+                f"Story 13.2: streaming exception denied for {session_id} "
+                f"(queue depth={self._playback_queue.depth}); caller must "
+                f"fall back to deferred dispatch."
+            )
+            return
+        # Queue is empty — take the single slot allowed by P-8.
+        self._playback_queue.enqueue(session_id)
+        self.logger.debug(
+            f"[STREAMING-13.2] streaming dispatch slot reserved for "
+            f"{session_id}; Epic 16 chunk-streaming plumbing is the "
+            f"next integration point (Story 16.6)."
+        )
 
     def _on_tts_generation_failed(self, error):
         """

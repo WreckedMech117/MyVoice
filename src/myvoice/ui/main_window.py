@@ -25,6 +25,7 @@ except ImportError:
     ACCESSIBILITY_AVAILABLE = False
 
 from myvoice.ui.styles.theme_manager import get_theme_manager
+from myvoice.ui.components.queue_depth_badge import QueueDepthBadge
 from myvoice.ui.components.service_status_indicator import ServiceStatusBar, ServiceStatusIndicator
 from myvoice.ui.components.settings_dialog import SettingsDialog
 from myvoice.ui.components.virtual_mic_setup_dialog import VirtualMicSetupDialog
@@ -38,6 +39,17 @@ from myvoice.ui.components.mic_control_widget import MicControlWidget
 from myvoice.models.ui_state import UIState, ServiceStatusInfo, ServiceHealthStatus
 from myvoice.models.app_settings import AppSettings
 from myvoice.services.quick_speak_service import QuickSpeakService
+from myvoice.services.sessions.session_registry import SessionRegistry, _FOCAL_DECAY_SECONDS
+from myvoice.services.sessions.generation_session import SessionState
+
+# AI-Review M3 (Story 12.3): focal-decay timer headroom in milliseconds. The
+# UI-side timer fires `_FOCAL_DECAY_SECONDS` plus a small safety margin after
+# a terminal transition so it observes `focal_session_id == None` rather than
+# racing the registry's exact decay boundary. Derived (rather than hard-coded)
+# so a future change to the registry's decay window propagates here without
+# silent drift.
+_FOCAL_DECAY_TIMER_HEADROOM_MS = 50
+_FOCAL_DECAY_TIMER_INTERVAL_MS = int(_FOCAL_DECAY_SECONDS * 1000) + _FOCAL_DECAY_TIMER_HEADROOM_MS
 
 
 class MainWindow(QMainWindow):
@@ -67,21 +79,50 @@ class MainWindow(QMainWindow):
     voice_refresh_requested = pyqtSignal()  # voice profile refresh
     voice_transcription_requested = pyqtSignal(str)  # voice_profile_name - transcription requested
     replay_last_requested = pyqtSignal()  # Story 2.4: Replay last generated audio (FR28)
+    cancel_generation_requested = pyqtSignal()  # Story 11.4 follow-up: Clear button doubles as Stop during generation
     # Microphone control signals
     mic_mute_toggled = pyqtSignal(bool)  # is_muted
     mic_volume_changed = pyqtSignal(float)  # volume 0.0-1.0
     mic_device_refresh_requested = pyqtSignal()  # Request mic input device enumeration
     mic_monitor_toggled = pyqtSignal(bool, str)  # (enabled, device_id) - Monitor mic to speakers
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        *,
+        session_registry: Optional[SessionRegistry] = None,
+    ):
         """
         Initialize the main window with compact design.
 
         Args:
             parent: Parent widget (optional)
+            session_registry: Optional SessionRegistry for Story 12.1 indicator
+                wiring. When None, the legacy callback chain (set_generation_*,
+                set_playback_active) drives the indicator unchanged so unit
+                tests that instantiate MainWindow without a full app still
+                pass.
         """
         super().__init__(parent)
         self.logger = logging.getLogger(self.__class__.__name__)
+
+        # Story 12.1: SessionRegistry wiring (D-20 Phase 2). When wired, the
+        # TTS indicator's substate is driven by SessionRegistry signals; the
+        # legacy methods (`set_generation_pulsing`, `set_playback_active`)
+        # short-circuit to no-ops so the registry path is the single source
+        # of truth for generation/playback substate (AC #1, AC #2).
+        self._session_registry: Optional[SessionRegistry] = session_registry
+        if self._session_registry is not None:
+            self.logger.info("MainWindow using SessionRegistry for TTS indicator substate")
+        # Story 12.1 Task 2.5: 5-second focal-decay timer that lets the UI
+        # observe the registry's time-based focal decay (the registry does
+        # not emit on decay; AC #4 case (b)).
+        self._focal_decay_timer: Optional[QTimer] = None
+        # Story 13.4: ``self._queue_depth_badge`` (a ``QueueDepthBadge``) is
+        # created in ``_create_ui`` and consumed by
+        # ``_on_playback_queue_depth_changed``. Construction precedes the
+        # registry connection in ``_connect_registry_to_indicator``, so the
+        # attribute always exists by the time the slot fires.
 
         # Theme manager
         self.theme_manager = get_theme_manager()
@@ -110,6 +151,22 @@ class MainWindow(QMainWindow):
         # TTS service availability tracking
         self._tts_available = False
 
+        # Story 11.4 follow-up: track generation in-flight so the Clear
+        # button can double as a Stop button. Updated by
+        # ``set_generation_status``; consulted by ``_on_clear_clicked``.
+        self._is_generating = False
+
+        # Story 11.4 follow-up: track playback in-flight so the Stop mode
+        # extends through audio playback (not just generation). Updated by
+        # ``set_playback_active``.
+        self._is_playing = False
+
+        # Story 11.4 follow-up: snapshot of the text input at Generate-
+        # click time, restored if the user hits Stop. Without this the
+        # text is gone the moment Generate fires (see ``_on_generate_
+        # clicked``) and Stop has nothing to give back.
+        self._last_generation_text: str = ""
+
         # TTS service reference (will be set by application for voice creation dialogs)
         self.tts_service = None
 
@@ -137,6 +194,12 @@ class MainWindow(QMainWindow):
 
         # Story 7.2: Setup system tray (FR38, FR39)
         self._setup_system_tray()
+
+        # Story 12.1: Wire SessionRegistry → TTS indicator substate.
+        # Done last so all UI components (status_bar, service_status_bar)
+        # are constructed before any signals could fire.
+        if self._session_registry is not None:
+            self._connect_registry_to_indicator(self._session_registry)
 
         self.logger.debug("MainWindow initialized successfully")
 
@@ -295,6 +358,16 @@ class MainWindow(QMainWindow):
         # Status bar with service indicators
         self.status_bar = QStatusBar()
         self.status_bar.showMessage(self._get_ready_message())
+
+        # Story 13.4: Queue-depth badge (Phase 3 closure of D-20). Added
+        # FIRST so it sits to the LEFT of the service indicators —
+        # ``QStatusBar::addPermanentWidget`` lays widgets out left-to-right
+        # in insertion order within the right-aligned permanent area, so
+        # the first-added widget is the leftmost permanent widget and the
+        # service bar (added next) lands to its right. Hidden until
+        # depth >= 1 (see queue_depth_badge.py contract).
+        self._queue_depth_badge = QueueDepthBadge()
+        self.status_bar.addPermanentWidget(self._queue_depth_badge)
 
         # Add service status indicators to the right side
         # Story 7.4: Use emoji mode for accessibility (FR42, FR43)
@@ -1077,6 +1150,13 @@ class MainWindow(QMainWindow):
         # Start TTS generation with visual feedback
         self._start_tts_generation(text)
 
+        # Story 11.4 follow-up: stash the text BEFORE clearing so Stop
+        # can restore it. The pre-existing UX intentionally clears the
+        # input on Generate so the user can start typing the next
+        # utterance while the current one is generating; Stop reverses
+        # that opt-in clear.
+        self._last_generation_text = text
+
         # Clear the text input after starting generation
         self.text_input.clear()
         self.text_input.setFocus()
@@ -1142,12 +1222,44 @@ class MainWindow(QMainWindow):
 
     def _on_clear_clicked(self):
         """
-        Handle clear button click with smart apostrophe detection.
+        Handle clear button click.
 
-        - If text ends with apostrophe: Clear all text
-        - If text contains apostrophe (not at end): Clear everything after first apostrophe
-        - Otherwise: Clear all text
+        Story 11.4 follow-up: dual-mode behavior based on generation state:
+          * **Generating** (``self._is_generating`` is True): emit
+            ``cancel_generation_requested`` so the application controller
+            can call ``QwenTTSService.cancel_generation()``. The text
+            input is intentionally NOT cleared — ``cancel_generation()``
+            preserves text so the user can retry without re-typing.
+          * **Idle**: smart apostrophe-aware clear of the text input.
+
+        Apostrophe semantics (idle mode):
+          - If text ends with apostrophe: Clear all text
+          - If text contains apostrophe (not at end): Clear everything
+            after the first apostrophe
+          - Otherwise: Clear all text
         """
+        # Story 11.4 follow-up: Stop mode takes priority over Clear when
+        # generation is in flight OR audio is playing. The signal is
+        # consumed by the app controller (see app.py wiring), which
+        # cancels generation and stops playback as appropriate. The
+        # state flips back to idle through the standard cancelled /
+        # playback-complete callback paths.
+        if self._is_generating or self._is_playing:
+            self.logger.info(
+                "Clear button (Stop mode): cancelling "
+                f"{'generation' if self._is_generating else 'playback'}"
+            )
+            self.cancel_generation_requested.emit()
+            # Restore the text the user generated from so they can edit
+            # and retry without retyping. Safe to do regardless of
+            # whether the underlying cancel actually killed the audio
+            # in time — at worst they get a verbose status message and
+            # the previous text in the box.
+            if self._last_generation_text:
+                self.text_input.setPlainText(self._last_generation_text)
+                self.text_input.setFocus()
+            return
+
         try:
             current_text = self.text_input.toPlainText()
 
@@ -1396,6 +1508,10 @@ class MainWindow(QMainWindow):
         # Story 7.4: Enable/disable pulsing animation during generation
         self.set_generation_pulsing(is_generating)
 
+        # Story 11.4 follow-up: track in-flight state so the Clear button
+        # knows whether to clear text (idle) or emit cancel (generating).
+        self._is_generating = is_generating
+
         if is_generating:
             # Change icon to indicate loading/processing for icon button
             loading_icon = self.style().standardIcon(self.style().StandardPixmap.SP_BrowserReload)
@@ -1406,6 +1522,56 @@ class MainWindow(QMainWindow):
             generate_icon = self.style().standardIcon(self.style().StandardPixmap.SP_MediaPlay)
             self.generate_button.setIcon(generate_icon)
             self.generate_button.setToolTip("Generate speech (Enter)")
+
+        # Story 11.4 follow-up: Clear-vs-Stop visuals are driven by the
+        # combined state (generating OR playing), not just generating.
+        self._refresh_clear_button_mode()
+
+    def set_playback_active(self, is_playing: bool) -> None:
+        """
+        Mark whether audio playback is currently in flight.
+
+        Story 11.4 follow-up: app.py calls this when ``play_dual_stream``
+        starts and when the playback-complete callback fires. The
+        ``_is_playing`` flag extends Stop mode beyond the generation
+        window so the user can interrupt playback the same way they
+        interrupt generation. Cancellation routes through the same
+        ``cancel_generation_requested`` signal — the controller decides
+        whether to call ``cancel_generation()``, ``stop_all_playback()``,
+        or both based on what is actually in flight.
+
+        Story 12.1 Task 4.4: when a SessionRegistry is wired, the
+        indicator-driving half becomes a no-op (registry owns the
+        substate). The Stop-button-mode side-effect (``_is_playing`` flag
+        + ``_refresh_clear_button_mode``) stays active because the Clear/
+        Stop button is NOT driven by the registry — it is driven by
+        local UI state independent of session lifecycle. Suppressing it
+        would break the Stop button's visual feedback.
+        """
+        # Stop-button mode is preserved unconditionally — see docstring.
+        self._is_playing = is_playing
+        self._refresh_clear_button_mode()
+
+    def _refresh_clear_button_mode(self) -> None:
+        """Sync the Clear button's icon / tooltip / accessibility name
+        with the combined (generating or playing) state. Idempotent."""
+        if self._is_generating or self._is_playing:
+            stop_icon = self.style().standardIcon(self.style().StandardPixmap.SP_BrowserStop)
+            self.clear_button.setIcon(stop_icon)
+            tooltip = (
+                "Stop generation" if self._is_generating else "Stop playback"
+            )
+            self.clear_button.setToolTip(tooltip)
+            self.clear_button.setAccessibleName(tooltip)
+            self.clear_button.setAccessibleDescription(
+                "Interrupt the in-flight TTS work; text input is restored"
+            )
+        else:
+            clear_icon = self.style().standardIcon(self.style().StandardPixmap.SP_LineEditClearButton)
+            self.clear_button.setIcon(clear_icon)
+            self.clear_button.setToolTip("Clear text")
+            self.clear_button.setAccessibleName("Clear text")
+            self.clear_button.setAccessibleDescription("Clear the text input field")
 
     def set_replay_enabled(self, enabled: bool):
         """
@@ -1550,15 +1716,211 @@ class MainWindow(QMainWindow):
 
         self.logger.info(f"Model ready: {model_name}")
 
+    # ----- Story 12.1: SessionRegistry → TTS indicator wiring -------------- #
+
+    # Map of `SessionState` → status-bar text for the registry-driven path.
+    # Strings preserve V2's user-facing wording (app.py:1862, 1958, 907) so
+    # the rewire is net-zero for what end-users read. ERROR collapses the
+    # legacy chain's per-exception variants into a single string per Open
+    # Question #3; per-error detail is deferred to a future story.
+    #
+    # AI-Review M4 (2026-05-04): PENDING is intentionally absent — the
+    # registry's focal-priority order (session_registry.py:302-335) never
+    # returns a PENDING session as focal, so a row for it is unreachable
+    # dead code that misleads a future reader about the focal contract.
+    _STATE_TEXT_MAP: dict = {
+        SessionState.GENERATING: "Generating speech...",
+        SessionState.READY_TO_PLAY: "Audio ready",
+        SessionState.DONE: "Audio playback completed",
+        SessionState.CANCELLED: "Stopped",
+        SessionState.ERROR: "Generation failed",
+    }
+
+    def _connect_registry_to_indicator(self, registry: SessionRegistry) -> None:
+        """Wire registry signals to the TTS indicator's substate.
+
+        Story 12.1 Task 2.1. All connections use explicit
+        ``Qt.ConnectionType.QueuedConnection`` per P-4. The registry emits on
+        the Qt main thread, but the explicit form is a load-bearing
+        convention — auto-inferred connection type is forbidden by the
+        architecture document.
+        """
+        registry.session_state_changed.connect(
+            self._on_session_state_changed, Qt.ConnectionType.QueuedConnection
+        )
+        registry.current_session_changed.connect(
+            self._on_current_session_changed, Qt.ConnectionType.QueuedConnection
+        )
+        # Inert until Story 13.1 ships per the registry's module docstring;
+        # subscribing now prevents a follow-up wiring change in 13.4.
+        registry.playback_queue_depth_changed.connect(
+            self._on_playback_queue_depth_changed, Qt.ConnectionType.QueuedConnection
+        )
+        # 5-second decay timer (AC #4 case (b)). The registry does NOT emit
+        # on time-based decay — this timer is the UI-side mechanism that
+        # observes `focal_session_id` returning to None after the window.
+        # Headroom of 50ms over the registry's exact decay avoids racing
+        # the boundary in either direction.
+        #
+        # AI-Review M3 (2026-05-04): explicit QueuedConnection per the
+        # story's "load-bearing convention" for registry-driven indicator
+        # plumbing — same convention applied to the three registry signals
+        # above. The timer is same-thread so DirectConnection would also
+        # work, but the explicit form keeps a future reader from "fixing"
+        # the inconsistency in the wrong direction.
+        self._focal_decay_timer = QTimer(self)
+        self._focal_decay_timer.setSingleShot(True)
+        self._focal_decay_timer.timeout.connect(
+            self._redraw_tts_indicator_from_focal,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self.logger.debug("Registry → TTS indicator wired with QueuedConnection")
+
+    def _on_session_state_changed(self, session_id: str, new_state) -> None:
+        """Slot for ``SessionRegistry.session_state_changed`` (Task 2.2).
+
+        Re-reads ``focal_session_id`` rather than caching — the focal
+        property recomputes on every read by design (validation gap #1)
+        and the cost is negligible for the V2-expected 1–3 in-flight
+        sessions. Caching would invert the registry's "single source of
+        truth" guarantee.
+        """
+        if self._session_registry is None:
+            return
+        focal = self._session_registry.focal_session_id
+        if session_id != focal:
+            # Non-focal mutation — focal session decides what's drawn. The
+            # focal property may have just been updated by this same
+            # mutation; if the changing session IS the new focal, the
+            # equality check below succeeds and we redraw.
+            return
+        # Restart the decay timer on terminal transitions so the indicator
+        # observes the registry's tier-(c) → None transition (AC #4 case (b)).
+        if new_state in (SessionState.DONE, SessionState.CANCELLED, SessionState.ERROR):
+            if self._focal_decay_timer is not None:
+                # _FOCAL_DECAY_SECONDS + 50ms headroom; derived from the
+                # session_registry constant so a drift in either side stays
+                # in sync without a hand-edit (AI-Review M3, Story 12.3).
+                self._focal_decay_timer.start(_FOCAL_DECAY_TIMER_INTERVAL_MS)
+        self._redraw_tts_indicator_from_focal()
+
+    def _on_current_session_changed(self, focal_id) -> None:
+        """Slot for ``SessionRegistry.current_session_changed`` (Task 2.3).
+
+        Payload is ``Optional[str]`` declared as ``object`` because PyQt6's
+        signal type system cannot express ``Optional[str]`` directly. The
+        registry suppresses spurious None→None re-emissions per
+        ``session_registry.py:387-389``, so a future maintainer must not
+        "optimize" this slot by adding a "did we already see None?" guard
+        — the registry already provides that guarantee.
+
+        AI-Review H3 (2026-05-04): when ``focal_id is None``, the idle
+        paint is *deferred* via ``QTimer.singleShot(0, ...)`` rather than
+        applied synchronously. This addresses the cross-mutation race where
+        ``discard(A)`` (which emits ``current_session_changed(None)``) and
+        ``start_generation(B)`` (which emits ``current_session_changed(B)``)
+        are both queued on the Qt main thread. Without the defer, the
+        ``None`` slot paints idle before ``B``'s slot promotes the new
+        focal — a one-tick idle frame the OFR-D bug fix is supposed to
+        prevent. ``QTimer.singleShot(0, ...)`` re-queues the redraw at the
+        back of the event queue; any already-queued successor emissions
+        run first, and ``_redraw_tts_indicator_from_focal`` then re-reads
+        ``focal_session_id`` and only paints idle if it is *still* ``None``.
+        """
+        if self._session_registry is None:
+            return
+        if focal_id is None:
+            # Defer to the back of the event queue so a successor's
+            # start_generation can promote the new focal first.
+            QTimer.singleShot(0, self._redraw_tts_indicator_from_focal)
+            return
+        self._redraw_tts_indicator_from_focal()
+
+    def _on_playback_queue_depth_changed(self, depth: int) -> None:
+        """Slot for ``SessionRegistry.playback_queue_depth_changed``.
+
+        Story 12.1 Task 2.6 wired this slot inert; Story 13.4 attaches the
+        visible badge. The slot is the single integration point — no other
+        production code calls ``self._queue_depth_badge.set_depth``.
+        Construction in ``_create_ui`` precedes the registry connection in
+        ``_connect_registry_to_indicator``, so the badge is always present
+        by the time this slot fires.
+        """
+        self._queue_depth_badge.set_depth(depth)
+        self._redraw_tts_indicator_from_focal()
+
+    def _redraw_tts_indicator_from_focal(self) -> None:
+        """Project the registry's focal session onto the TTS indicator (Task 2.4).
+
+        Idempotent — safe to call from multiple slots in the same Qt event
+        tick. Do NOT add a "did I already redraw this tick" guard; the cost
+        is one dict lookup and the safety margin is worth it (architecture
+        doc P-4 commentary on Task 2 of the story).
+        """
+        if self._session_registry is None:
+            return
+        focal = self._session_registry.focal_session_id
+        if focal is None:
+            self.service_status_bar.set_service_pulsing("TTS", False)
+            self.status_bar.showMessage(self._get_ready_message())
+            return
+        session = self._session_registry.get(focal)
+        if session is None:
+            # Race: discarded between focal compute and get(). Treat as no focal.
+            self.service_status_bar.set_service_pulsing("TTS", False)
+            self.status_bar.showMessage(self._get_ready_message())
+            return
+
+        state = session.state
+        is_audible = session.is_audible
+
+        # Pulsing rule (AC #2): on while focal is GENERATING or READY_TO_PLAY,
+        # OR while PLAYING and not yet audible (the indicator is still
+        # "working" in that frame). Off once the audio is actually playing.
+        pulsing = (
+            state in (SessionState.GENERATING, SessionState.READY_TO_PLAY)
+            or (state == SessionState.PLAYING and not is_audible)
+        )
+        self.service_status_bar.set_service_pulsing("TTS", pulsing)
+
+        # Status text. PLAYING has two flavors based on `is_audible`.
+        if state == SessionState.PLAYING:
+            text = (
+                "Playing audio on speakers and virtual microphone"
+                if is_audible
+                else "Starting playback..."
+            )
+        elif state == SessionState.DISCARDED:
+            # Focal cannot include DISCARDED (the registry deletes the
+            # entry in `discard()`), but be defensive — fall back to ready.
+            text = self._get_ready_message()
+        else:
+            text = self._STATE_TEXT_MAP.get(state, self._get_ready_message())
+        self.status_bar.showMessage(text)
+
     def set_generation_pulsing(self, enabled: bool):
         """
         Set generation progress pulsing animation (Story 7.4).
 
         Shows pulsing indicator during TTS generation.
 
+        Story 12.1 Task 4.4: when a SessionRegistry is wired, this method
+        becomes a no-op — the registry-driven path
+        (``_redraw_tts_indicator_from_focal``) owns the pulsing substate.
+        The method stays callable for D-14 wire-compat (legacy tests and
+        residual app.py call sites continue to work) but no longer drives
+        the indicator. AC #1: "removed from the indicator-driving path"
+        means the indicator no longer *consumes* this method, not that
+        the method is deleted.
+
         Args:
             enabled: Whether generation is in progress
         """
+        if self._session_registry is not None:
+            # Registry path is the single source of truth for pulsing
+            # substate. Suppress legacy writes to avoid two sources fighting
+            # over the same indicator state.
+            return
         self.service_status_bar.set_service_pulsing("TTS", enabled)
         self.logger.debug(f"TTS pulsing: {enabled}")
 
