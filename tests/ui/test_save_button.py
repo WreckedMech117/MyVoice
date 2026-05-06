@@ -35,7 +35,7 @@ import pytest
 pytest.importorskip("PyQt6")
 
 from PyQt6.QtCore import QSize, Qt, pyqtBoundSignal, pyqtSignal
-from PyQt6.QtWidgets import QApplication, QToolButton
+from PyQt6.QtWidgets import QApplication, QPushButton
 
 from myvoice.services.sessions import (
     GenerationSession,
@@ -132,8 +132,12 @@ def make_finalized_session(
 class TestSaveButtonConstruction:
     """Widget-construction contract: subclass, default state, icon, size."""
 
-    def test_save_button_is_qtoolbutton_subclass(self):
-        assert issubclass(SaveButton, QToolButton)
+    def test_save_button_is_qpushbutton_subclass(self):
+        # Smoke-test ratification (2026-05-06) of Story 14.2 Open
+        # Question Q1: switched from QToolButton to QPushButton so the
+        # button renders the same button-box frame + hover highlight as
+        # the rest of the action toolbar (clear, replay, settings).
+        assert issubclass(SaveButton, QPushButton)
 
     def test_save_button_default_disabled(self, save_button):
         assert save_button.isEnabled() is False
@@ -540,7 +544,7 @@ class TestSaveButtonMainWindowIntegration:
 
     def test_click_when_disabled_does_not_emit(self, registry_main_window, app):
         """Fresh registry — button disabled — click is a no-op for
-        ``QToolButton.click()`` (Qt-internal enabled gate)."""
+        ``QPushButton.click()`` (Qt-internal enabled gate)."""
         window, registry = registry_main_window
         captured: list[None] = []
         window.save_requested.connect(lambda: captured.append(None))

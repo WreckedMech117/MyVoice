@@ -241,8 +241,56 @@ class TestVoiceLabelResolution:
         defaults.update(overrides)
         return _QwenTTSRequest(**defaults)
 
-    def test_speaker_takes_priority(self, resolver):
-        req = self._make_request(speaker="Ryan")
+    def test_explicit_speaker_takes_priority(self, resolver):
+        # User explicitly picks a non-default speaker (e.g. "Vivian")
+        # via the voice selector; resolver returns it as-is.
+        req = self._make_request(speaker="Vivian")
+        assert resolver(req) == "Vivian"
+
+    def test_default_ryan_falls_through_to_voice_description(self, resolver):
+        # Smoke-test fix (2026-05-06): voice-design requests leave
+        # speaker at the dataclass default "Ryan" but set
+        # voice_description. Pre-fix, the resolver returned "Ryan"
+        # because speaker was checked first; post-fix, voice_description
+        # wins.
+        req = self._make_request(
+            speaker="Ryan", voice_description="cheerful"
+        )
+        assert resolver(req) == "cheerful"
+
+    def test_default_ryan_falls_through_to_checkpoint_stem(self, resolver):
+        # Optimized voice path: caller may set both speaker_name and
+        # checkpoint_path; if speaker is the default "Ryan" sentinel
+        # (i.e. the caller forgot to override), the checkpoint stem
+        # is the next-best identifier.
+        req = self._make_request(
+            speaker="Ryan",
+            voice_description=None,
+            checkpoint_path=Path("/voices/sarira.bin"),
+        )
+        assert resolver(req) == "sarira"
+
+    def test_default_ryan_falls_through_to_ref_audio_stem(self, resolver):
+        # Voice-clone (BASE) path: speaker stays default, ref_audio is
+        # the only identifier. Pre-fix returned "Ryan"; post-fix
+        # returns the ref_audio file stem.
+        req = self._make_request(
+            speaker="Ryan",
+            voice_description=None,
+            checkpoint_path=None,
+            ref_audio=Path("/clones/morgan_freeman.wav"),
+        )
+        assert resolver(req) == "morgan_freeman"
+
+    def test_explicit_ryan_with_no_other_fields_returns_ryan(self, resolver):
+        # User actually picks "Ryan" via the voice selector AND no
+        # other identifier is set — fallback returns speaker.
+        req = self._make_request(
+            speaker="Ryan",
+            voice_description=None,
+            checkpoint_path=None,
+            ref_audio=None,
+        )
         assert resolver(req) == "Ryan"
 
     def test_voice_description_when_no_speaker(self, resolver):

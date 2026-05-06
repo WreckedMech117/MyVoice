@@ -40,8 +40,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from PyQt6.QtCore import QSize
-from PyQt6.QtWidgets import QToolButton, QWidget
+from PyQt6.QtWidgets import QPushButton, QWidget
 
 from myvoice.services.sessions import SaveableAudio
 
@@ -56,7 +55,7 @@ _TOOLTIP_ENABLED = "Save last generation"
 _TOOLTIP_ENABLED_STREAMING = "Save last generation (streaming…)"
 
 
-class SaveButton(QToolButton):
+class SaveButton(QPushButton):
     """Compact toolbar icon button gating user-initiated save.
 
     See module docstring for the visual and source rules. Construction
@@ -64,6 +63,15 @@ class SaveButton(QToolButton):
     is the only state-mutating entry point — wire it from a single
     integration site (``MainWindow._on_saveable_session_changed``) per
     the architecture's "one signal source" rule (D-13).
+
+    Story 14.2 originally specified ``QToolButton`` (per the AC #1
+    directive), but smoke-test feedback (2026-05-06) ratified Q1 of
+    the Story 14.2 Open Questions in favor of ``QPushButton`` — the
+    rest of the action toolbar (``clear_button``, ``replay_button``,
+    ``settings_button``, ``generate_button``) uses ``QPushButton``,
+    which renders a button-box frame + hover highlight that
+    ``QToolButton`` lacks at default styling. ``QPushButton`` keeps
+    the icon-button visual contract consistent.
     """
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
@@ -75,7 +83,9 @@ class SaveButton(QToolButton):
             self.style().StandardPixmap.SP_DialogSaveButton
         )
         self.setIcon(save_icon)
-        self.setFixedSize(QSize(24, 24))
+        # 24×24 fixed size matches clear_button / replay_button at
+        # main_window.py:300-305 / 337-344.
+        self.setFixedSize(24, 24)
         self.setToolTip(_TOOLTIP_DISABLED)
         self.setEnabled(False)
 
