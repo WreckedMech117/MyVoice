@@ -26,6 +26,7 @@ except ImportError:
 
 from myvoice.ui.styles.theme_manager import get_theme_manager
 from myvoice.ui.components.queue_depth_badge import QueueDepthBadge
+from myvoice.ui.components.save_button import SaveButton
 from myvoice.ui.components.service_status_indicator import ServiceStatusBar, ServiceStatusIndicator
 from myvoice.ui.components.settings_dialog import SettingsDialog
 from myvoice.ui.components.virtual_mic_setup_dialog import VirtualMicSetupDialog
@@ -79,6 +80,7 @@ class MainWindow(QMainWindow):
     voice_refresh_requested = pyqtSignal()  # voice profile refresh
     voice_transcription_requested = pyqtSignal(str)  # voice_profile_name - transcription requested
     replay_last_requested = pyqtSignal()  # Story 2.4: Replay last generated audio (FR28)
+    save_requested = pyqtSignal()  # Story 14.2: Save current saveable session (Story 14.3 wires the dialog)
     cancel_generation_requested = pyqtSignal()  # Story 11.4 follow-up: Clear button doubles as Stop during generation
     # Microphone control signals
     mic_mute_toggled = pyqtSignal(bool)  # is_muted
@@ -295,6 +297,13 @@ class MainWindow(QMainWindow):
         self.replay_button.clicked.connect(self._on_replay_last_clicked)
         self.replay_button.setEnabled(False)  # Disabled until audio is generated
 
+        # Story 14.2: Save Generation button (Phase 4 of D-20). Enabled when
+        # SessionRegistry has a saveable session per Story 14.1's saveable-
+        # slot lifecycle; disabled otherwise. Sink-not-source widget — the
+        # registry → button wiring lives in `_connect_registry_to_indicator`.
+        self.save_button = SaveButton()
+        self.save_button.clicked.connect(self._on_save_clicked)
+
         # Clear button as small icon button
         self.clear_button = QPushButton()
         clear_icon = self.style().standardIcon(self.style().StandardPixmap.SP_LineEditClearButton)
@@ -307,6 +316,7 @@ class MainWindow(QMainWindow):
         action_buttons_layout.addWidget(self.quick_speak_button)
         action_buttons_layout.addWidget(self.generate_button)
         action_buttons_layout.addWidget(self.replay_button)  # Story 2.4: Replay Last
+        action_buttons_layout.addWidget(self.save_button)    # Story 14.2: Save Generation
         action_buttons_layout.addWidget(self.clear_button)
         action_buttons_layout.addStretch()  # Push buttons to top
 
@@ -441,6 +451,10 @@ class MainWindow(QMainWindow):
         self.replay_button.setAccessibleName("Replay last audio")
         self.replay_button.setAccessibleDescription("Replay the last generated speech")
 
+        # Story 14.2: Save Generation button accessibility
+        self.save_button.setAccessibleName("Save last generation")
+        self.save_button.setAccessibleDescription("Save the most recent generated speech to a WAV file")
+
         self.clear_button.setAccessibleName("Clear text")
         self.clear_button.setAccessibleDescription("Clear the text input field")
 
@@ -466,6 +480,7 @@ class MainWindow(QMainWindow):
         self.quick_speak_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.generate_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.replay_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.save_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # Story 14.2
         self.clear_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.settings_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
@@ -476,11 +491,13 @@ class MainWindow(QMainWindow):
         # Task 3: Set Tab Order for Logical Navigation
         # =======================================================================
 
-        # Tab order: Text → Quick Speak → Generate → Replay → Clear → Settings → Emotions
+        # Tab order: Text → Quick Speak → Generate → Replay → Save → Clear → Settings → Emotions
+        # Story 14.2: Save inserted between Replay and Clear.
         QWidget.setTabOrder(self.text_input, self.quick_speak_button)
         QWidget.setTabOrder(self.quick_speak_button, self.generate_button)
         QWidget.setTabOrder(self.generate_button, self.replay_button)
-        QWidget.setTabOrder(self.replay_button, self.clear_button)
+        QWidget.setTabOrder(self.replay_button, self.save_button)
+        QWidget.setTabOrder(self.save_button, self.clear_button)
         QWidget.setTabOrder(self.clear_button, self.settings_button)
 
         # Connect settings button to emotion buttons
@@ -1737,13 +1754,21 @@ class MainWindow(QMainWindow):
     }
 
     def _connect_registry_to_indicator(self, registry: SessionRegistry) -> None:
-        """Wire registry signals to the TTS indicator's substate.
+        """Wire registry signals to the TTS indicator's substate and to the
+        Save button.
 
-        Story 12.1 Task 2.1. All connections use explicit
-        ``Qt.ConnectionType.QueuedConnection`` per P-4. The registry emits on
-        the Qt main thread, but the explicit form is a load-bearing
+        Story 12.1 Task 2.1; extended in Story 14.2 to also wire
+        ``saveable_session_changed`` to the Save button. All connections use
+        explicit ``Qt.ConnectionType.QueuedConnection`` per P-4. The registry
+        emits on the Qt main thread, but the explicit form is a load-bearing
         convention — auto-inferred connection type is forbidden by the
         architecture document.
+
+        Signals wired:
+          - ``session_state_changed`` → indicator substate
+          - ``current_session_changed`` → indicator substate
+          - ``playback_queue_depth_changed`` → indicator + queue-depth badge
+          - ``saveable_session_changed`` → Save button enablement (Story 14.2)
         """
         registry.session_state_changed.connect(
             self._on_session_state_changed, Qt.ConnectionType.QueuedConnection
@@ -1756,6 +1781,16 @@ class MainWindow(QMainWindow):
         registry.playback_queue_depth_changed.connect(
             self._on_playback_queue_depth_changed, Qt.ConnectionType.QueuedConnection
         )
+        # Story 14.2: saveable_session_changed wires the SaveButton's
+        # enabled state per Story 14.1's saveable-slot lifecycle. Same
+        # explicit QueuedConnection convention as the three signals above.
+        registry.saveable_session_changed.connect(
+            self._on_saveable_session_changed, Qt.ConnectionType.QueuedConnection
+        )
+        # AC #4 — seed initial state from the registry's current saveable
+        # so the button reflects truth without waiting for the next emit
+        # (closes the registry-precedes-window race).
+        self._on_saveable_session_changed(registry.saveable_session_id)
         # 5-second decay timer (AC #4 case (b)). The registry does NOT emit
         # on time-based decay — this timer is the UI-side mechanism that
         # observes `focal_session_id` returning to None after the window.
@@ -1848,6 +1883,37 @@ class MainWindow(QMainWindow):
         """
         self._queue_depth_badge.set_depth(depth)
         self._redraw_tts_indicator_from_focal()
+
+    def _on_saveable_session_changed(self, session_id: object) -> None:
+        """Slot for ``SessionRegistry.saveable_session_changed`` (Story 14.2).
+
+        Re-reads ``saveable_audio`` from the registry rather than
+        constructing the audio snapshot from the payload — Story 14.1's
+        contract (AC #2) is that ``saveable_session_changed.emit(id_or_None)``
+        fires AFTER the slot promotion or revert, so by the time this slot
+        runs the property is already in its post-mutation state. Re-reading
+        keeps the button in sync even in the rare case where two emissions
+        queue and the second one's payload would otherwise lose to the first.
+
+        ``session_id`` is annotated ``object`` because PyQt6's signal type
+        system cannot express ``Optional[str]`` directly; the registry's
+        signal payload is in fact ``Optional[str]``.
+        """
+        if self._session_registry is None:
+            return
+        audio = self._session_registry.saveable_audio
+        self.save_button.set_saveable(audio)
+
+    def _on_save_clicked(self) -> None:
+        """Click handler for the Save button (Story 14.2).
+
+        Emits ``save_requested`` for downstream consumers (Story 14.3 wires
+        the file dialog). Emits unconditionally — the button's enabled/
+        disabled state is the gate, and ``QToolButton.click()`` only fires
+        when enabled.
+        """
+        self.save_requested.emit()
+        self.logger.debug("Save button clicked; save_requested emitted")
 
     def _redraw_tts_indicator_from_focal(self) -> None:
         """Project the registry's focal session onto the TTS indicator (Task 2.4).

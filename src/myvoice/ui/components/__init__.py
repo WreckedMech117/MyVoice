@@ -5,6 +5,7 @@ Contains reusable UI components and widgets.
 """
 
 from .queue_depth_badge import QueueDepthBadge
+from .save_button import SaveButton
 from .service_status_indicator import ServiceStatusIndicator, ServiceStatusBar
 from .voice_selector import VoiceSelector
 from .emotion_button_group import EmotionButtonGroup, EmotionButton, EmotionPreset
@@ -17,5 +18,5 @@ __all__ = [
     'EmotionButtonGroup', 'EmotionButton', 'EmotionPreset',
     'VoiceLibraryWidget', 'VoiceListItem',
     'ModelLoadingIndicator', 'ModelLoadingOverlay',
-    'QuickSpeakMenu', 'QueueDepthBadge'
+    'QuickSpeakMenu', 'QueueDepthBadge', 'SaveButton'
 ]
