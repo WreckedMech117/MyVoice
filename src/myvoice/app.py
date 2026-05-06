@@ -21,6 +21,7 @@ from PyQt6.QtCore import QMetaObject, QObject, Qt, QTimer, pyqtSlot
 
 from myvoice.models.ui_state import ServiceStatusInfo, ServiceHealthStatus
 from myvoice.models.service_enums import ServiceStatus, QwenModelType
+from myvoice.ui.dialogs.save_dialog import SaveAudioDialog  # Story 14.3
 
 
 class _BoundedDedupSet:
@@ -498,6 +499,7 @@ class MyVoiceApp(QObject):
             self._main_window.voice_refresh_requested.connect(self._on_voice_refresh_requested)
             self._main_window.voice_transcription_requested.connect(self._on_voice_transcription_requested)
             self._main_window.replay_last_requested.connect(self._on_replay_last_requested)  # Story 2.4
+            self._main_window.save_requested.connect(self._on_save_requested)  # Story 14.3
             self._main_window.cancel_generation_requested.connect(self._on_cancel_generation_requested)  # Story 11.4 follow-up
             self._main_window.whisper_init_requested.connect(self._on_whisper_init_requested)  # QA4
             self._main_window.mic_device_refresh_requested.connect(self._on_mic_device_refresh_requested)
@@ -1189,6 +1191,24 @@ class MyVoiceApp(QObject):
             self.logger.exception(f"Error during replay: {e}")
             if self._main_window:
                 self._main_window.set_generation_status(f"Replay failed: {str(e)}", False)
+
+    def _on_save_requested(self) -> None:
+        """Story 14.3: open Save dialog when MainWindow.save_requested fires.
+
+        Each click constructs a fresh SaveAudioDialog instance; the previous
+        dialog (if any) has already returned (immediate save) or is in its
+        streaming-wait state and owns its own cleanup. We do NOT track or
+        cancel pending dialogs — the registry's signal flow is the source
+        of truth for save lifecycle.
+        """
+        if self._session_registry is None:
+            self.logger.warning("Save requested but no session registry; ignoring")
+            return
+        dialog = SaveAudioDialog(
+            registry=self._session_registry,
+            parent=self._main_window,
+        )
+        dialog.run()
 
     def _on_replay_success(self, result):
         """Handle successful replay playback."""

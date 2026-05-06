@@ -9,9 +9,10 @@ Responsibilities (per architecture):
   * Owns the in-flight `GenerationSession` collection (`_sessions`).
   * Mediates every state mutation through Qt-thread-affined slot methods.
   * Provides `post_mutation()` for cross-thread (worker → main) dispatch.
-  * Emits `session_state_changed` and `current_session_changed`. The other
-    two D-13 signals (`saveable_session_changed`, `playback_queue_depth_changed`)
-    are declared as inert ports for Stories 14.1 and 13.1 to wire later.
+  * Emits `session_state_changed` and `current_session_changed`. The
+    `playback_queue_depth_changed` signal is declared as an inert port for
+    Story 13.1 to wire later. The `saveable_session_changed` signal is wired
+    by Story 14.1 (this story) — see Saveable Slot Lifecycle Contract below.
   * Computes `focal_session_id` from session lifecycle state with the
     four-tier priority defined in validation gap #1.
 
@@ -87,9 +88,83 @@ Focal Session Contract (Story 12.2 lock-down)
     ``tests/unit/services/sessions/test_session_registry.py``,
     classes ``TestFocalPriorityExplicit`` and
     ``TestCurrentSessionChangedContract``.
+
+Saveable Slot Lifecycle Contract (Story 14.1 lock-down)
+========================================================
+
+  * **Two slots, never more** (D-3, D-4): the registry holds at most two
+    ``SaveableAudio`` records — ``_saveable`` (the most recently finalized
+    GENERATED session, drives ``saveable_session_id`` and Save button
+    enablement) and ``_previous_saveable`` (the prior saveable, lingering
+    in grace-period memory so its buffer is preserved). Slot capture happens
+    at ``finalize`` time; the dataclass holds a strong reference to
+    ``complete_audio`` so the buffer survives the originating session's
+    later ``discard()`` (which sets ``session.complete_audio = None`` per
+    ``generation_session.py:197``).
+
+  * **Promotion on finalize** (D-3, AC #2/#3/#4): on every
+    ``finalize(session_id)`` for a GENERATED-source session, the prior
+    ``_saveable`` demotes to ``_previous_saveable`` (overwriting and
+    releasing whatever was there), the new session's snapshot becomes the
+    current ``_saveable``, and ``saveable_session_changed.emit(session_id)``
+    fires exactly once.
+
+  * **Release on next mark_done** (D-4, AC #5): when the current saveable
+    reaches DONE (its ``mark_done`` slot fires), ``_previous_saveable`` is
+    cleared (set to ``None``); ``_saveable`` is unchanged;
+    ``saveable_session_changed`` does NOT fire (the saveable_session_id is
+    unchanged). Idempotent if ``_previous_saveable`` is already ``None``.
+
+  * **Invalidation on cancel / set_error** (P-7, AC #7 + review fix): a
+    GENERATED session reaching ``CANCELLED`` or ``ERROR`` must vacate
+    whichever slot it occupies, so neither slot ever references a
+    non-successful session. Two cases:
+      - Session is the current ``_saveable`` → revert: ``_saveable`` becomes
+        ``_previous_saveable`` (or ``None``), ``_previous_saveable``
+        clears, and ``saveable_session_changed.emit(<new_id_or_None>)``
+        fires exactly once.
+      - Session is the ``_previous_saveable`` → clear: ``_previous_saveable``
+        becomes ``None``; ``_saveable`` is unchanged and no signal fires
+        (saveable_session_id is unchanged).
+    If the session is in neither slot, both slots are unchanged and no
+    signal fires (silent no-op — mirrors
+    ``_recompute_focal_and_maybe_emit``'s no-spurious-emission discipline).
+    The architecture's P-7 "Cancelled sessions never become saveable" is
+    enforced by the invariant that no slot ever holds a CANCELLED/ERROR
+    session — this is what makes the revert path safe to promote
+    ``_previous_saveable`` without re-checking its state.
+
+  * **PRELOADED exclusion** (D-5, AC #6): sessions with
+    ``source == SessionSource.PRELOADED`` (Clear Comms playback clones,
+    Epic 15 territory) NEVER participate in saveable lifecycle. Promotion,
+    release, and revert paths all gate on
+    ``session.source == SessionSource.GENERATED``.
+
+  * **Discard does NOT modify slots** (AC #8): the ``discard`` slot drops
+    the session record from ``_sessions`` but leaves ``_saveable`` and
+    ``_previous_saveable`` untouched. Slot lifecycle is driven by
+    ``mark_done`` (release) and ``cancel`` (revert), not by ``discard``.
+
+  * **Emission ordering on finalize** (AC #2): the three signals fire in
+    this fixed order — ``session_state_changed(id, READY_TO_PLAY)`` then
+    ``current_session_changed(id)`` (if focal changed) then
+    ``saveable_session_changed(id)``. DirectConnection subscribers observe
+    them in this order; QueuedConnection subscribers see them queued in
+    this order.
+
+  * Cross-references: see
+    ``tests/unit/services/sessions/test_session_registry.py``,
+    classes ``TestSaveableSlotPromotion``, ``TestSaveableSlotDemotion``,
+    ``TestPreloadedSourceExclusion``,
+    ``TestPreviousSaveableReleaseOnMarkDone``,
+    ``TestSaveableCancelRevert``, ``TestDiscardDoesNotClearSlot``,
+    ``TestSaveableSessionIdProperty``, ``TestSaveableAudioProperty``,
+    ``TestSaveableEmissionOrdering``, ``TestSaveableModuleBoundary``,
+    ``TestNetZeroFromPreviousStories``, ``TestDebugDumpHelper``.
 """
 
 import time
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
@@ -111,6 +186,35 @@ from myvoice.services.sessions.generation_session import (
     SessionSource,
     SessionState,
 )
+
+
+# `eq=False` is load-bearing: the dataclass holds a numpy buffer, and the
+# auto-generated `__eq__` would compare arrays with `==` (which returns an
+# array, not a bool, so tuple-equality dispatch raises ValueError) and the
+# auto-generated `__hash__` would attempt to hash an unhashable np.ndarray.
+# We don't need value equality on snapshots — identity (`is`) is the contract,
+# since the registry holds at most one slot reference at a time.
+@dataclass(frozen=True, eq=False)
+class SaveableAudio:
+    """Snapshot of a saveable session's audio + metadata (Story 14.1).
+
+    Captured at finalize() time so the buffer survives the originating
+    session's later discard() (which clears session.complete_audio per
+    generation_session.py:197). Held by SessionRegistry in either the
+    current `_saveable` or the lingering `_previous_saveable` slot per
+    D-3 / D-4 / D-5 lifecycle.
+
+    Treat as immutable per D-6 convention — sessions never mutate
+    complete_audio after finalize, and consumers (Story 14.3 WAV
+    writer) read-only.
+    """
+    session_id: str
+    complete_audio: np.ndarray
+    sample_rate: int
+    voice: str
+    text: str
+    is_streaming: bool
+    created_at: float
 
 
 # Terminal sessions remain focal-eligible for this many seconds after their
@@ -150,7 +254,9 @@ class SessionRegistry(QObject):
     current_session_changed = pyqtSignal(object)
     # Inert in 11.2 — Story 13.1 will emit from PlaybackQueue.
     playback_queue_depth_changed = pyqtSignal(int)
-    # Inert in 11.2 — Story 14.1 will emit from saveable-slot lifecycle.
+    # Wired by Story 14.1 — emitted by `_maybe_promote_saveable` (finalize)
+    # and `_invalidate_saveable_slot_for` (cancel / set_error) per the
+    # "Saveable Slot Lifecycle Contract" section above.
     saveable_session_changed = pyqtSignal(object)
 
     def __init__(self, parent: Optional[QObject] = None) -> None:
@@ -182,6 +288,10 @@ class SessionRegistry(QObject):
         self._sessions: dict[str, GenerationSession] = {}
         self._session_model_types: dict[str, str] = {}
         self._last_focal_id: Optional[str] = None
+        # Story 14.1: saveable-slot lifecycle (D-3, D-4, D-5).
+        # Captured at finalize-time so the audio buffer survives session.discard().
+        self._saveable: Optional[SaveableAudio] = None
+        self._previous_saveable: Optional[SaveableAudio] = None
 
     # ----- AC #4 / #5 — creation gateway and read-only access ----------- #
 
@@ -235,6 +345,11 @@ class SessionRegistry(QObject):
         session.finalize()
         self._maybe_emit_state_changed(session_id, session, old_state)
         self._recompute_focal_and_maybe_emit()
+        # Story 14.1: saveable promotion — D-3 (most-recent finalize wins),
+        # D-4 (demote prior to _previous_saveable), D-5 (PRELOADED clones
+        # do not participate). The slot capture is BEFORE any later discard
+        # could clear session.complete_audio (per AC #1 / AC #8).
+        self._maybe_promote_saveable(session)
 
     @pyqtSlot(str)
     def mark_playing(self, session_id: str) -> None:
@@ -266,6 +381,11 @@ class SessionRegistry(QObject):
         session.mark_done()
         self._maybe_emit_state_changed(session_id, session, old_state)
         self._recompute_focal_and_maybe_emit()
+        # Story 14.1: D-4 release — the next GENERATED session reaching
+        # DONE is the canonical trigger to free the previous saveable's
+        # buffer hold. See AC #5 / module docstring "Saveable Slot
+        # Lifecycle Contract".
+        self._maybe_release_previous_saveable_on_done(session)
 
     @pyqtSlot(str)
     def cancel(self, session_id: str) -> None:
@@ -274,6 +394,11 @@ class SessionRegistry(QObject):
         session.cancel()
         self._maybe_emit_state_changed(session_id, session, old_state)
         self._recompute_focal_and_maybe_emit()
+        # Story 14.1 + review fix: vacate whichever slot the cancelled
+        # session occupies (both _saveable and _previous_saveable are in
+        # scope), so the invariant "no slot ever holds a CANCELLED/ERROR
+        # session" holds across subsequent revert paths.
+        self._invalidate_saveable_slot_for(session)
 
     @pyqtSlot(str)
     def discard(self, session_id: str) -> None:
@@ -289,6 +414,11 @@ class SessionRegistry(QObject):
         self._maybe_emit_state_changed(session_id, session, old_state)
         del self._sessions[session_id]
         self._session_model_types.pop(session_id, None)
+        # Story 14.1: do NOT modify _saveable / _previous_saveable here. The
+        # slot's strong reference to complete_audio survives session.discard()
+        # (which set session.complete_audio to None at generation_session.py:197).
+        # Slot lifecycle is driven by mark_done (release per D-4) and cancel
+        # (revert per AC #7), not by discard.
         self._recompute_focal_and_maybe_emit()
 
     @pyqtSlot(str)
@@ -307,6 +437,11 @@ class SessionRegistry(QObject):
         self._transition_for_slot(session, "set_error", SessionState.ERROR)
         self._maybe_emit_state_changed(session_id, session, old_state)
         self._recompute_focal_and_maybe_emit()
+        # Story 14.1 + review fix: ERROR is symmetric with CANCELLED for
+        # saveable-slot purposes — neither outcome should leave the session
+        # selectable for Save. The idempotency guard above prevents
+        # double-invalidation on repeated set_error calls.
+        self._invalidate_saveable_slot_for(session)
 
     # ----- AC #8 — cross-thread helper (P-3) ---------------------------- #
 
@@ -396,6 +531,28 @@ class SessionRegistry(QObject):
 
         return None
 
+    # ----- Story 14.1 — saveable session properties --------------------- #
+
+    @property
+    def saveable_session_id(self) -> Optional[str]:
+        """Story 14.1: id of the current saveable session, or None.
+
+        Driven by the `finalize` slot (promotes new saveables per D-3) and
+        the `cancel` slot (reverts to previous saveable per AC #7). See
+        module docstring's "Saveable Slot Lifecycle Contract" section.
+        """
+        return self._saveable.session_id if self._saveable is not None else None
+
+    @property
+    def saveable_audio(self) -> Optional[SaveableAudio]:
+        """Story 14.1: snapshot of the current saveable's audio + metadata.
+
+        Returned dataclass is frozen and shares the complete_audio buffer
+        zero-copy with the slot — consumers (Story 14.3 WAV writer) MUST
+        treat as immutable per D-6 convention.
+        """
+        return self._saveable
+
     # ----- internal helpers --------------------------------------------- #
 
     def _guard_and_lookup(self, method_name: str, session_id: str) -> GenerationSession:
@@ -449,3 +606,112 @@ class SessionRegistry(QObject):
         if new_focal != self._last_focal_id:
             self._last_focal_id = new_focal
             self.current_session_changed.emit(new_focal)
+
+    # ----- Story 14.1 — saveable slot lifecycle helpers ----------------- #
+
+    def _maybe_promote_saveable(self, session: GenerationSession) -> None:
+        """Story 14.1: promote a freshly-finalized GENERATED session to the
+        saveable slot per D-3, demote the prior saveable to the previous-
+        saveable slot per D-4. PRELOADED clones do not participate (D-5).
+        """
+        if session.source != SessionSource.GENERATED:
+            return  # D-5: PRELOADED clones never become saveable
+        new_slot = SaveableAudio(
+            session_id=session.session_id,
+            complete_audio=session.complete_audio,
+            sample_rate=session.sample_rate,
+            voice=session.voice,
+            text=session.text,
+            is_streaming=session.is_streaming,
+            created_at=session.created_at,
+        )
+        # D-4: prior saveable demotes to previous; the third-back drops
+        # entirely (the assignment overwrites _previous_saveable, releasing
+        # any earlier reference for GC).
+        self._previous_saveable = self._saveable
+        self._saveable = new_slot
+        self.saveable_session_changed.emit(session.session_id)
+
+    def _maybe_release_previous_saveable_on_done(
+        self, session: GenerationSession
+    ) -> None:
+        """Story 14.1: release the previous-saveable hold per D-4. Triggers
+        only when the session reaching DONE is GENERATED-source AND is the
+        current saveable. The release is idempotent (None = None is a
+        no-op) and emits NO signal — the saveable_session_id is unchanged.
+        """
+        if session.source != SessionSource.GENERATED:
+            return  # D-5: PRELOADED clones don't drive lifecycle
+        if self._saveable is None or self._saveable.session_id != session.session_id:
+            return  # session reaching DONE is not the current saveable
+        # Drop the previous-saveable hold; the buffer is GC-eligible if no
+        # other reference exists (typically the session was already through
+        # discard() so this slot held the last reference).
+        self._previous_saveable = None
+
+    def _invalidate_saveable_slot_for(
+        self, session: GenerationSession
+    ) -> None:
+        """Story 14.1 + review fix: a GENERATED session reaching CANCELLED
+        or ERROR must vacate any saveable slot it occupies.
+
+        Called from both the `cancel` and `set_error` slots after the
+        underlying transition has been emitted. Maintains the invariant
+        that neither `_saveable` nor `_previous_saveable` holds a
+        non-successful session — this is what makes the revert path safe
+        to promote `_previous_saveable` without re-checking its state.
+
+        Two cases:
+          (1) Session is the current ``_saveable`` → revert to
+              ``_previous_saveable`` (or ``None``), clear
+              ``_previous_saveable``, emit ``saveable_session_changed``.
+          (2) Session is the ``_previous_saveable`` → clear it; do not
+              emit (saveable_session_id is unchanged).
+
+        PRELOADED clones never enter either slot (D-5), so the source
+        guard is defense-in-depth against future bypass paths; under
+        normal flow it is unreachable.
+        """
+        if session.source != SessionSource.GENERATED:
+            return
+        sid = session.session_id
+        if self._saveable is not None and self._saveable.session_id == sid:
+            new_current = self._previous_saveable
+            self._saveable = new_current
+            self._previous_saveable = None
+            new_id: Optional[str] = (
+                new_current.session_id if new_current is not None else None
+            )
+            self.saveable_session_changed.emit(new_id)
+            return
+        if (
+            self._previous_saveable is not None
+            and self._previous_saveable.session_id == sid
+        ):
+            self._previous_saveable = None
+
+    def _DEBUG_dump_saveable_state(self) -> dict:
+        """Story 14.1: test/debug-only inspection of the saveable slots.
+
+        NOT public API. Intended for integration tests that need a stable
+        inspection surface without poking at private fields directly. May
+        be removed if Stories 14.2 / 14.3 don't need it.
+        """
+        def _slot_view(slot: Optional[SaveableAudio]) -> dict:
+            if slot is None:
+                return {"session_id": None, "audio_id": None, "audio_size_bytes": None}
+            return {
+                "session_id": slot.session_id,
+                "audio_id": id(slot.complete_audio),
+                "audio_size_bytes": slot.complete_audio.nbytes,
+            }
+        cur = _slot_view(self._saveable)
+        prev = _slot_view(self._previous_saveable)
+        return {
+            "saveable_session_id": cur["session_id"],
+            "previous_saveable_session_id": prev["session_id"],
+            "saveable_audio_id": cur["audio_id"],
+            "previous_saveable_audio_id": prev["audio_id"],
+            "saveable_audio_size_bytes": cur["audio_size_bytes"],
+            "previous_saveable_audio_size_bytes": prev["audio_size_bytes"],
+        }

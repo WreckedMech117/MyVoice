@@ -443,16 +443,44 @@ class QwenTTSService(BaseService):
         """Map a request's identity fields to a single human-readable voice
         label for SessionRegistry.create_session(voice=...) (Story 11.4).
 
-        Resolution order: speaker → voice_description → checkpoint stem →
-        ``"unknown"``. Mirrors the existing log-line context used at the top
-        of ``_generate`` and ``_generate_streaming``.
+        Resolution priority (revised 2026-05-06 after Epic 14 smoke test):
+
+          1. ``request.speaker`` — but ONLY if it is non-default (i.e. the
+             user explicitly set it). The dataclass default is the literal
+             ``"Ryan"``; treat that as a sentinel meaning "not explicitly
+             chosen" so the request paths that leave ``speaker`` untouched
+             (``generate_voice_design``, ``generate_voice_clone``,
+             ``generate_voice_clone_with_embedding``) fall through to
+             their own identifiers instead of mislabeling every save as
+             "Ryan".
+          2. ``request.voice_description`` — voice-design requests.
+          3. ``Path(request.checkpoint_path).stem`` — optimized fine-tuned
+             voice (e.g. "Sarira").
+          4. ``Path(request.ref_audio).stem`` — voice-clone (BASE) requests.
+          5. ``request.speaker`` (default ``"Ryan"``) — fallback when the
+             user actually picked Ryan via the voice selector AND no
+             other identifier was set. Also catches the still-broken
+             embedding-only path (no speaker, no description, no
+             checkpoint, no ref_audio — only ``voice_clone_prompt``
+             tensor); a follow-up should add an explicit ``voice_label``
+             field to ``QwenTTSRequest`` for that case.
+          6. ``"unknown"`` — true fallback for empty speaker.
         """
-        if request.speaker:
+        # Sentinel-aware first pass: prefer a speaker that the caller
+        # explicitly overrode away from the dataclass default.
+        if request.speaker and request.speaker != "Ryan":
             return request.speaker
         if request.voice_description:
             return request.voice_description
         if request.checkpoint_path:
             return Path(request.checkpoint_path).stem
+        if request.ref_audio:
+            return Path(request.ref_audio).stem
+        if request.speaker:
+            # User explicitly picked "Ryan", or the dataclass default
+            # leaked through an embedding-only request — either way,
+            # this is the most-informative label available.
+            return request.speaker
         return "unknown"
 
     @staticmethod
