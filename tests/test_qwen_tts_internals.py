@@ -12,6 +12,11 @@ Story 16.3 extension: This file also pins `transformers.generation.streamers.Bas
 — the parent class of `CodecTokenStreamer` (Phase ⊥ true-streaming). The same trip-wire
 pattern applies: a silent upstream rename or refactor in HF transformers fails this file
 before reaching production import.
+
+Story 16.4 extension: also pins the deep-decoder method `Qwen3TTSTokenizerV1Model.decode`
+for the upcoming Story 16.6 TRUE_STREAM dispatch adapter. The Story 16.4 worker itself
+does not import qwen_tts — but Story 16.6's `decode_fn` adapter wraps this method, and
+this trip-wire fails loudly in CI before a silent qwen-tts rename can break the adapter.
 """
 
 
@@ -80,3 +85,34 @@ def test_transformers_basestreamer_importable_from_deep_path():
             f"streamers has changed; update CodecTokenStreamer's "
             f"three-method contract before bumping the transformers pin."
         )
+
+
+def test_qwen3_tts_tokenizer_v1_decode_method_pinned():
+    """Story 16.4 / Story 16.6 — pin Qwen3TTSTokenizerV1Model.decode.
+
+    services/tts_streaming/streaming_decoder.py's `decode_fn` callable
+    wraps a `model.speech_tokenizer.decode(...)` call where
+    `model.speech_tokenizer` is an instance of Qwen3TTSTokenizerV1Model
+    per qwen_tts/core/tokenizer_25hz/modeling_qwen3_tts_tokenizer_v1.py
+    (lines 1487-1525, signature `decode(audio_codes, xvectors, ref_mels,
+    return_dict=None) -> tuple[Tensor, ...]`). The Story 16.6 adapter
+    composes that callable from the model loaded by services/model_registry.py.
+    A silent rename of `decode` → `synthesize` (or any other refactor)
+    breaks Story 16.6's adapter at construction time; this trip-wire
+    fails loudly in CI before the rename can ship.
+    """
+    from qwen_tts.core.tokenizer_25hz.modeling_qwen3_tts_tokenizer_v1 import (
+        Qwen3TTSTokenizerV1Model,
+    )
+
+    assert isinstance(Qwen3TTSTokenizerV1Model, type), (
+        "Qwen3TTSTokenizerV1Model is not a class — upstream may have "
+        "renamed or refactored. Update the trip-wire AND the Story 16.6 "
+        "adapter in lockstep."
+    )
+    assert callable(getattr(Qwen3TTSTokenizerV1Model, "decode", None)), (
+        "Qwen3TTSTokenizerV1Model has no callable attribute 'decode'. "
+        "The deep-decoder method that Story 16.6's TRUE_STREAM adapter "
+        "wraps has been renamed or removed. Update the adapter before "
+        "bumping the qwen-tts pin."
+    )

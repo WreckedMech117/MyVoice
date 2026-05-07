@@ -45,12 +45,15 @@ def test_end_of_stream_is_not_a_list():
 
 def test_package_all_lists_expected_symbols_in_order():
     import myvoice.services.tts_streaming as pkg
+    # Story 16.2's three names, then Story 16.3's two, then Story 16.4's
+    # one — declaration order matches each story's append-only precedent.
     assert pkg.__all__ == [
         "StreamingMode",
         "default_streaming_mode_for_hardware",
         "effective_streaming_mode",
         "CodecTokenStreamer",
         "END_OF_STREAM",
+        "StreamingDecoderWorker",
     ]
 
 

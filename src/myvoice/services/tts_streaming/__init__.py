@@ -17,6 +17,9 @@ from myvoice.services.tts_streaming.codec_token_streamer import (
     CodecTokenStreamer,
     END_OF_STREAM,
 )
+from myvoice.services.tts_streaming.streaming_decoder import (
+    StreamingDecoderWorker,
+)
 
 __all__ = [
     "StreamingMode",
@@ -24,4 +27,5 @@ __all__ = [
     "effective_streaming_mode",
     "CodecTokenStreamer",
     "END_OF_STREAM",
+    "StreamingDecoderWorker",
 ]
