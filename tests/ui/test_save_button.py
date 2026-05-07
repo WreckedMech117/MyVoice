@@ -603,24 +603,27 @@ class TestSaveButtonAccessibility:
         assert window.save_button.focusPolicy() == Qt.FocusPolicy.StrongFocus
 
     def test_save_button_in_tab_order_after_replay_before_clear(self):
-        """Tab chain: replay → save → clear. Verified via static scan of
+        """Tab chain: replay → save → ... . Verified via static scan of
         ``setTabOrder`` calls in ``main_window.py`` per AC #14's "or
         assert via setTabOrder calls in source" alternative — more
         robust than walking ``nextInFocusChain`` across nested layouts.
+
+        Story 15.2 inserted ``clear_comms_button`` between ``save_button``
+        and ``clear_button``. This test now asserts that ``save_button``
+        remains in the chain after ``replay_button`` and is NOT short-
+        circuited; the exact next-edge after ``save_button`` is verified
+        by Story 15.2's own tab-order test.
         """
         from myvoice.ui import main_window as main_window_module
         source = Path(main_window_module.__file__).read_text(encoding="utf-8")
         assert "setTabOrder(self.replay_button, self.save_button)" in source, (
             "Tab-order chain must include replay_button → save_button"
         )
-        assert "setTabOrder(self.save_button, self.clear_button)" in source, (
-            "Tab-order chain must include save_button → clear_button"
-        )
         # The pre-14.2 single-step setTabOrder(replay, clear) must not
         # remain — it would short-circuit the new chain.
         assert "setTabOrder(self.replay_button, self.clear_button)" not in source, (
             "Old setTabOrder(replay_button, clear_button) must be replaced "
-            "by the two-step chain through save_button"
+            "by the chain through save_button"
         )
 
 

@@ -26,6 +26,7 @@ from myvoice.ui.styles.theme_manager import get_theme_manager
 from myvoice.ui.components.quick_speak_settings_widget import QuickSpeakSettingsWidget
 from myvoice.ui.components.voice_selector import VoiceSelector
 from myvoice.ui.components.voice_library_widget import VoiceLibraryWidget
+from myvoice.ui.dialogs.settings import ClearCommsSettingsPanel  # Story 15.3
 from myvoice.ui.dialogs.voice_design_studio import VoiceDesignStudioDialog
 from myvoice.services.quick_speak_service import QuickSpeakService
 from myvoice.services.voice_profile_service import VoiceProfileManager
@@ -64,6 +65,11 @@ class SettingsDialog(QDialog):
     mic_device_refresh_requested = pyqtSignal()  # Request mic device list refresh
     mic_test_requested = pyqtSignal(str)  # device_id - Request mic test playback (deprecated)
     mic_monitor_toggled = pyqtSignal(bool, str)  # (enabled, device_id) - Toggle mic-to-speaker monitor
+    # Story 15.3: Test Playback request from the Clear Comms panel; payload
+    # is (source_kind, file_path, queue_mode) per AC #5. The middle slot is
+    # ``object`` because file_path is Optional[str] and PyQt6's pyqtSignal
+    # cannot natively express a nullable str — slot receives Optional[str].
+    clear_comms_test_playback_requested = pyqtSignal(str, object, bool)
 
     def __init__(self, settings: AppSettings, parent: Optional[QWidget] = None, quick_speak_service: Optional[QuickSpeakService] = None, audio_client=None):
         """
@@ -159,6 +165,9 @@ class SettingsDialog(QDialog):
 
         # Quick Speak settings tab
         self._create_quick_speak_tab()
+
+        # Clear Comms settings tab (Story 15.3)
+        self._create_clear_comms_tab()
 
         layout.addWidget(self.tab_widget)
 
@@ -710,6 +719,20 @@ class SettingsDialog(QDialog):
 
         self.tab_widget.addTab(self.quick_speak_widget, "Quick Speak")
 
+    def _create_clear_comms_tab(self):
+        """Create the Clear Comms settings tab (Story 15.3, AC #2).
+
+        Instantiates the ``ClearCommsSettingsPanel`` once per dialog
+        lifetime and forwards its ``test_playback_requested`` signal up
+        to ``clear_comms_test_playback_requested`` for the dialog's
+        parent (``MyVoiceMainWindow``) to re-emit.
+        """
+        self.clear_comms_panel = ClearCommsSettingsPanel(parent=self)
+        self.clear_comms_panel.test_playback_requested.connect(
+            self.clear_comms_test_playback_requested.emit
+        )
+        self.tab_widget.addTab(self.clear_comms_panel, "Clear Comms")
+
     def _mark_settings_modified(self):
         """Mark settings as modified (for future save tracking)."""
         # Currently settings are applied on OK, but this could be used
@@ -766,6 +789,13 @@ class SettingsDialog(QDialog):
             self.mic_volume_label.setText(f"{mic_volume_percent}%")
             # Enable/disable mic controls based on checkbox state
             self._update_mic_controls_enabled(self.current_settings.mic_mixing_enabled)
+
+            # Clear Comms (Story 15.3): hydrate the panel from current_settings.
+            self.clear_comms_panel.load_state(
+                source_kind=self.current_settings.clear_comms_source_kind,
+                file_path=self.current_settings.clear_comms_file_path,
+                queue_mode=self.current_settings.clear_comms_queue_mode,
+            )
 
             self.logger.debug("Loaded current settings into UI")
 
@@ -870,6 +900,12 @@ class SettingsDialog(QDialog):
             else:
                 self.current_settings.mic_input_device_name = None
                 self.current_settings.mic_input_device_host_api = None
+
+            # Clear Comms (Story 15.3): read panel state into current_settings.
+            cc_source, cc_path, cc_queue = self.clear_comms_panel.save_state()
+            self.current_settings.clear_comms_source_kind = cc_source
+            self.current_settings.clear_comms_file_path = cc_path
+            self.current_settings.clear_comms_queue_mode = cc_queue
 
             self.logger.debug("Saved UI values to current settings")
 

@@ -94,6 +94,12 @@ class AppSettings:
     mic_input_device_host_api: Optional[str] = None
     mic_volume: float = 1.0  # 0.0 to 1.0
 
+    # Clear Comms (Story 15.2 / OFR-B): source selection + interrupt-vs-queue toggle.
+    # Persisted across sessions; written by Settings panel UI in Story 15.3.
+    clear_comms_source_kind: str = "last_generation"   # "last_generation" | "file"
+    clear_comms_file_path: Optional[str] = None        # Absolute path to WAV; None until configured
+    clear_comms_queue_mode: bool = False               # False = interrupt (D-18 default), True = queue
+
     # Advanced settings
     advanced_settings: Dict[str, Any] = field(default_factory=dict)
 
@@ -333,6 +339,25 @@ class AppSettings:
                 ))
                 self.model_quality_tier = "quality"
 
+            # Validate Clear Comms source kind (Story 15.2 / OFR-B).
+            # WARNING + auto-correct to "last_generation" mirrors the
+            # model_quality_tier pattern above; the AppSettings-write
+            # path (Story 15.3 panel) constrains the value to a radio
+            # group, so this guard handles only direct JSON edits.
+            valid_clear_comms_sources = ["last_generation", "file"]
+            if self.clear_comms_source_kind not in valid_clear_comms_sources:
+                warnings.append(ValidationIssue(
+                    field="clear_comms_source_kind",
+                    message=(
+                        f"Unknown Clear Comms source kind "
+                        f"'{self.clear_comms_source_kind}', defaulting to "
+                        f"'last_generation'"
+                    ),
+                    code="UNKNOWN_CLEAR_COMMS_SOURCE",
+                    severity=ValidationStatus.WARNING
+                ))
+                self.clear_comms_source_kind = "last_generation"
+
             # Validate TTS service URL
             if not self.tts_service_url or not self.tts_service_url.strip():
                 issues.append(ValidationIssue(
@@ -466,6 +491,9 @@ class AppSettings:
                 "mic_input_device_name": self.mic_input_device_name,
                 "mic_input_device_host_api": self.mic_input_device_host_api,
                 "mic_volume": self.mic_volume,
+                "clear_comms_source_kind": self.clear_comms_source_kind,
+                "clear_comms_file_path": self.clear_comms_file_path,
+                "clear_comms_queue_mode": self.clear_comms_queue_mode,
                 "advanced_settings": self.advanced_settings.copy(),
                 "training_enabled": self.training_enabled,
                 "training_workspace_directory": self.training_workspace_directory,
@@ -528,6 +556,9 @@ class AppSettings:
                 mic_input_device_name=data.get("mic_input_device_name"),
                 mic_input_device_host_api=data.get("mic_input_device_host_api"),
                 mic_volume=data.get("mic_volume", 1.0),
+                clear_comms_source_kind=data.get("clear_comms_source_kind", "last_generation"),
+                clear_comms_file_path=data.get("clear_comms_file_path"),
+                clear_comms_queue_mode=data.get("clear_comms_queue_mode", False),
                 advanced_settings=data.get("advanced_settings", {}),
                 training_enabled=data.get("training_enabled", True),
                 training_workspace_directory=data.get("training_workspace_directory", "training_workspace"),
@@ -641,6 +672,8 @@ class AppSettings:
             "virtual_microphone_device_host_api",
             "mic_mixing_enabled", "mic_input_device_id", "mic_input_device_name",
             "mic_input_device_host_api", "mic_volume",
+            "clear_comms_source_kind", "clear_comms_file_path",
+            "clear_comms_queue_mode",
             "advanced_settings",
             "training_enabled", "training_workspace_directory",
             "custom_emotion_text", "custom_emotion_presets"

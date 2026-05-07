@@ -120,9 +120,10 @@ temp/
 
 # ===========================================================================
 # Models (downloadable — not committed; users install separately)
+# Anchored to repo root so tests/unit/models/ is not accidentally ignored.
 # ===========================================================================
-models/
-whisper_models/
+/models/
+/whisper_models/
 
 # ===========================================================================
 # Vendored binaries

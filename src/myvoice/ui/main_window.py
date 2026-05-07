@@ -25,6 +25,7 @@ except ImportError:
     ACCESSIBILITY_AVAILABLE = False
 
 from myvoice.ui.styles.theme_manager import get_theme_manager
+from myvoice.ui.components.clear_comms_button import ClearCommsButton
 from myvoice.ui.components.queue_depth_badge import QueueDepthBadge
 from myvoice.ui.components.save_button import SaveButton
 from myvoice.ui.components.service_status_indicator import ServiceStatusBar, ServiceStatusIndicator
@@ -81,6 +82,11 @@ class MainWindow(QMainWindow):
     voice_transcription_requested = pyqtSignal(str)  # voice_profile_name - transcription requested
     replay_last_requested = pyqtSignal()  # Story 2.4: Replay last generated audio (FR28)
     save_requested = pyqtSignal()  # Story 14.2: Save current saveable session (Story 14.3 wires the dialog)
+    clear_comms_requested = pyqtSignal()  # Story 15.2: Clear Comms button click — interrupt + replay configured source
+    # Story 15.3: Test Playback request from the Clear Comms settings panel.
+    # Payload: (source_kind, file_path, queue_mode); object slot for the
+    # nullable file_path. Forwarded to MyVoiceApp._on_clear_comms_test_playback_requested.
+    clear_comms_test_playback_requested = pyqtSignal(str, object, bool)
     cancel_generation_requested = pyqtSignal()  # Story 11.4 follow-up: Clear button doubles as Stop during generation
     # Microphone control signals
     mic_mute_toggled = pyqtSignal(bool)  # is_muted
@@ -168,6 +174,16 @@ class MainWindow(QMainWindow):
         # text is gone the moment Generate fires (see ``_on_generate_
         # clicked``) and Stop has nothing to give back.
         self._last_generation_text: str = ""
+
+        # Story 15.2: cached snapshot of the Clear Comms config used to
+        # drive the ClearCommsButton's enablement matrix. Defaults
+        # mirror ``AppSettings`` defaults so the button reflects truth
+        # before ``set_clear_comms_config_snapshot(...)`` is first
+        # called from ``_create_ui``.
+        self._clear_comms_source_kind: str = "last_generation"
+        self._clear_comms_file_path: Optional[str] = None
+        self._clear_comms_file_path_valid: bool = False
+        self._clear_comms_queue_mode: bool = False
 
         # TTS service reference (will be set by application for voice creation dialogs)
         self.tts_service = None
@@ -304,6 +320,14 @@ class MainWindow(QMainWindow):
         self.save_button = SaveButton()
         self.save_button.clicked.connect(self._on_save_clicked)
 
+        # Story 15.2: Clear Comms button (Phase 5 of D-20, OFR-B). Inserted
+        # between Save and Clear in the action toolbar (Save = preserve,
+        # Clear Comms = interject, Clear = wipe). Enablement is driven from
+        # ``_on_clear_comms_state_changed`` which reads both the cached
+        # AppSettings snapshot and the registry's saveable_session_id.
+        self.clear_comms_button = ClearCommsButton()
+        self.clear_comms_button.clicked.connect(self._on_clear_comms_button_clicked)
+
         # Clear button as small icon button
         self.clear_button = QPushButton()
         clear_icon = self.style().standardIcon(self.style().StandardPixmap.SP_LineEditClearButton)
@@ -317,6 +341,7 @@ class MainWindow(QMainWindow):
         action_buttons_layout.addWidget(self.generate_button)
         action_buttons_layout.addWidget(self.replay_button)  # Story 2.4: Replay Last
         action_buttons_layout.addWidget(self.save_button)    # Story 14.2: Save Generation
+        action_buttons_layout.addWidget(self.clear_comms_button)  # Story 15.2: Clear Comms
         action_buttons_layout.addWidget(self.clear_button)
         action_buttons_layout.addStretch()  # Push buttons to top
 
@@ -455,6 +480,12 @@ class MainWindow(QMainWindow):
         self.save_button.setAccessibleName("Save last generation")
         self.save_button.setAccessibleDescription("Save the most recent generated speech to a WAV file")
 
+        # Story 15.2: Clear Comms button accessibility
+        self.clear_comms_button.setAccessibleName("Clear Comms")
+        self.clear_comms_button.setAccessibleDescription(
+            "Interrupt current playback and replay your configured Clear Comms audio source"
+        )
+
         self.clear_button.setAccessibleName("Clear text")
         self.clear_button.setAccessibleDescription("Clear the text input field")
 
@@ -481,6 +512,7 @@ class MainWindow(QMainWindow):
         self.generate_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.replay_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.save_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # Story 14.2
+        self.clear_comms_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # Story 15.2
         self.clear_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.settings_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
@@ -491,13 +523,15 @@ class MainWindow(QMainWindow):
         # Task 3: Set Tab Order for Logical Navigation
         # =======================================================================
 
-        # Tab order: Text → Quick Speak → Generate → Replay → Save → Clear → Settings → Emotions
+        # Tab order: Text → Quick Speak → Generate → Replay → Save → Clear Comms → Clear → Settings → Emotions
         # Story 14.2: Save inserted between Replay and Clear.
+        # Story 15.2: Clear Comms inserted between Save and Clear.
         QWidget.setTabOrder(self.text_input, self.quick_speak_button)
         QWidget.setTabOrder(self.quick_speak_button, self.generate_button)
         QWidget.setTabOrder(self.generate_button, self.replay_button)
         QWidget.setTabOrder(self.replay_button, self.save_button)
-        QWidget.setTabOrder(self.save_button, self.clear_button)
+        QWidget.setTabOrder(self.save_button, self.clear_comms_button)
+        QWidget.setTabOrder(self.clear_comms_button, self.clear_button)
         QWidget.setTabOrder(self.clear_button, self.settings_button)
 
         # Connect settings button to emotion buttons
@@ -1903,6 +1937,10 @@ class MainWindow(QMainWindow):
             return
         audio = self._session_registry.saveable_audio
         self.save_button.set_saveable(audio)
+        # Story 15.2: the Clear Comms button's "use last generation" branch
+        # gates on ``has_saveable``, so a saveable promotion or revert
+        # propagates to its enablement on the same tick as the Save button.
+        self._on_clear_comms_state_changed()
 
     def _on_save_clicked(self) -> None:
         """Click handler for the Save button (Story 14.2).
@@ -1914,6 +1952,81 @@ class MainWindow(QMainWindow):
         """
         self.save_requested.emit()
         self.logger.debug("Save button clicked; save_requested emitted")
+
+    # --- Story 15.2: Clear Comms button wiring ----------------------- #
+
+    def _on_clear_comms_button_clicked(self) -> None:
+        """Click handler for the Clear Comms button (Story 15.2).
+
+        Emits ``clear_comms_requested`` for ``MyVoiceApp`` to consume.
+        Emits unconditionally — ``QPushButton.click()`` honors the
+        button's enabled/disabled gate, so a disabled click cannot
+        reach this slot.
+        """
+        self.clear_comms_requested.emit()
+        self.logger.debug(
+            "Clear Comms button clicked; clear_comms_requested emitted"
+        )
+
+    def set_clear_comms_config_snapshot(
+        self,
+        *,
+        source_kind: str,
+        file_path: Optional[str],
+        file_path_valid: bool,
+        queue_mode: bool,
+    ) -> None:
+        """Cache the Clear Comms config and refresh button enablement.
+
+        Public API consumed by Story 15.3's settings panel: when the
+        user saves Clear Comms config, the panel calls this method
+        with the four scalar inputs the button needs. ``MainWindow``
+        does NOT itself probe the filesystem — the panel owns the
+        load test (using Story 15.1's loader); this method just
+        accepts the panel's verdict.
+
+        Story 15.2 also calls this from ``set_app_settings`` to seed
+        the snapshot from the persisted ``AppSettings`` on first
+        paint. The initial validity check uses a synchronous
+        ``Path.is_file()`` probe (not a soundfile open) — fast enough
+        for the click-driven path and correct because there is no
+        panel yet to drive a richer probe.
+        """
+        self._clear_comms_source_kind = source_kind
+        self._clear_comms_file_path = file_path
+        self._clear_comms_file_path_valid = file_path_valid
+        self._clear_comms_queue_mode = queue_mode
+        self._on_clear_comms_state_changed()
+
+    def _on_clear_comms_state_changed(self) -> None:
+        """Recompute and apply ClearCommsButton enablement.
+
+        Reads the cached Clear Comms config snapshot plus the
+        registry's ``saveable_session_id``; calls
+        ``ClearCommsButton.set_state`` with the four computed inputs
+        per AC #6.
+
+        Safe to call before ``app_settings`` or the registry are
+        wired — the cached defaults (``"last_generation"``, no file,
+        interrupt mode) and ``has_saveable=False`` produce the
+        disabled-no-saveable initial state, which matches the button's
+        own construction default.
+        """
+        if not hasattr(self, "clear_comms_button"):
+            # Defensive: this slot can be called via
+            # _on_saveable_session_changed during construction before
+            # _create_ui finishes wiring the button. Skip silently.
+            return
+        has_saveable = (
+            self._session_registry is not None
+            and self._session_registry.saveable_session_id is not None
+        )
+        self.clear_comms_button.set_state(
+            source_kind=self._clear_comms_source_kind,
+            has_saveable=has_saveable,
+            file_path_valid=self._clear_comms_file_path_valid,
+            queue_mode=self._clear_comms_queue_mode,
+        )
 
     def _redraw_tts_indicator_from_focal(self) -> None:
         """Project the registry's focal session onto the TTS indicator (Task 2.4).
@@ -2341,6 +2454,37 @@ class MainWindow(QMainWindow):
         # Story 7.3: Apply window transparency on startup (FR41)
         self.set_window_transparency(app_settings.window_transparency)
 
+        # Story 15.2: seed the Clear Comms button's enablement snapshot from
+        # the persisted AppSettings. The synchronous Path.is_file() probe is
+        # the v1 validity check per AC #6 (panel-driven richer probes will
+        # land in Story 15.3). On first launch the file path is None, so the
+        # validity check shortcuts to False and the button stays in its
+        # disabled-no-saveable / disabled-file-missing state until either a
+        # generation completes or the panel writes a valid file path.
+        # Review fix M1+M2: wrap is_file() in try/except OSError — on
+        # Windows, is_file() can raise on malformed/over-long/invalid-Unicode
+        # paths that survived a corrupt settings JSON, and we don't want app
+        # startup to crash because of it. Mirrors the loader's defensive
+        # stat probe in clear_comms_settings_panel.load_preloaded_audio_source.
+        cc_path = app_settings.clear_comms_file_path
+        if cc_path:
+            try:
+                cc_path_valid = Path(cc_path).is_file()
+            except OSError:
+                self.logger.warning(
+                    "Clear Comms file path is invalid at startup; treating as missing: %s",
+                    cc_path,
+                )
+                cc_path_valid = False
+        else:
+            cc_path_valid = False
+        self.set_clear_comms_config_snapshot(
+            source_kind=app_settings.clear_comms_source_kind,
+            file_path=cc_path,
+            file_path_valid=cc_path_valid,
+            queue_mode=app_settings.clear_comms_queue_mode,
+        )
+
     def set_always_on_top(self, always_on_top: bool):
         """
         Set the always-on-top behavior of the window.
@@ -2479,6 +2623,10 @@ class MainWindow(QMainWindow):
                 # Microphone monitor toggle signal
                 self.settings_dialog.mic_monitor_toggled.connect(
                     self.mic_monitor_toggled.emit
+                )
+                # Story 15.3: Clear Comms Test Playback signal forward.
+                self.settings_dialog.clear_comms_test_playback_requested.connect(
+                    self.clear_comms_test_playback_requested.emit
                 )
             else:
                 # Update with current settings
@@ -2628,6 +2776,33 @@ class MainWindow(QMainWindow):
         if self.settings_dialog:
             self.settings_dialog.current_settings = AppSettings.from_dict(new_settings.to_dict())
             self.settings_dialog._load_current_settings()
+
+        # Story 15.3 (AC #8): re-seed the Clear Comms snapshot from the new
+        # settings so the toolbar button's enablement and tooltip reflect
+        # the just-saved config in the same Qt event tick. Without this,
+        # persisted edits would only apply on next app restart
+        # (set_app_settings handles startup; this handles mid-session edits).
+        # Mirrors the seed block in set_app_settings; the OSError guard is
+        # the same defensive shape for malformed Windows paths.
+        cc_path = new_settings.clear_comms_file_path
+        if cc_path:
+            try:
+                cc_path_valid = Path(cc_path).is_file()
+            except OSError:
+                self.logger.warning(
+                    "Clear Comms file path is invalid after settings change; "
+                    "treating as missing: %s",
+                    cc_path,
+                )
+                cc_path_valid = False
+        else:
+            cc_path_valid = False
+        self.set_clear_comms_config_snapshot(
+            source_kind=new_settings.clear_comms_source_kind,
+            file_path=cc_path,
+            file_path_valid=cc_path_valid,
+            queue_mode=new_settings.clear_comms_queue_mode,
+        )
 
         self.logger.debug("Updated application settings")
 
