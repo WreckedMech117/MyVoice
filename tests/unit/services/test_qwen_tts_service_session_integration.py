@@ -42,6 +42,12 @@ ALLOWED_REGISTRY_ATTRS: frozenset = frozenset({
     # remains the rule for state mutations; request_cancel is a peer of
     # post_mutation, not a violation.
     "request_cancel",
+    # Story 16.6 — TRUE_STREAM dispatch path registers a per-session
+    # cancel hook so user-cancel flips ``streamer._cancel_event`` AND
+    # asks the audio coordinator to stop playback. Like ``request_cancel``,
+    # this is a side-effect dispatch (stores a callable in the registry's
+    # cancel-hook map), NOT a state-mutation slot.
+    "register_cancel_hook",
 })
 
 

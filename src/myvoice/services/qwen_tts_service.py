@@ -243,6 +243,15 @@ from myvoice.observability import metrics, MetricRecord
 # Story 11.4: Phase 1 D-20 — wire SessionRegistry into the generation flow.
 from myvoice.services.sessions.session_registry import SessionRegistry
 from myvoice.services.sessions.generation_session import SessionSource
+# Story 16.6: TRUE_STREAM dispatch + three-mode fallback chain (Phase ⊥).
+from myvoice.services.tts_streaming import (
+    StreamingMode,
+    effective_streaming_mode,
+    CodecTokenStreamer,
+    StreamingDecoderWorker,
+    END_OF_STREAM,
+)
+from myvoice.models.app_settings import AppSettings
 
 
 @dataclass
@@ -312,6 +321,10 @@ class QwenTTSResponse:
         mode: Generation mode used (batch or streaming)
         chunks_generated: Number of chunks generated (streaming mode)
         first_chunk_latency: Time to first audio chunk in seconds (streaming mode)
+        used_fallback: True if a lower-priority mode in the three-mode
+            fallback chain handled the request (Story 16.6). Independent of
+            ``success`` — a successful BATCH fallback after TRUE_STREAM
+            failed sets both ``success=True`` and ``used_fallback=True``.
     """
     success: bool = False
     audio_data: Optional[np.ndarray] = None
@@ -322,6 +335,7 @@ class QwenTTSResponse:
     mode: GenerationMode = GenerationMode.BATCH
     chunks_generated: int = 0
     first_chunk_latency: Optional[float] = None
+    used_fallback: bool = False
 
 
 class _FirstChunkLatencyAggregator:
@@ -505,6 +519,7 @@ class QwenTTSService(BaseService):
         quality_tier: str = "quality",
         *,
         session_registry: Optional[SessionRegistry] = None,
+        app_settings: Optional[AppSettings] = None,
     ):
         """
         Initialize the Qwen TTS service.
@@ -521,6 +536,11 @@ class QwenTTSService(BaseService):
                 lifecycle wiring. When None, the service runs the legacy
                 code path unchanged (registry-disabled fallback for tests
                 or environments where Qt isn't available).
+            app_settings: Optional AppSettings carrying user preferences. Story
+                16.6 reads ``streaming_mode_override`` from this object to
+                resolve the streaming mode at dispatch time. When None, the
+                resolver behaves as if the override is None (Auto: hardware
+                probe decides) per Story 16.2's contract.
         """
         super().__init__("QwenTTSService")
 
@@ -533,6 +553,11 @@ class QwenTTSService(BaseService):
         self._session_registry: Optional[SessionRegistry] = session_registry
         if self._session_registry is not None:
             self.logger.info("QwenTTSService using SessionRegistry")
+
+        # Story 16.6: AppSettings carries streaming_mode_override; consumed by
+        # _resolve_streaming_mode at dispatch entry. None means "Auto" (the
+        # hardware probe in default_streaming_mode_for_hardware decides).
+        self._app_settings: Optional[AppSettings] = app_settings
 
         # Story 16.5: tracked for cancel_generation's request_cancel call;
         # set after each create_session in the streaming/batch dispatch
@@ -1011,9 +1036,13 @@ class QwenTTSService(BaseService):
             streaming=streaming,
         )
 
-        if streaming:
-            return await self._generate_streaming(request)
-        return await self._generate(request)
+        # Story 16.6: route every public entry through the three-mode dispatch
+        # fork so the streaming-mode resolver + fallback chain are the single
+        # source of truth (D-9 / FR3 / NFR7). The dispatcher honors the legacy
+        # ``request.streaming=False`` override by forcing BATCH.
+        return await self._dispatch_by_streaming_mode(
+            request, self._resolve_streaming_mode()
+        )
 
     async def generate_voice_design(
         self,
@@ -1045,9 +1074,10 @@ class QwenTTSService(BaseService):
             streaming=streaming,
         )
 
-        if streaming:
-            return await self._generate_streaming(request)
-        return await self._generate(request)
+        # Story 16.6: route through the three-mode dispatch fork.
+        return await self._dispatch_by_streaming_mode(
+            request, self._resolve_streaming_mode()
+        )
 
     async def generate_voice_clone(
         self,
@@ -1085,9 +1115,10 @@ class QwenTTSService(BaseService):
             streaming=streaming,
         )
 
-        if streaming:
-            return await self._generate_streaming(request)
-        return await self._generate(request)
+        # Story 16.6: route through the three-mode dispatch fork.
+        return await self._dispatch_by_streaming_mode(
+            request, self._resolve_streaming_mode()
+        )
 
     async def generate_optimized_voice(
         self,
@@ -1140,9 +1171,10 @@ class QwenTTSService(BaseService):
 
         self.logger.info(f"Generating with optimized voice: {speaker_name} from {checkpoint_path}")
 
-        if streaming:
-            return await self._generate_streaming(request)
-        return await self._generate(request)
+        # Story 16.6: route through the three-mode dispatch fork.
+        return await self._dispatch_by_streaming_mode(
+            request, self._resolve_streaming_mode()
+        )
 
     async def create_voice_clone_prompt(
         self,
@@ -1570,10 +1602,10 @@ class QwenTTSService(BaseService):
 
         # Try generation with embedding, fall back to source_audio.wav on tier mismatch
         try:
-            if streaming:
-                response = await self._generate_streaming(request)
-            else:
-                response = await self._generate(request)
+            # Story 16.6: route through the three-mode dispatch fork.
+            response = await self._dispatch_by_streaming_mode(
+                request, self._resolve_streaming_mode()
+            )
 
             # Check if generation failed due to embedding dimension mismatch
             if not response.success and self._is_embedding_tier_mismatch_error(response.error_message):
@@ -2435,6 +2467,647 @@ class QwenTTSService(BaseService):
             return [text.strip()]
 
         return chunks
+
+    def _build_true_stream_decode_fn(
+        self, model: Any
+    ) -> Callable[[List[int]], np.ndarray]:
+        """Story 16.6 Task 3 — adapter wrapping ``model.speech_tokenizer.decode``.
+
+        Returned callable conforms to ``StreamingDecoderWorker``'s P-6
+        ``Callable[[list[int]], np.ndarray]`` contract: input is the chunk's
+        codec token ids, output is a float32 PCM sample array.
+
+        Best-effort wrapper. Story 16.7's empirical-validation harness
+        verifies this against real model output and tightens conversion if
+        perceptual seams or amplitude issues surface. The import-attribute
+        trip-wire at ``tests/test_qwen_tts_internals.py`` covers the
+        ``Qwen3TTSTokenizerV1Model.decode`` symbol; if upstream renames it,
+        the trip-wire fails before this adapter compiles in production.
+        """
+        def _decode(chunk_tokens: List[int]) -> np.ndarray:
+            import torch as _torch  # lazy to keep test environments without
+            # CUDA-bound torch DLLs viable
+            codes = _torch.tensor(chunk_tokens, dtype=_torch.long).unsqueeze(0)
+            result = model.speech_tokenizer.decode(codes)
+            audio = result[0] if isinstance(result, tuple) else result
+            if hasattr(audio, "detach"):
+                audio = audio.detach().cpu().numpy()
+            return np.asarray(audio, dtype=np.float32).flatten()
+        return _decode
+
+    def _build_true_stream_talker(
+        self,
+        model: Any,
+        request: "QwenTTSRequest",
+        streamer: CodecTokenStreamer,
+    ) -> Callable[[], None]:
+        """Story 16.6 Task 3 — talker callable for the TRUE_STREAM thread.
+
+        Returned 0-arg callable runs ``model.model.generate(streamer=...)``
+        — the blocking GPU call that releases the GIL but does not yield to
+        asyncio. The caller spawns a ``threading.Thread`` around it. On any
+        exception (including upstream qwen-tts internals raising), the
+        callable sets ``streamer._cancel_event`` and calls ``streamer.end()``
+        so the worker exits cleanly via END_OF_STREAM rather than blocking
+        forever on ``queue.get()``.
+
+        Tests patch this method to return a controlled function that feeds
+        tokens at chosen cadence; production wiring is bounded by the
+        Story 16.1 trip-wire and exercised end-to-end by Story 16.7.
+        """
+        def _run_talker() -> None:
+            try:
+                # Best-effort wire-up — Story 16.7 validates kwargs against
+                # real qwen-tts and refines.
+                model.model.generate(streamer=streamer)
+                streamer.end()
+            except Exception as exc:
+                self.logger.exception(
+                    f"[QwenTTS] TRUE_STREAM talker error: {exc}"
+                )
+                streamer._cancel_event.set()
+                try:
+                    streamer.end()
+                except Exception:  # pragma: no cover (defensive)
+                    pass
+        return _run_talker
+
+    async def _generate_true_stream(
+        self, request: "QwenTTSRequest"
+    ) -> "QwenTTSResponse":
+        """Story 16.6 Task 3 — TRUE_STREAM dispatch path (P-5/P-6/P-7/P-8/D-9).
+
+        Composes Stories 16.1–16.5's surfaces into the production TRUE_STREAM
+        dispatch:
+
+        - 16.2 ``effective_streaming_mode`` determined this path was reached
+        - 16.3 ``CodecTokenStreamer`` is the producer plug-compatible with
+          HF's ``BaseStreamer``; the talker thread runs
+          ``model.model.generate(streamer=streamer)``
+        - 16.4 ``StreamingDecoderWorker`` is the consumer; it pulls from the
+          streamer's queue, decodes via ``decode_fn``, and posts
+          ``('append_chunk', sid, pcm)`` and ``('finalize', sid)`` to the
+          registry through the ``post_mutation`` callable
+        - 16.5 ``register_cancel_hook`` + ``request_cancel`` flip
+          ``streamer._cancel_event`` AND call
+          ``audio_coordinator.cancel_playback(sid)`` on user-cancel; the
+          worker's drain-on-cancel posts the canonical ``('cancel', sid)``
+
+        Per P-7, this method's ``asyncio.CancelledError`` handler must NOT
+        post ``('cancel', sid)`` itself — the worker is the canonical source
+        of the CANCELLED transition, and a double-post would violate Story
+        16.5 AC #1's "exactly one cancel post" assertion.
+        """
+        self._total_requests += 1
+        self._streaming_requests += 1
+        start_time = time.time()
+        first_chunk_time: Optional[float] = None
+        self._cancel_requested = False
+        self._generation_state = GenerationState.IDLE
+
+        accumulated_chunks: List[np.ndarray] = []
+        sample_rate = 24000
+        chunk_count_box: List[int] = [0]
+
+        sid: Optional[str] = None
+        streamer: Optional[CodecTokenStreamer] = None
+        worker: Optional[StreamingDecoderWorker] = None
+        talker_thread: Optional[threading.Thread] = None
+
+        if self._session_registry is not None:
+            sid = self._session_registry.create_session(
+                text=request.text,
+                voice=self._resolve_voice_label(request),
+                model_type=self._resolve_model_type_label(request),
+                source=SessionSource.GENERATED,
+            )
+            # Story 16.5: publish the active session id so cancel_generation
+            # can request_cancel(sid) -> hook -> streamer._cancel_event.set().
+            self._current_session_id = sid
+
+        self._current_generation_task = asyncio.current_task()
+
+        try:
+            # Validate text input (FR5).
+            validation = self.validate_text(request.text)
+            if not validation.can_proceed:
+                self._failed_requests += 1
+                error_code = (
+                    TTSErrorCode.EMPTY_TEXT
+                    if validation.status in (
+                        TextValidationStatus.EMPTY,
+                        TextValidationStatus.WHITESPACE_ONLY,
+                    )
+                    else TTSErrorCode.TEXT_TOO_LONG
+                )
+                tts_error = TTSError(
+                    code=error_code,
+                    user_message=validation.message or "Invalid text input.",
+                    recovery_suggestion=(
+                        "Enter text to speak."
+                        if error_code == TTSErrorCode.EMPTY_TEXT
+                        else "Try with shorter text."
+                    ),
+                    is_recoverable=True,
+                )
+                self._last_error = tts_error
+                if sid is not None and self._session_registry is not None:
+                    self._session_registry.post_mutation('set_error', sid)
+                    self._session_registry.post_mutation('discard', sid)
+                return QwenTTSResponse(
+                    success=False,
+                    error_message=str(tts_error),
+                    mode=GenerationMode.STREAMING,
+                )
+
+            if validation.warning:
+                self.logger.warning(
+                    f"Text validation warning: {validation.warning}"
+                )
+
+            if not self.is_running():
+                self._failed_requests += 1
+                tts_error = TTSError(
+                    code=TTSErrorCode.SERVICE_NOT_RUNNING,
+                    user_message="TTS service is not running.",
+                    recovery_suggestion="Please wait for the service to start.",
+                    is_recoverable=True,
+                )
+                self._last_error = tts_error
+                if sid is not None and self._session_registry is not None:
+                    self._session_registry.post_mutation('set_error', sid)
+                    self._session_registry.post_mutation('discard', sid)
+                return QwenTTSResponse(
+                    success=False,
+                    error_message=str(tts_error),
+                    mode=GenerationMode.STREAMING,
+                )
+
+            self.logger.info(
+                f"Starting TTS generation (TRUE_STREAM): "
+                f"model={request.model_type.display_name}, "
+                f"text='{request.text[:50]}...'"
+            )
+
+            # Per AC #10: the model-load + streamer-construction critical
+            # section is guarded by the existing semaphore so concurrent
+                # TRUE_STREAM dispatches serialize.
+            async with self._request_semaphore:
+                self._generation_state = GenerationState.LOADING_MODEL
+
+                if self._model_loading_callback:
+                    self._model_loading_callback(
+                        f"Loading {request.model_type.display_name}..."
+                    )
+
+                success, error = await self._model_registry.ensure_model_loaded(
+                    request.model_type,
+                    checkpoint_path=(
+                        str(request.checkpoint_path)
+                        if request.checkpoint_path
+                        else None
+                    ),
+                )
+                if not success:
+                    self._failed_requests += 1
+                    self._generation_state = GenerationState.ERROR
+                    if sid is not None and self._session_registry is not None:
+                        self._session_registry.post_mutation('set_error', sid)
+                        self._session_registry.post_mutation('discard', sid)
+                    if self._generation_failed_callback:
+                        self._generation_failed_callback(
+                            f"Failed to load model: {error}"
+                        )
+                    return QwenTTSResponse(
+                        success=False,
+                        error_message=f"Failed to load model: {error}",
+                        mode=GenerationMode.STREAMING,
+                    )
+
+                if self._model_ready_callback:
+                    self._model_ready_callback(request.model_type.display_name)
+
+                self._generation_state = GenerationState.STREAMING
+                if sid is not None and self._session_registry is not None:
+                    self._session_registry.post_mutation('start_generation', sid)
+                if self._generation_started_callback:
+                    self._generation_started_callback()
+
+                # Build streamer + worker pair (Story 16.3 + 16.4).
+                streamer = CodecTokenStreamer()
+                model = self._model_registry.get_loaded_model()
+                decode_fn = self._build_true_stream_decode_fn(model)
+
+                hardware_label = (
+                    "gpu"
+                    if "cuda" in str(self._model_registry.device).lower()
+                    else "cpu"
+                )
+
+                # Wrap the registry's post_mutation so the dispatch path can
+                # observe append_chunk / finalize timing without a separate
+                # subscription. The registry still receives every call.
+                registry_post = (
+                    self._session_registry.post_mutation
+                    if self._session_registry is not None
+                    else None
+                )
+
+                def _wrapped_post(*args: Any, **kwargs: Any) -> None:
+                    if registry_post is not None:
+                        registry_post(*args, **kwargs)
+                    if args and args[0] == 'append_chunk' and len(args) >= 3:
+                        nonlocal first_chunk_time
+                        if first_chunk_time is None:
+                            first_chunk_time = time.time() - start_time
+                        accumulated_chunks.append(np.asarray(args[2]))
+                        chunk_count_box[0] += 1
+
+                worker = StreamingDecoderWorker(
+                    streamer=streamer,
+                    decode_fn=decode_fn,
+                    post_mutation=_wrapped_post,
+                    session_id=sid or "no-registry",
+                    model_type=self._resolve_model_type_label(request),
+                    hardware=hardware_label,
+                )
+
+                # Story 16.5: register the cancel hook BEFORE starting the
+                # threads so a cancel that arrives during spawn fires.
+                event_loop = asyncio.get_event_loop()
+                hook_session_id = sid
+
+                def _cancel_hook() -> None:
+                    if streamer is not None:
+                        streamer._cancel_event.set()
+                    if (
+                        self.audio_coordinator is not None
+                        and hook_session_id is not None
+                    ):
+                        try:
+                            asyncio.run_coroutine_threadsafe(
+                                self.audio_coordinator.cancel_playback(
+                                    hook_session_id
+                                ),
+                                event_loop,
+                            )
+                        except RuntimeError:
+                            # Event loop may be closed if cancel arrives
+                            # extremely late; ignore.
+                            pass
+
+                if self._session_registry is not None and sid is not None:
+                    self._session_registry.register_cancel_hook(
+                        sid, _cancel_hook
+                    )
+
+                # Spawn talker + start worker.
+                talker_fn = self._build_true_stream_talker(
+                    model, request, streamer
+                )
+                talker_thread = threading.Thread(
+                    target=talker_fn,
+                    name=f"TrueStreamTalker-{(sid or 'no-sid')[:8]}",
+                    daemon=True,
+                )
+                worker.start()
+                talker_thread.start()
+
+                # Wait for the first chunk to land (P-8 streaming exception).
+                # The dispatcher polls the locally-tracked first_chunk_time
+                # rather than subscribing to a Qt signal — keeps the dispatch
+                # path Qt-independent. Wallclock-based polling so the timeout
+                # is meaningful regardless of asyncio.sleep granularity.
+                first_chunk_timeout_s = 30.0
+                poll_s = 0.005
+                first_chunk_deadline = time.perf_counter() + first_chunk_timeout_s
+                while (
+                    first_chunk_time is None
+                    and time.perf_counter() < first_chunk_deadline
+                ):
+                    if self._cancel_requested:
+                        break
+                    if not worker.is_alive() and not talker_thread.is_alive():
+                        break
+                    await asyncio.sleep(poll_s)
+
+                # Kick playback once the first chunk is in. P-8 streaming
+                # exception: session is in GENERATING when play_dual_stream
+                # is called; mark_playing/mark_audible posts run from the
+                # coordinator's existing flow.
+                if (
+                    accumulated_chunks
+                    and self.audio_coordinator is not None
+                    and sid is not None
+                    and not self._cancel_requested
+                ):
+                    initial_audio = (
+                        accumulated_chunks[0]
+                        if len(accumulated_chunks) == 1
+                        else np.concatenate(accumulated_chunks)
+                    )
+                    try:
+                        await self.audio_coordinator.play_dual_stream(
+                            audio_data=initial_audio,
+                            session_id=sid,
+                        )
+                    except Exception as play_err:
+                        # Playback dispatch failed; treat as a structural
+                        # failure so the dispatcher falls back.
+                        self.logger.exception(
+                            f"[QwenTTS] play_dual_stream failed: {play_err}"
+                        )
+                        raise
+
+                # Wait for the worker + talker to finish. Wallclock-based
+                # deadline so asyncio.sleep granularity (~15ms on Windows)
+                # doesn't blow past a nominal short timeout.
+                join_timeout_s = 60.0
+                join_poll_s = 0.01
+                join_deadline = time.perf_counter() + join_timeout_s
+                while (
+                    (worker.is_alive() or talker_thread.is_alive())
+                    and time.perf_counter() < join_deadline
+                ):
+                    if self._cancel_requested:
+                        break
+                    await asyncio.sleep(join_poll_s)
+
+                if worker.is_alive() or talker_thread.is_alive():
+                    raise RuntimeError(
+                        "TRUE_STREAM talker/worker did not complete within "
+                        f"{join_timeout_s}s"
+                    )
+
+            # Build the complete audio array from accumulated chunks.
+            if accumulated_chunks:
+                complete_audio = np.concatenate(accumulated_chunks)
+            else:
+                complete_audio = np.array([], dtype=np.float32)
+            accumulated_chunks.clear()
+
+            audio_file = self._save_audio_to_cache(complete_audio, sample_rate)
+
+            generation_time = time.time() - start_time
+            self._successful_requests += 1
+            self._last_generation_time = generation_time
+            self._generation_state = GenerationState.COMPLETE
+
+            if first_chunk_time is not None:
+                metrics.record(
+                    "first_chunk_latency_ms",
+                    first_chunk_time * 1000.0,
+                    session_id=sid,
+                    model_type=(
+                        request.model_type.display_name
+                        if request.model_type is not None
+                        else "default"
+                    ),
+                    hardware=hardware_label,
+                )
+
+            self.logger.info(
+                f"TTS generation complete (TRUE_STREAM): "
+                f"{len(complete_audio)} samples, "
+                f"{chunk_count_box[0]} chunks, "
+                f"{generation_time:.2f}s total, "
+                f"{first_chunk_time:.2f}s first chunk"
+                if first_chunk_time is not None
+                else (
+                    f"TTS generation complete (TRUE_STREAM): "
+                    f"{len(complete_audio)} samples, "
+                    f"{chunk_count_box[0]} chunks, "
+                    f"{generation_time:.2f}s total"
+                )
+            )
+
+            if self._generation_complete_callback and audio_file:
+                self._generation_complete_callback(audio_file)
+
+            return QwenTTSResponse(
+                success=True,
+                audio_data=complete_audio,
+                sample_rate=sample_rate,
+                audio_file_path=audio_file,
+                generation_time_seconds=generation_time,
+                mode=GenerationMode.STREAMING,
+                chunks_generated=chunk_count_box[0],
+                first_chunk_latency=first_chunk_time,
+            )
+
+        except asyncio.CancelledError:
+            self.logger.info("TRUE_STREAM generation cancelled")
+            self._generation_state = GenerationState.CANCELLED
+            # P-7 invariant: do NOT post ('cancel', sid) here. The worker's
+            # drain-on-cancel posts the canonical CANCELLED transition.
+            if streamer is not None:
+                streamer._cancel_event.set()
+                try:
+                    streamer.end()
+                except Exception:  # pragma: no cover (defensive)
+                    pass
+            if worker is not None and worker.is_alive():
+                worker.join(timeout=2.0)
+            if talker_thread is not None and talker_thread.is_alive():
+                talker_thread.join(timeout=2.0)
+            if self._generation_cancelled_callback:
+                self._generation_cancelled_callback()
+            return QwenTTSResponse(
+                success=False,
+                error_message="Generation was cancelled",
+                mode=GenerationMode.STREAMING,
+                chunks_generated=chunk_count_box[0],
+            )
+
+        except Exception:
+            self.logger.exception("[QwenTTS] TRUE_STREAM dispatch failed")
+            if streamer is not None:
+                streamer._cancel_event.set()
+                try:
+                    streamer.end()
+                except Exception:  # pragma: no cover
+                    pass
+            if worker is not None and worker.is_alive():
+                worker.join(timeout=2.0)
+            if talker_thread is not None and talker_thread.is_alive():
+                talker_thread.join(timeout=2.0)
+            if sid is not None and self._session_registry is not None:
+                self._session_registry.post_mutation('set_error', sid)
+                self._session_registry.post_mutation('discard', sid)
+            # Surface to the dispatcher's fallback chain. NOT
+            # asyncio.CancelledError (handled above).
+            raise
+
+        finally:
+            self._current_generation_task = None
+            self._current_session_id = None
+
+    @staticmethod
+    def _fallback_chain_from(mode: StreamingMode) -> List[StreamingMode]:
+        """Story 16.6 — order of modes to attempt starting from ``mode``.
+
+        TRUE_STREAM caps the chain at all three modes; SENTENCE_STREAM caps
+        at two; BATCH has no further fallback. The chain is the
+        single-source-of-truth for FR3 + NFR7 graceful-degradation order;
+        do NOT reimplement this fork in callers.
+        """
+        if mode == StreamingMode.TRUE_STREAM:
+            return [
+                StreamingMode.TRUE_STREAM,
+                StreamingMode.SENTENCE_STREAM,
+                StreamingMode.BATCH,
+            ]
+        if mode == StreamingMode.SENTENCE_STREAM:
+            return [StreamingMode.SENTENCE_STREAM, StreamingMode.BATCH]
+        return [StreamingMode.BATCH]
+
+    async def _dispatch_by_streaming_mode(
+        self,
+        request: QwenTTSRequest,
+        mode: StreamingMode,
+    ) -> QwenTTSResponse:
+        """Story 16.6 Task 2 — three-mode fallback dispatch.
+
+        Forks on the resolved mode, calls one of three private generators
+        (_generate_true_stream / _generate_streaming / _generate), catches
+        every non-CancelledError exception, emits a
+        ``streaming_mode_fallback`` metric, and recurses into the next-lower
+        mode in the chain. On all-three-modes-failed, returns a synthetic
+        ``QwenTTSResponse(success=False, used_fallback=True,
+        mode=BATCH, error_message=<all three>)``.
+
+        Honors the legacy ``request.streaming=False`` override per AC #8 —
+        a caller that explicitly disabled streaming gets the BATCH path
+        regardless of the resolver's pick.
+
+        Per-dispatch-entry ``streaming_mode`` metric (D-19 / P-9) fires once
+        per attempt — including each fallback attempt — so Story 16.7's
+        empirical-validation harness can correlate fallback rates with
+        hardware/model-type tags.
+        """
+        # AC #8 second clause: legacy override forces BATCH.
+        if request.streaming is False:
+            mode = StreamingMode.BATCH
+
+        chain = self._fallback_chain_from(mode)
+        # Defensive ``getattr`` against ``QwenTTSService.__new__`` callers
+        # — partial-init test fixtures bypass ``__init__`` and may not set
+        # all instance attributes.
+        model_registry = getattr(self, "_model_registry", None)
+        hardware = (
+            "gpu"
+            if model_registry is not None
+            and "cuda" in str(getattr(model_registry, "device", "")).lower()
+            else "cpu"
+        )
+        model_type = (
+            request.model_type.display_name
+            if request.model_type is not None
+            else "default"
+        )
+
+        failures: List[Tuple[StreamingMode, BaseException]] = []
+
+        for i, current_mode in enumerate(chain):
+            # Per-dispatch-entry metric (D-19 / P-9). session_id is the
+            # currently-active session if a generator has set it; for the
+            # initial call before any generator runs it's None.
+            metrics.record(
+                "streaming_mode",
+                current_mode.value,
+                session_id=getattr(self, "_current_session_id", None),
+                model_type=model_type,
+                hardware=hardware,
+            )
+            try:
+                if current_mode == StreamingMode.TRUE_STREAM:
+                    response = await self._generate_true_stream(request)
+                elif current_mode == StreamingMode.SENTENCE_STREAM:
+                    response = await self._generate_streaming(request)
+                else:  # BATCH
+                    response = await self._generate(request)
+                return response
+            except asyncio.CancelledError:
+                # User cancel — not a fallback trigger. Propagate.
+                raise
+            except Exception as exc:  # pragma: no cover (fallback paths covered)
+                failures.append((current_mode, exc))
+                reason = repr(exc)
+                if len(reason) > 200:
+                    reason = reason[:200]
+                if i + 1 < len(chain):
+                    next_mode = chain[i + 1]
+                    # ``getattr`` defensive against partial-init instances.
+                    self._fallback_count = (
+                        getattr(self, "_fallback_count", 0) + 1
+                    )
+                    metrics.record(
+                        "streaming_mode_fallback",
+                        next_mode.value,
+                        session_id=getattr(self, "_current_session_id", None),
+                        from_mode=current_mode.value,
+                        reason=reason,
+                        model_type=model_type,
+                        hardware=hardware,
+                    )
+                else:
+                    # Terminal failure — emit "unrecoverable" but do NOT
+                    # increment _fallback_count (no successful transition).
+                    metrics.record(
+                        "streaming_mode_fallback",
+                        "unrecoverable",
+                        session_id=getattr(self, "_current_session_id", None),
+                        from_mode=current_mode.value,
+                        reason=reason,
+                        model_type=model_type,
+                        hardware=hardware,
+                    )
+
+        # All modes failed — synthesize unrecoverable response.
+        self._failed_requests = getattr(self, "_failed_requests", 0) + 1
+        error_lines = "; ".join(f"{m.value}: {e}" for m, e in failures)
+        return QwenTTSResponse(
+            success=False,
+            error_message=f"All streaming modes failed: {error_lines}",
+            # AC #2: response's mode reflects the LAST mode attempted.
+            mode=GenerationMode.BATCH,
+            used_fallback=True,
+        )
+
+    def _resolve_streaming_mode(self) -> StreamingMode:
+        """Story 16.6 Task 1 — resolve the streaming mode for the next dispatch.
+
+        Pure function of ``self._app_settings.streaming_mode_override`` and
+        ``torch.cuda.is_available()``. No side effects, no metric emission, no
+        registry mutation — Story 16.7's empirical-validation harness calls
+        this repeatedly without polluting metrics. The per-mode
+        ``streaming_mode`` metric (D-19 / P-9) fires from
+        ``_dispatch_by_streaming_mode`` after this resolver returns.
+
+        Reads the optional string field, converts it via
+        ``StreamingMode(value)`` (raising ``ValueError`` on bad data so any
+        ``AppSettings.from_dict`` regression surfaces loudly), and delegates
+        to Story 16.2's ``effective_streaming_mode`` so this method remains a
+        thin shim — the two surfaces stay aligned.
+
+        Returns the resolved mode. Hardware probe (CUDA -> TRUE_STREAM, else
+        SENTENCE_STREAM, NFR12 protection) only runs when the override is
+        ``None``.
+        """
+        # ``getattr`` defensive against ``QwenTTSService.__new__`` callers
+        # (existing test fixtures construct partial instances that bypass
+        # ``__init__``); when neither AppSettings nor the attribute exist,
+        # the resolver behaves as if override is None (Auto).
+        app_settings = getattr(self, "_app_settings", None)
+        override_str: Optional[str] = (
+            app_settings.streaming_mode_override
+            if app_settings is not None
+            else None
+        )
+        override: Optional[StreamingMode] = (
+            StreamingMode(override_str) if override_str is not None else None
+        )
+        return effective_streaming_mode(override)
 
     async def cancel_generation(self) -> bool:
         """

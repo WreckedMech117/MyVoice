@@ -354,6 +354,11 @@ class TestGenerateOptimizedVoice:
             service.logger = Mock()
             service._total_requests = 0
             service._failed_requests = 0
+            # Story 16.6 — partial-init service needs the dispatcher fields.
+            service._app_settings = None
+            service._current_session_id = None
+            service._fallback_count = 0
+            service._session_registry = None
             service.EMOTION_PRESETS = {
                 'neutral': None,
                 'happy': 'Speak with joy and enthusiasm',
