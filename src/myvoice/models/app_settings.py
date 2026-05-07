@@ -100,6 +100,13 @@ class AppSettings:
     clear_comms_file_path: Optional[str] = None        # Absolute path to WAV; None until configured
     clear_comms_queue_mode: bool = False               # False = interrupt (D-18 default), True = queue
 
+    # Streaming mode override (Story 16.2 / D-9). When None, the runtime
+    # uses default_streaming_mode_for_hardware(). Allowed non-None values:
+    # "batch", "sentence_stream", "true_stream". Settings UI for setting
+    # this lands in Story 16.6; until then, the override is data-only
+    # (hand-edit settings.json or set programmatically for testing).
+    streaming_mode_override: Optional[str] = None
+
     # Advanced settings
     advanced_settings: Dict[str, Any] = field(default_factory=dict)
 
@@ -358,6 +365,29 @@ class AppSettings:
                 ))
                 self.clear_comms_source_kind = "last_generation"
 
+            # Validate streaming mode override (Story 16.2 / D-9).
+            # None means "no override; use hardware probe". Any non-None value
+            # must match one of the three StreamingMode enum string values.
+            # Mirrors the warn-and-fallback pattern of clear_comms_source_kind:
+            # bad data does not silently force a mode change; it falls back to
+            # None (= probe-default) and surfaces a WARNING in the validator
+            # output stream that __post_init__ logs.
+            if self.streaming_mode_override is not None:
+                valid_streaming_modes = ["batch", "sentence_stream", "true_stream"]
+                if self.streaming_mode_override not in valid_streaming_modes:
+                    warnings.append(ValidationIssue(
+                        field="streaming_mode_override",
+                        message=(
+                            f"Unknown streaming mode override "
+                            f"'{self.streaming_mode_override}', defaulting to "
+                            f"None (hardware probe). Allowed values: "
+                            f"{', '.join(valid_streaming_modes)}."
+                        ),
+                        code="UNKNOWN_STREAMING_MODE_OVERRIDE",
+                        severity=ValidationStatus.WARNING
+                    ))
+                    self.streaming_mode_override = None
+
             # Validate TTS service URL
             if not self.tts_service_url or not self.tts_service_url.strip():
                 issues.append(ValidationIssue(
@@ -494,6 +524,7 @@ class AppSettings:
                 "clear_comms_source_kind": self.clear_comms_source_kind,
                 "clear_comms_file_path": self.clear_comms_file_path,
                 "clear_comms_queue_mode": self.clear_comms_queue_mode,
+                "streaming_mode_override": self.streaming_mode_override,
                 "advanced_settings": self.advanced_settings.copy(),
                 "training_enabled": self.training_enabled,
                 "training_workspace_directory": self.training_workspace_directory,
@@ -559,6 +590,7 @@ class AppSettings:
                 clear_comms_source_kind=data.get("clear_comms_source_kind", "last_generation"),
                 clear_comms_file_path=data.get("clear_comms_file_path"),
                 clear_comms_queue_mode=data.get("clear_comms_queue_mode", False),
+                streaming_mode_override=data.get("streaming_mode_override"),
                 advanced_settings=data.get("advanced_settings", {}),
                 training_enabled=data.get("training_enabled", True),
                 training_workspace_directory=data.get("training_workspace_directory", "training_workspace"),
@@ -674,6 +706,7 @@ class AppSettings:
             "mic_input_device_host_api", "mic_volume",
             "clear_comms_source_kind", "clear_comms_file_path",
             "clear_comms_queue_mode",
+            "streaming_mode_override",
             "advanced_settings",
             "training_enabled", "training_workspace_directory",
             "custom_emotion_text", "custom_emotion_presets"
