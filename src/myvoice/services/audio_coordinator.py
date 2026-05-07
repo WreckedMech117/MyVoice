@@ -188,6 +188,12 @@ class AudioCoordinator(BaseService):
         # Coordination tracking
         self._active_coordinations: Dict[str, DualStreamResult] = {}
         self._coordination_counter = 0
+        # Story 16.5: per-session reverse map populated at play_dual_stream
+        # entry and cleaned on completion (success or failure). Lets the
+        # registry's cancel-chain hook target a specific session's playback
+        # via cancel_playback(session_id) instead of the global
+        # stop_all_playback() fan-out.
+        self._session_id_to_coordination_id: Dict[str, str] = {}
 
         # Service health tracking
         self._last_health_check: Optional[datetime] = None
@@ -505,6 +511,12 @@ class AudioCoordinator(BaseService):
 
         self.logger.info(f"Starting coordinated dual-stream playback {coordination_id}")
 
+        # Story 16.5: register session_id → coordination_id so the registry's
+        # cancel-chain hook can target this playback via cancel_playback(sid).
+        # The map is cleaned in every completion path below.
+        if session_id is not None:
+            self._session_id_to_coordination_id[session_id] = coordination_id
+
         mark_playing_posted = False
         try:
             # Start both services in parallel
@@ -523,6 +535,11 @@ class AudioCoordinator(BaseService):
                 tasks.append(("virtual", virtual_task))
 
             if not tasks:
+                # Story 16.5: clean the session→coordination map on the
+                # no-healthy-services bail-out so the registry's stale-cancel
+                # path returns False instead of fanning out to a dead session.
+                if session_id is not None:
+                    self._session_id_to_coordination_id.pop(session_id, None)
                 return DualStreamResult(
                     monitor_task=None,
                     virtual_task=None,
@@ -599,6 +616,13 @@ class AudioCoordinator(BaseService):
                 success_msg.append("virtual")
 
             self.logger.info(f"Coordinated playback {coordination_id} started: {', '.join(success_msg)}")
+            # Story 16.5: do NOT clear the session→coordination map on the
+            # success path. The MonitorPlaybackTask + VirtualPlaybackTask
+            # returned here continue playback in the background after this
+            # method returns; the map must remain populated so a mid-
+            # playback cancel_playback(session_id) can fan out to the active
+            # monitor + virtual services. The map entry is cleared by
+            # cancel_playback (the cancel path) per AC #4.
             return dual_result
 
         except Exception as e:
@@ -609,6 +633,10 @@ class AudioCoordinator(BaseService):
             if mark_playing_posted:
                 self._session_registry.post_mutation('set_error', session_id)
                 self._session_registry.post_mutation('discard', session_id)
+            # Story 16.5: failure-path cleanup — keep the map free of dead
+            # entries so cancel_playback returns False cleanly post-failure.
+            if session_id is not None:
+                self._session_id_to_coordination_id.pop(session_id, None)
             return DualStreamResult(
                 monitor_task=None,
                 virtual_task=None,
@@ -743,6 +771,43 @@ class AudioCoordinator(BaseService):
         except Exception as exc:
             self.logger.error(f"stop_all_playback failed: {exc}")
             return total
+
+    async def cancel_playback(self, session_id: str) -> bool:
+        """Story 16.5 — stop monitor + virtual-mic playback for a specific
+        session. Per validation gap #3 step (i): the registry calls this
+        from request_cancel's hook to stop active playback gracefully when
+        a streaming session is cancelled mid-playback.
+
+        For v1 (P-8 session-level serialization — only one session is
+        audible at a time), this is approximately stop_all_playback()
+        gated on the session_id being in the active map. A stale cancel
+        for an already-completed session is a quiet False return.
+
+        Returns:
+            bool: True if a stop was actually attempted; False if the
+            session was unknown / already finished.
+        """
+        coordination_id = self._session_id_to_coordination_id.pop(session_id, None)
+        if coordination_id is None:
+            return False
+        attempted = False
+        if self.monitor_service is not None:
+            try:
+                await self.monitor_service.stop_all_playback()
+                attempted = True
+            except Exception as exc:
+                self.logger.error(
+                    f"cancel_playback({session_id}): monitor stop failed: {exc}"
+                )
+        if self.virtual_service is not None:
+            try:
+                await self.virtual_service.stop_all_virtual_microphone_playback()
+                attempted = True
+            except Exception as exc:
+                self.logger.error(
+                    f"cancel_playback({session_id}): virtual stop failed: {exc}"
+                )
+        return attempted
 
     async def enumerate_all_devices(self) -> Dict[str, List[AudioDevice]]:
         """Enumerate devices from all services."""

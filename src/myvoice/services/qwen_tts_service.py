@@ -534,6 +534,12 @@ class QwenTTSService(BaseService):
         if self._session_registry is not None:
             self.logger.info("QwenTTSService using SessionRegistry")
 
+        # Story 16.5: tracked for cancel_generation's request_cancel call;
+        # set after each create_session in the streaming/batch dispatch
+        # forks and cleared on every terminal discard post. None when no
+        # generation is in flight or when no registry is wired.
+        self._current_session_id: Optional[str] = None
+
         # Model registry for lazy loading
         self._model_registry = ModelRegistry(
             device=device,
@@ -1791,6 +1797,9 @@ class QwenTTSService(BaseService):
                 model_type=self._resolve_model_type_label(request),
                 source=SessionSource.GENERATED,
             )
+            # Story 16.5: publish the active session id so cancel_generation
+            # can request_cancel(sid). Cleared in the outer finally below.
+            self._current_session_id = sid
 
         # Story 11.4 review fix (F1): publish the running asyncio task so
         # cancel_generation() can call task.cancel() — the only mechanism
@@ -1977,6 +1986,12 @@ class QwenTTSService(BaseService):
             # task. Set unconditionally — applies to every return path
             # above, including handler returns.
             self._current_generation_task = None
+            # Story 16.5: drop the session id alongside the task so a later
+            # cancel_generation() finds no in-flight session and the new
+            # request_cancel call short-circuits to a quiet no-op. The
+            # registry has already cleared the cancel hook via its own
+            # terminal-state cleanup (cancel/discard slots).
+            self._current_session_id = None
 
     async def _generate_streaming(self, request: QwenTTSRequest) -> QwenTTSResponse:
         """
@@ -2015,6 +2030,9 @@ class QwenTTSService(BaseService):
                 model_type=self._resolve_model_type_label(request),
                 source=SessionSource.GENERATED,
             )
+            # Story 16.5: publish the active session id so cancel_generation
+            # can request_cancel(sid). Cleared in the outer finally below.
+            self._current_session_id = sid
 
         # Story 11.4 review fix (F1): publish the running asyncio task so
         # cancel_generation() can call task.cancel(). Streaming has the
@@ -2364,6 +2382,11 @@ class QwenTTSService(BaseService):
             # task. The recursive batch-fallback _generate() also sets and
             # clears this field, but the outer clear is idempotent.
             self._current_generation_task = None
+            # Story 16.5: drop the session id alongside the task. Recursive
+            # batch-fallback _generate() set its own _current_session_id (a
+            # different sid for the fallback session) and cleared it in its
+            # own finally; the outer clear here covers the streaming sid.
+            self._current_session_id = None
 
     def _split_text_for_streaming(self, text: str) -> List[str]:
         """
@@ -2440,6 +2463,16 @@ class QwenTTSService(BaseService):
             task = self._current_generation_task
             if task is not None and not task.done():
                 task.cancel()
+
+            # Story 16.5: trigger the cooperative cancel chain. Quiet no-op
+            # if no registry is wired (legacy mode) or no session is in
+            # flight or no hook was registered (today's batch + sentence-
+            # stream sessions have no streamer event to flip; Story 16.6's
+            # TRUE_STREAM dispatch path is what registers a hook). Under
+            # that path, this call flips the streamer's _cancel_event AND
+            # asks the audio coordinator to stop playback for the session.
+            if self._session_registry is not None and self._current_session_id is not None:
+                self._session_registry.request_cancel(self._current_session_id)
 
             # Notify cancellation callback
             if self._generation_cancelled_callback:

@@ -36,6 +36,12 @@ ALLOWED_REGISTRY_ATTRS: frozenset = frozenset({
     "create_session",
     "get",
     "_sessions",
+    # Story 16.5: request_cancel is the new synchronous cancel-chain entry
+    # point — a side-effect dispatch (fires the registered hook), NOT a
+    # state-mutation slot. P-3 (worker → main thread post via post_mutation)
+    # remains the rule for state mutations; request_cancel is a peer of
+    # post_mutation, not a violation.
+    "request_cancel",
 })
 
 
