@@ -83,6 +83,25 @@ class _PendingDispatch:
     queue_token: str
 
 
+class _ClearCommsResolveError(Exception):
+    """Story 15.2: raised by ``MyVoiceApp._resolve_clear_comms_wav_bytes``
+    when the configured Clear Comms source cannot be turned into WAV bytes.
+
+    Lives at module scope (above ``MyVoiceApp``) per Python convention for
+    module-private companion classes. Carries a short user-facing
+    ``user_message`` (≤ 80 chars, ASCII-clean) that the click-handler
+    routes verbatim to ``MainWindow.set_generation_status``. Wraps the
+    loader-side ``PreloadedAudioLoadError`` for the file branch — its
+    message survives the wrap unchanged so the toast surface is
+    consistent with the file-picker error wording the user has already
+    seen.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.user_message: str = message
+
+
 class MyVoiceApp(QObject):
     """
     Main application controller for MyVoice.
@@ -500,6 +519,10 @@ class MyVoiceApp(QObject):
             self._main_window.voice_transcription_requested.connect(self._on_voice_transcription_requested)
             self._main_window.replay_last_requested.connect(self._on_replay_last_requested)  # Story 2.4
             self._main_window.save_requested.connect(self._on_save_requested)  # Story 14.3
+            self._main_window.clear_comms_requested.connect(self._on_clear_comms_requested)  # Story 15.2
+            self._main_window.clear_comms_test_playback_requested.connect(
+                self._on_clear_comms_test_playback_requested
+            )  # Story 15.3
             self._main_window.cancel_generation_requested.connect(self._on_cancel_generation_requested)  # Story 11.4 follow-up
             self._main_window.whisper_init_requested.connect(self._on_whisper_init_requested)  # QA4
             self._main_window.mic_device_refresh_requested.connect(self._on_mic_device_refresh_requested)
@@ -1221,6 +1244,300 @@ class MyVoiceApp(QObject):
         self.logger.error(f"Replay playback failed: {error}")
         if self._main_window:
             self._main_window.set_generation_status(f"Replay failed: {error}", False)
+
+    # ----- Story 15.2: Clear Comms click → dispatch (OFR-B) ----------- #
+    # The companion exception ``_ClearCommsResolveError`` lives at module
+    # scope (just above ``MyVoiceApp``), per Python convention for
+    # module-private helper classes. The AC's "near the slot" wording is
+    # interpreted as "in the same module", which is the closest you can
+    # get without nesting the class inside ``MyVoiceApp`` (which would
+    # break the integration test's ``from myvoice.app import
+    # _ClearCommsResolveError`` import).
+
+    def _on_clear_comms_requested(self) -> None:
+        """Handle a click on the Clear Comms button (Story 15.2, OFR-B).
+
+        Three-step flow per AC #7:
+          1. Resolve the audio bytes from the configured source (saveable
+             session's buffer or a user-uploaded WAV file via 15.1's loader).
+          2. If interrupt mode (D-18 default), stop active playback and
+             advance the queue without cancelling in-flight generation.
+          3. Dispatch the WAV bytes through the existing replay-token path
+             — same dispatch shape as Replay Last, no registry coupling.
+
+        D-5 invariant (architecture line 247-248) is satisfied trivially:
+        no PRELOADED ``GenerationSession`` is registered for the playback,
+        so the saveable slot cannot be advanced and ``saveable_session_changed``
+        is never re-emitted as a side effect of this click.
+        """
+        if self._app_settings is None:
+            self.logger.warning("Clear Comms clicked but no app settings; ignoring")
+            return
+        settings = self._app_settings
+        queue_mode = bool(getattr(settings, 'clear_comms_queue_mode', False))
+        source_kind = str(getattr(settings, 'clear_comms_source_kind', 'last_generation'))
+
+        # Step 1: resolve audio bytes (encode to WAV bytes if from numpy buffer).
+        try:
+            wav_bytes = self._resolve_clear_comms_wav_bytes(source_kind, settings)
+        except _ClearCommsResolveError as exc:
+            self.logger.warning("Clear Comms resolve failed: %s", exc.user_message)
+            if self._main_window is not None:
+                self._main_window.set_generation_status(exc.user_message, False)
+            return
+        if wav_bytes is None:
+            # Defensive: the button should have been disabled in this state.
+            self.logger.debug("Clear Comms resolve returned None; ignoring click")
+            return
+
+        # Step 2: interrupt active playback if interrupt mode (D-18 default).
+        if not queue_mode:
+            self._interrupt_active_playback_for_clear_comms()
+
+        # Step 3: dispatch via the existing replay-token path (no registry coupling).
+        self._run_async_task(
+            self._play_generated_audio(wav_bytes),
+            on_success=self._on_clear_comms_success,
+            on_error=self._on_clear_comms_error,
+        )
+
+    def _resolve_clear_comms_wav_bytes(
+        self, source_kind: str, settings
+    ) -> bytes:
+        """Resolve the configured Clear Comms source to WAV bytes (AC #7).
+
+        Two branches:
+          - ``"last_generation"``: read ``SessionRegistry.saveable_audio``;
+            re-encode its float32 buffer to int16 PCM WAV bytes per D-16.
+          - ``"file"``: load the configured path via Story 15.1's loader,
+            which guarantees mono float32 + WAV-only enforcement; encode
+            to bytes via the same path. We round-trip rather than calling
+            ``Path.read_bytes()`` directly so the loader's mono-downmix and
+            WAV-only checks are still enforced (and so PreloadedAudioLoadError
+            messages reach the user via a single uniform surface).
+
+        Raises:
+            _ClearCommsResolveError: short user-facing message; the caller
+                routes it to ``MainWindow.set_generation_status``.
+        """
+        if source_kind == "last_generation":
+            registry = self._session_registry
+            if registry is None:
+                raise _ClearCommsResolveError("No saveable audio")
+            audio = registry.saveable_audio
+            if audio is None:
+                # Symmetric wording with save_dialog._TOAST_NO_SAVEABLE
+                # (note the em-dash, not an ASCII hyphen — they must match
+                # character-for-character so reviewers grepping the codebase
+                # find both surfaces).
+                raise _ClearCommsResolveError(
+                    "No saveable audio — generation may have been cancelled"
+                )
+            return self._encode_wav_bytes(audio.complete_audio, audio.sample_rate)
+
+        if source_kind == "file":
+            path_str = getattr(settings, 'clear_comms_file_path', None)
+            if not path_str:
+                raise _ClearCommsResolveError("No Clear Comms file configured")
+            from myvoice.ui.dialogs.settings.clear_comms_settings_panel import (
+                load_preloaded_audio_source,
+                PreloadedAudioLoadError,
+            )
+            try:
+                audio_array, sample_rate = load_preloaded_audio_source(Path(path_str))
+            except PreloadedAudioLoadError as exc:
+                raise _ClearCommsResolveError(exc.message)
+            return self._encode_wav_bytes(audio_array, sample_rate)
+
+        # Defensive default — the AppSettings validator auto-corrects unknown
+        # source_kind values to "last_generation", so this branch is mostly
+        # defensive against direct in-memory mutation between validate and click.
+        raise _ClearCommsResolveError(f"Unknown Clear Comms source: {source_kind}")
+
+    @staticmethod
+    def _encode_wav_bytes(audio, sample_rate: int) -> bytes:
+        """Encode a float32 mono numpy array to int16 PCM WAV bytes.
+
+        D-16 (architecture line 280): "Save format = WAV PCM_16. Float32 is
+        the in-memory format; saved WAVs are int16 to match the user's
+        DAW import expectations and to keep file sizes reasonable." Same
+        conversion math as ``save_dialog.SaveAudioDialog._write_wav`` —
+        not extracted to a shared helper because the two functions write
+        to different sinks (``Path`` vs ``BytesIO``), and the conversion
+        body is six lines of obvious math.
+        """
+        import io
+        import numpy as np
+        import soundfile as sf
+
+        audio_int16 = (audio * 32767).clip(-32768, 32767).astype(np.int16)
+        buf = io.BytesIO()
+        sf.write(buf, audio_int16, sample_rate, format='WAV', subtype='PCM_16')
+        return buf.getvalue()
+
+    def _interrupt_active_playback_for_clear_comms(self) -> None:
+        """Stop active playback + advance the queue (AC #8).
+
+        Strict subset of ``_on_cancel_generation_requested``'s playback-
+        stop block. **Divergence from the Stop button (read carefully):**
+
+          - We do NOT call ``tts_service.cancel_generation()``. Clear
+            Comms interrupts *playback*, not *generation*. If the user
+            is mid-generation, the in-flight ``GENERATING`` session
+            keeps generating and will play after the Clear Comms clip
+            finishes. This is intentional and load-bearing — a future
+            reader must NOT "fix" the asymmetry.
+          - We do NOT flip ``set_playback_active(False)`` /
+            ``set_generation_status("Stopped", ...)`` on the window.
+            The Clear Comms clip is about to play; the window state
+            advances naturally as that dispatch fires.
+
+        Safe to call when nothing is currently playing — the inner
+        ``is None`` and ``state`` guards make every branch a defensive
+        no-op (tested at TestClearCommsDispatch::test_idle_no_op).
+        """
+        try:
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                self.logger.error("No asyncio event loop available for Clear Comms interrupt")
+                return
+
+            if (
+                hasattr(self, '_audio_coordinator')
+                and self._audio_coordinator is not None
+            ):
+                asyncio.ensure_future(
+                    self._audio_coordinator.stop_all_playback(), loop=loop
+                )
+
+            # Cancel the focal session if it is in PLAYING (mirrors the
+            # focal-cancel block in _on_cancel_generation_requested at
+            # app.py:1065-1089). Story 15.2 review fix M5: compare against
+            # the SessionState enum directly rather than the .value string,
+            # so a future case-change in the enum value (drift to
+            # "Playing" or similar) cannot silently break this branch.
+            if (
+                hasattr(self, '_session_registry')
+                and self._session_registry is not None
+            ):
+                from myvoice.services.sessions.generation_session import SessionState
+                focal_id = self._session_registry.focal_session_id
+                if focal_id is not None:
+                    session = self._session_registry.get(focal_id)
+                    if session is not None and session.state == SessionState.PLAYING:
+                        self._session_registry.post_mutation('cancel', focal_id)
+                        self._session_registry.post_mutation('discard', focal_id)
+                        self._closed_session_ids.add(focal_id)
+
+            # Vacate the queue head past the cancelled session (mirrors
+            # the queue-advance block at app.py:1101-1128) — but
+            # **deliberately omit ``_dispatch_next_pending()``** here.
+            # Rationale (Story 15.2 review fix H3): the Stop button can
+            # safely advance the queue because nothing follows it in the
+            # caller; Clear Comms's Step 3 is about to dispatch the
+            # PRELOADED WAV through the same code path, so the freed slot
+            # must be claimed by Clear Comms — not by some pre-existing
+            # entry in ``_pending_dispatches``. If we called
+            # ``_dispatch_next_pending()`` here, a queued session-B would
+            # take the slot and Clear Comms would park behind it,
+            # contradicting D-18 "interrupt by default."
+            if (
+                self._playback_queue is not None
+                and self._dispatching_session_id is not None
+            ):
+                cancelled_token = self._dispatching_session_id
+                self._playback_queue.cancel_current()
+                self._pending_dispatches.pop(cancelled_token, None)
+                self._dispatching_session_id = None
+                if cancelled_token.startswith("replay-"):
+                    self._advanced_replay_tokens.add(cancelled_token)
+                else:
+                    self._closed_session_ids.add(cancelled_token)
+
+        except Exception as e:
+            self.logger.exception(f"Error interrupting playback for Clear Comms: {e}")
+
+    def _on_clear_comms_success(self, _result):
+        """Story 15.2: Clear Comms playback completed successfully."""
+        self.logger.info("Clear Comms playback completed successfully")
+
+    def _on_clear_comms_error(self, error):
+        """Story 15.2: Clear Comms playback failed."""
+        self.logger.error(f"Clear Comms playback failed: {error}")
+        if self._main_window:
+            self._main_window.set_generation_status(
+                f"Clear Comms playback failed: {error}", False
+            )
+
+    # ----- Story 15.3: Test Playback (panel-supplied config) ---------- #
+
+    def _on_clear_comms_test_playback_requested(
+        self,
+        source_kind: str,
+        file_path: Optional[str],
+        queue_mode: bool,
+    ) -> None:
+        """Test Playback (Story 15.3, AC #5).
+
+        Strict subset of ``_on_clear_comms_requested`` (Story 15.2) that
+        uses the *panel-supplied* config (``source_kind``, ``file_path``,
+        ``queue_mode``) instead of ``self._app_settings.*``. This is what
+        lets the user preview before clicking OK in the SettingsDialog.
+
+        Divergence from the real Clear Comms click (read carefully): we
+        ALWAYS skip the interrupt step. Test Playback is a preview, not
+        a callout — it must not abort an in-flight generation. The
+        ``queue_mode`` parameter is plumbed for completeness (and so a
+        future "test the queue path" UX has a hook) but in v1 it is
+        informational; preview enqueues behind whatever is currently
+        playing, full stop.
+        """
+        if self._app_settings is None:
+            self.logger.warning(
+                "Test Playback clicked but no app settings; ignoring"
+            )
+            return
+
+        # Build a minimal settings shim so _resolve_clear_comms_wav_bytes
+        # reads the panel-supplied values without us having to mutate
+        # self._app_settings (which would leak into the persisted JSON if
+        # the user then clicked OK; but we want Cancel to be lossless).
+        # Inline class avoids a module-level export of a dataclass that
+        # nothing else needs to know about.
+        class _PanelSettingsShim:
+            def __init__(self, fp: Optional[str]) -> None:
+                self.clear_comms_file_path = fp
+
+        shim = _PanelSettingsShim(file_path)
+
+        try:
+            wav_bytes = self._resolve_clear_comms_wav_bytes(source_kind, shim)
+        except _ClearCommsResolveError as exc:
+            self.logger.warning(
+                "Test Playback resolve failed: %s", exc.user_message
+            )
+            if self._main_window is not None:
+                self._main_window.set_generation_status(exc.user_message, False)
+            return
+
+        # Test Playback NEVER interrupts (deliberate divergence from
+        # _on_clear_comms_requested). The user is configuring; they
+        # should not lose their in-flight generation just to preview.
+
+        self._run_async_task(
+            self._play_generated_audio(wav_bytes),
+            on_success=self._on_clear_comms_test_playback_success,
+            on_error=self._on_clear_comms_test_playback_error,
+        )
+
+    def _on_clear_comms_test_playback_success(self, _result):
+        """Story 15.3: Test Playback completed successfully."""
+        self.logger.debug("Clear Comms Test Playback completed successfully")
+
+    def _on_clear_comms_test_playback_error(self, error):
+        """Story 15.3: Test Playback failed."""
+        self.logger.debug(f"Clear Comms Test Playback failed: {error}")
 
     def _on_voice_changed(self, voice_name: str):
         """
