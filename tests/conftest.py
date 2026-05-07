@@ -48,3 +48,41 @@ try:
     import torch  # noqa: F401
 except (ImportError, OSError):
     pass
+
+
+# MainWindow's closeEvent (src/myvoice/ui/main_window.py:2301-2340) shows a
+# confirm-close QMessageBox.question gated by self._force_quit. Without
+# bypass, every test that lets a MainWindow tear down blocks pytest waiting
+# for a manual click. The production flag (_force_quit=True) is the intended
+# skip mechanism; this autouse fixture wraps closeEvent so every test
+# instance flips it before the original runs. Tests that already set
+# _force_quit=True explicitly remain correct (the flag is idempotent).
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _suppress_main_window_close_confirm(monkeypatch):
+    try:
+        from myvoice.ui.main_window import MainWindow
+    except (ImportError, OSError):
+        return
+
+    original_close_event = MainWindow.closeEvent
+
+    def _patched_close_event(self, event):
+        # Only auto-flip _force_quit when the QMessageBox would actually
+        # fire. Tests that exercise the minimize-to-tray branch require
+        # _force_quit=False AND tray_icon AND app_settings.minimize_to_tray
+        # — under those exact conditions, closeEvent skips the dialog
+        # before reaching it, so the fixture must not touch the flag or
+        # the minimize-to-tray test's assertions break.
+        would_minimize_to_tray = (
+            self.tray_icon is not None
+            and self.app_settings is not None
+            and getattr(self.app_settings, "minimize_to_tray", False)
+        )
+        if not would_minimize_to_tray:
+            self._force_quit = True
+        return original_close_event(self, event)
+
+    monkeypatch.setattr(MainWindow, "closeEvent", _patched_close_event)
