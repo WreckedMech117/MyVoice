@@ -13,9 +13,15 @@ from myvoice.services.tts_streaming.streaming_mode import (
     default_streaming_mode_for_hardware,
     effective_streaming_mode,
 )
+from myvoice.services.tts_streaming.codec_token_streamer import (
+    CodecTokenStreamer,
+    END_OF_STREAM,
+)
 
 __all__ = [
     "StreamingMode",
     "default_streaming_mode_for_hardware",
     "effective_streaming_mode",
+    "CodecTokenStreamer",
+    "END_OF_STREAM",
 ]

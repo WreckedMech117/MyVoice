@@ -7,6 +7,11 @@ Before bumping the pinned commit hash in requirements.txt + build_tools/requirem
 run this file. Failures name the missing symbols; fix the call sites in
 src/myvoice/services/qwen_tts_service.py and src/myvoice/services/model_registry.py
 before merging the bump.
+
+Story 16.3 extension: This file also pins `transformers.generation.streamers.BaseStreamer`
+— the parent class of `CodecTokenStreamer` (Phase ⊥ true-streaming). The same trip-wire
+pattern applies: a silent upstream rename or refactor in HF transformers fails this file
+before reaching production import.
 """
 
 
@@ -44,3 +49,34 @@ def test_qwen3_tts_model_method_surface_intact():
         f"before bumping the pinned commit hash in requirements.txt + "
         f"build_tools/requirements-production.txt."
     )
+
+
+def test_transformers_basestreamer_importable_from_deep_path():
+    """Story 16.3 — pin transformers.generation.streamers.BaseStreamer.
+
+    services/tts_streaming/codec_token_streamer.py imports BaseStreamer
+    from this exact deep path (architecture line 671 names the path
+    verbatim). A future transformers refactor that moves BaseStreamer
+    out of generation.streamers — or splits it into separate producer/
+    consumer abstract classes — would silently break MyVoice's TRUE_STREAM
+    path; this trip-wire fails loudly in CI before the rename can ship.
+    """
+    from transformers.generation.streamers import BaseStreamer
+
+    assert isinstance(BaseStreamer, type), (
+        "transformers.generation.streamers.BaseStreamer is not a class — "
+        "upstream may have renamed or refactored. Update the import in "
+        "src/myvoice/services/tts_streaming/codec_token_streamer.py and "
+        "this test in lockstep."
+    )
+    # The HF contract is: streamers must implement put() and end().
+    # Story 16.3's CodecTokenStreamer extends with reset() (MyVoice-
+    # specific). If BaseStreamer ever drops put or end, our subclass
+    # contract breaks; pin both attributes here.
+    for method_name in ("put", "end"):
+        assert hasattr(BaseStreamer, method_name), (
+            f"transformers.generation.streamers.BaseStreamer is missing "
+            f"abstract method {method_name!r}. The HF contract for HF-"
+            f"streamers has changed; update CodecTokenStreamer's "
+            f"three-method contract before bumping the transformers pin."
+        )
