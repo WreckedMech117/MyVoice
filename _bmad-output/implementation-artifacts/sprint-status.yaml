@@ -101,5 +101,5 @@ development_status:
   # Added 2026-05-08 per Epic 16 retrospective's explicit handoff (epic-16-retro-2026-05-08.md §"Significant Discoveries").
   # Single-story epic: closes Story 16.7 AC #2's deferred multi-listener perceptual A/B audition.
   epic-17: done
-  17-1-streaming-default-ramp: review
+  17-1-streaming-default-ramp: done
   epic-17-retrospective: optional
