@@ -63,6 +63,30 @@ class CodecTokenStreamer(BaseStreamer):
     Forbidden by P-5 (architecture line 429): this class does NOT call
     into the session, registry, or audio coordinator. Composition with
     the decoder worker is the registry's job (Stories 16.5 and 16.6).
+
+    **Story 16.8 deviation note.** The TRUE_STREAM dispatch path
+    (``QwenTTSService._build_true_stream_talker``) does NOT call
+    ``put()`` or ``end()`` on this streamer. The qwen-tts talker is
+    multi-codebook (returns ``(batch, num_code_groups)`` per step), but
+    HF ``GenerationMixin._sample``'s standard ``streamer.put(next_tokens)``
+    callback only fires with the codec_head's main-codebook sample — the
+    other codebooks live in ``Qwen3TTSTalkerOutputWithPast.hidden_states[1]``.
+    Story 16.8's forward-hook captures multi-codebook ``codec_ids``
+    directly from the talker's per-step output and pushes whole
+    ``(N_steps, num_code_groups)`` tensors to ``self.queue`` directly,
+    bypassing the int-buffer ``put()/end()`` chunking machinery here.
+
+    On the TRUE_STREAM path, this class is effectively a queue-holder
+    plus the shared ``_cancel_event``; ``put``, ``end``, ``_buffer``,
+    and ``_extract_tokens`` remain live for any future HF-streamer
+    consumer (e.g., a SENTENCE_STREAM-style adapter, or a future
+    qwen-tts release that emits single-codebook tokens). The chunking
+    arithmetic is duplicated in ``_build_true_stream_talker`` —
+    intentional duplication: the two paths chunk different shapes
+    (flat token list vs. per-step tensors) and conflating them would
+    require a more invasive refactor of ``put()`` to accept tensor
+    inputs. If a third consumer ever needs the same overlap-add
+    chunking on per-step tensors, factor it out then.
     """
 
     def __init__(

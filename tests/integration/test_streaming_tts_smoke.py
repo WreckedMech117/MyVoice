@@ -1724,6 +1724,23 @@ class TestTrueStreamWireUpEndToEnd:
         cancel_observed = [False]
         post_cancel_forward_calls = [0]
         forward_call_count = [0]
+        # Capture the streamer reference passed into _build_true_stream_talker
+        # so the talker thread can directly assert on
+        # streamer._cancel_event.is_set() rather than just trusting that
+        # time.sleep(0.25) was long enough for cancel to propagate.
+        # Without this capture, a regression that breaks the cancel hook
+        # (e.g., register_cancel_hook never called, or _cancel_event.set()
+        # removed from the hook) would silently pass this test.
+        captured_streamer: list = []
+        real_builder = service._build_true_stream_talker
+
+        def spy_builder(model, request, streamer):
+            captured_streamer.append(streamer)
+            return real_builder(model, request, streamer)
+
+        monkeypatch.setattr(
+            service, "_build_true_stream_talker", spy_builder
+        )
 
         def fake_talker_forward(*args, **kwargs):
             forward_call_count[0] += 1
@@ -1755,11 +1772,20 @@ class TestTrueStreamWireUpEndToEnd:
             # so no chunk is pushed yet).
             for _ in range(30):
                 fake_model.model.talker.forward(*args, **kwargs)
-            # Sleep long enough for the cancel coroutine to run +
-            # request_cancel to propagate through the registry's
-            # cancel hook to streamer._cancel_event.
-            time.sleep(0.25)
-            cancel_observed[0] = True  # We waited; cancel hook had time.
+            # Wait for the cancel coroutine to run + request_cancel to
+            # propagate through the registry's cancel hook all the way to
+            # streamer._cancel_event. Poll the captured streamer's
+            # _cancel_event directly rather than trusting a fixed sleep —
+            # a sleep alone could pass even if the hook never fired.
+            cancel_deadline = time.perf_counter() + 1.0
+            while time.perf_counter() < cancel_deadline:
+                if (
+                    captured_streamer
+                    and captured_streamer[0]._cancel_event.is_set()
+                ):
+                    cancel_observed[0] = True
+                    break
+                time.sleep(0.005)
             # Continue feeding forward calls — the production
             # forward-hook's cancel check will skip codec_id accumulation
             # per D-11.
@@ -1854,10 +1880,22 @@ class TestTrueStreamWireUpEndToEnd:
             qapp.processEvents()
             time.sleep(0.005)
 
-        # Cancel was actually observed (deterministic, not racy).
+        # Cancel actually propagated through the registry → cancel hook →
+        # streamer._cancel_event (deterministic, not racy). Without this,
+        # the post-cancel forward-call assertion below is meaningless —
+        # the production forward-hook only skips codec_id accumulation
+        # when streamer._cancel_event.is_set() returns True.
+        assert captured_streamer, (
+            "_build_true_stream_talker was never invoked — the spy never "
+            "captured a streamer reference, so the cancel-event assertion "
+            "below cannot run"
+        )
         assert cancel_observed[0], (
-            "Cancel never fired during the talker — test rig is racy "
-            "or session_id was never set; assertions below are meaningless"
+            "Cancel never propagated to streamer._cancel_event within 1s. "
+            "The cancel hook chain (request_cancel → registry hook → "
+            "_cancel_event.set) is broken; D-11's cooperative cancellation "
+            "invariant cannot hold and the post-cancel forward-call "
+            "assertion below is meaningless"
         )
         # Wrapper fired exactly once.
         assert cv_call_count[0] == 1

@@ -2746,18 +2746,30 @@ class QwenTTSService(BaseService):
                 are direct ``streamer.queue.put`` calls; the streamer's
                 int-buffer ``put()/end()`` mechanism is bypassed because
                 Story 16.8 streams whole multi-codebook tensors per step.
+
+                Logs (rather than silently swallows) failures from
+                ``torch.cat`` or ``queue.put`` so a future codebook-shape
+                regression or a closed-queue case is diagnosable post-mortem
+                instead of presenting as a 60s join-timeout stall.
                 """
                 if buf:
                     try:
                         residual_tensor = torch_mod.cat(buf, dim=0)
                         strm.queue.put(residual_tensor)
-                    except Exception:  # pragma: no cover (defensive)
-                        pass
+                    except Exception:
+                        self.logger.exception(
+                            "[QwenTTS] TRUE_STREAM residual flush failed; "
+                            "the final chunk will be dropped"
+                        )
                     buf.clear()
                 try:
                     strm.queue.put(END_OF_STREAM)
-                except Exception:  # pragma: no cover (defensive)
-                    pass
+                except Exception:
+                    self.logger.exception(
+                        "[QwenTTS] TRUE_STREAM failed to push END_OF_STREAM; "
+                        "the decoder worker may hang until the dispatch "
+                        "join-timeout fires"
+                    )
 
             try:
                 model.model.talker.generate = _patched_talker_generate
@@ -2811,14 +2823,26 @@ class QwenTTSService(BaseService):
                 self.logger.exception(
                     f"[QwenTTS] TRUE_STREAM talker error: {exc}"
                 )
-                streamer._cancel_event.set()
-                # Drop residual on error path (cancel takes precedence) but
-                # still push END_OF_STREAM so the worker exits its loop.
+                # Do NOT set ``streamer._cancel_event`` here. Setting it
+                # would conflate "talker raised a structural error" with
+                # "user requested cancel" — the worker's drain-on-cancel
+                # logic in ``StreamingDecoderWorker`` would then post the
+                # canonical ``('cancel', sid)`` registry transition rather
+                # than the error transition, polluting session-state
+                # telemetry. The empty-chunks guard inside
+                # ``_generate_true_stream`` (the ``if not accumulated_chunks``
+                # check) catches the empty queue and routes to the fallback
+                # chain; that is the canonical error-recovery path. Drop
+                # the residual buffer and push END_OF_STREAM so the worker
+                # exits its loop cleanly.
                 step_buffer.clear()
                 try:
                     streamer.queue.put(END_OF_STREAM)
-                except Exception:  # pragma: no cover (defensive)
-                    pass
+                except Exception:
+                    self.logger.exception(
+                        "[QwenTTS] TRUE_STREAM error-path failed to push "
+                        "END_OF_STREAM; worker may hang until join-timeout"
+                    )
                 return
 
             # The wrapper completed without firing the talker.generate
@@ -2827,9 +2851,9 @@ class QwenTTSService(BaseService):
             # in the wrapper, a validation short-circuit, or a qwen-tts
             # version where the talker is invoked through a different
             # entrypoint. Either way no codec_ids were captured, so signal
-            # end-of-stream and let the empty-chunks guard at the dispatch
-            # level (qwen_tts_service.py:2845-2861) route to the fallback
-            # chain.
+            # end-of-stream and let the empty-chunks guard inside
+            # ``_generate_true_stream`` (the ``if not accumulated_chunks``
+            # check) route to the fallback chain.
             self.logger.warning(
                 "[QwenTTS] TRUE_STREAM wrapper completed but "
                 "talker.generate was never invoked; the empty-chunks guard "
@@ -2838,8 +2862,11 @@ class QwenTTSService(BaseService):
             step_buffer.clear()
             try:
                 streamer.queue.put(END_OF_STREAM)
-            except Exception:  # pragma: no cover (defensive)
-                pass
+            except Exception:
+                self.logger.exception(
+                    "[QwenTTS] TRUE_STREAM wrapper-empty path failed to "
+                    "push END_OF_STREAM; worker may hang until join-timeout"
+                )
 
         return _run_talker
 

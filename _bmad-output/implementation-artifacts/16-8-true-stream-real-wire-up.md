@@ -1,6 +1,6 @@
 # Story 16.8: TRUE_STREAM Real Wire-Up
 
-Status: review
+Status: done
 
 > Phase ⊥ of D-20 — **eighth story of Epic 16** (True Streaming TTS, the parallel/independent track) and the **direct follow-up** to Story 16.7's empirical-validation gate failure. Story 16.7 ran the harness it built (`scripts/validate_streaming_default.py`) against the real RTX 5090 + qwen-tts 0.0.4 host and discovered that **TRUE_STREAM as Story 16.6 shipped does not function against the real qwen-tts wrapper.** Of 50 utterances measured, 50 failed silently — the talker thread raised on every call, was swallowed by `_build_true_stream_talker`'s except-branch, the streamer's queue drained empty, and the dispatch returned `success=True` with `audio_data=np.array([])`. Story 16.7's only production code change was a defense-in-depth empty-chunks guard at `qwen_tts_service.py:2845-2861` that converts the silent failure into a `RuntimeError` so the existing fallback chain catches it and routes to SENTENCE_STREAM (preserving NFR7 graceful degradation). Story 16.8's job is to **fix the underlying wire-up** so TRUE_STREAM is no longer a structural no-op.
 >
@@ -359,8 +359,7 @@ Modified:
   - `src/myvoice/services/qwen_tts_service.py` — `_build_true_stream_talker` replaced with Path A forward-hook variant (~150 net new lines including the `_streaming_forward` codec_ids capture, `_patched_talker_generate` sentinel short-circuit, `_flush_residual_and_eos` helper, and `__signature__` preservation for HF kwargs validation); `_build_true_stream_decode_fn` rewritten to use `model.model.speech_tokenizer` and dict-wrap chunks per the 12Hz tokenizer's `(N_steps, num_code_groups)` contract. Empty-chunks guard at `qwen_tts_service.py:3023+` unchanged.
   - `tests/test_qwen_tts_internals.py` — appended 5 new trip-wire tests pinning `Qwen3TTSForConditionalGeneration`, `Qwen3TTSTalkerForConditionalGeneration`, `Qwen3TTSTalkerForConditionalGeneration.forward` (Story 16.8 forward-hook target), `self.talker = ...` in `__init__`, and `self.talker.generate(` in `.generate`.
   - `tests/integration/test_streaming_tts_smoke.py` — appended `_make_streamer_aware_fake_model(step_count, num_code_groups)` factory (forward-hook-aware) and `TestTrueStreamWireUpEndToEnd` class (3 tests covering happy-path, patch-restoration, cooperative-cancel).
-  - `src/myvoice/services/tts_streaming/streaming_decoder.py` — no functional changes (worker stayed compatible — chunks now arrive as `torch.Tensor` instead of `list[int]`, but `len()` and the existing decode-error path work for both shapes).
-  - `_bmad-output/implementation-artifacts/16-8-true-stream-real-wire-up.md` — Change Log entries #1-#8, Task/Subtask checkboxes, Status `review`.
+  - `_bmad-output/implementation-artifacts/16-8-true-stream-real-wire-up.md` — Change Log entries #1-#9, Task/Subtask checkboxes, Status `review` → `done`.
   - `_bmad-output/implementation-artifacts/sprint-status.yaml` — `16-8-true-stream-real-wire-up`: `ready-for-dev` → `in-progress` → `review`.
 
 New:
@@ -475,3 +474,23 @@ Per maintainer report, the perceptual A/B fixture builder ran successfully again
 **Catastrophic-failure check (AC #6 part a):** PASS — no silence, no full-second dropouts, no distortion observed. AC #6 closes on the catastrophic-failure dimension.
 
 **Sibilant / cadence / preference observations:** deferred to the future streaming-default ramp story (AC #6 explicitly reserves the multi-listener gate for that story).
+
+### 2026-05-08 #9 — Code review pass (H1/H2/M1/M2/M3/M4 fixes)
+
+`/bmad-bmm-code-review` adversarial pass against the Story 16.8 commit (`5a56549`) found 2 HIGH + 4 MEDIUM + 2 LOW. HIGH and MEDIUM fixed in this pass; LOWs deferred. Detail:
+
+  - **H1 — `test_real_wire_up_cooperative_cancel_does_not_raise` did not actually verify cancel propagated.** The test set `cancel_observed[0] = True` unconditionally after `time.sleep(0.25)`, so a regression that broke the cancel hook chain (`request_cancel → registry hook → _cancel_event.set`) would have passed silently — exactly the kind of regression the test exists to catch. **Fix:** spy on `_build_true_stream_talker` to capture the streamer reference, then poll `streamer._cancel_event.is_set()` on a 1s deadline before flipping `cancel_observed`. Test now fails loudly if cancel never reaches the streamer. (`tests/integration/test_streaming_tts_smoke.py` — `test_real_wire_up_cooperative_cancel_does_not_raise`.)
+
+  - **H2 — File List falsely claimed `src/myvoice/services/tts_streaming/streaming_decoder.py` was modified.** `git diff HEAD~1 HEAD` for that path returned 0 lines — the file was untouched. **Fix:** removed the spurious entry from File List.
+
+  - **M1 — Stale line-number reference `qwen_tts_service.py:2845-2861` for the empty-chunks guard.** Story 16.8's ~150-line insertion shifted the guard down to ~3165, but the new comment in `_run_talker`'s wrapper-empty path still cited the old range. **Fix:** replaced with stable structural anchor (`the empty-chunks guard inside _generate_true_stream — the if not accumulated_chunks check`).
+
+  - **M2 — `_run_talker` error-path called `streamer._cancel_event.set()` on every non-cancel exception**, conflating "talker raised" with "user canceled". `StreamingDecoderWorker`'s drain-on-cancel logic would then post the canonical `('cancel', sid)` registry transition rather than an error transition, polluting session-state telemetry. **Fix:** removed the `_cancel_event.set()` call from the error path; rely on `step_buffer.clear()` + `END_OF_STREAM` + the dispatcher's empty-chunks guard for error recovery (already in place).
+
+  - **M3 — Four `except Exception: pass` swallows in `_flush_residual_and_eos`, the error path, and the wrapper-empty path** silently dropped diagnostics for `torch.cat` shape regressions and queue-closed cases. Failures presented as 60s join-timeout stalls with no log. **Fix:** replaced all four with `self.logger.exception(...)` so the failures are diagnosable post-mortem.
+
+  - **M4 — Chunking math duplicated between `_streaming_forward` and `CodecTokenStreamer.put`; `put`/`end` are now dead on the TRUE_STREAM path.** The class is effectively a queue-holder + shared `_cancel_event` for TRUE_STREAM. **Fix (documentation, not refactor):** added a Story 16.8 deviation note to `CodecTokenStreamer`'s class docstring naming the duplication, why it exists (different shapes — flat tokens vs. per-step tensors), and when to factor it out (third consumer needing the same chunking on per-step tensors).
+
+  - **L1 / L2 (deferred):** `_TalkerStreamComplete` defined inside `_build_true_stream_talker` (one extra class object per dispatch — cosmetic); probe script only exercises `generate_custom_voice` (source-read covers the other two wrappers via shared `_merge_generate_kwargs`).
+
+Validation: `pytest tests/integration/test_streaming_tts_smoke.py tests/test_qwen_tts_internals.py -v` passes after the fixes.
