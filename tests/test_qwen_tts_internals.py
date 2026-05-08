@@ -17,6 +17,13 @@ Story 16.4 extension: also pins the deep-decoder method `Qwen3TTSTokenizerV1Mode
 for the upcoming Story 16.6 TRUE_STREAM dispatch adapter. The Story 16.4 worker itself
 does not import qwen_tts — but Story 16.6's `decode_fn` adapter wraps this method, and
 this trip-wire fails loudly in CI before a silent qwen-tts rename can break the adapter.
+
+Story 16.8 extension: pins the talker-patch surface that
+`_build_true_stream_talker` depends on at runtime — the
+`Qwen3TTSForConditionalGeneration` class, the `Qwen3TTSTalkerForConditionalGeneration`
+class our patch wraps, and the call-site invariant that
+`Qwen3TTSForConditionalGeneration.generate` invokes `self.talker.generate(...)`
+exactly once (the interposition point our patch lands on).
 """
 
 
@@ -115,4 +122,160 @@ def test_qwen3_tts_tokenizer_v1_decode_method_pinned():
         "The deep-decoder method that Story 16.6's TRUE_STREAM adapter "
         "wraps has been renamed or removed. Update the adapter before "
         "bumping the qwen-tts pin."
+    )
+
+
+def test_qwen3_tts_for_conditional_generation_class_is_deep_path_importable():
+    """Story 16.8 — pin Qwen3TTSForConditionalGeneration at the deep path.
+
+    services/qwen_tts_service.py:_build_true_stream_talker uses
+    `model.model.talker.generate` where `model.model` is an instance of
+    Qwen3TTSForConditionalGeneration (constructed by the qwen_tts loader,
+    not directly by MyVoice). Pinning the class here ensures a silent
+    rename or relocation in `qwen_tts.core.models.modeling_qwen3_tts`
+    fails CI before the talker patch can dereference a stale class.
+    """
+    from qwen_tts.core.models.modeling_qwen3_tts import (
+        Qwen3TTSForConditionalGeneration,
+    )
+
+    assert isinstance(Qwen3TTSForConditionalGeneration, type), (
+        "Qwen3TTSForConditionalGeneration is not a class. "
+        "Story 16.8's _build_true_stream_talker reaches `model.model.talker` "
+        "on instances of this class — a structural change here breaks the "
+        "TRUE_STREAM wire-up. Update qwen_tts_service.py before bumping the "
+        "pin."
+    )
+
+
+def test_qwen3_tts_talker_for_conditional_generation_class_is_callable():
+    """Story 16.8 — pin Qwen3TTSTalkerForConditionalGeneration.generate.
+
+    services/qwen_tts_service.py:_build_true_stream_talker monkey-patches
+    `model.model.talker.generate` for the duration of one dispatch to
+    inject `streamer=streamer` into HF GenerationMixin's standard
+    streaming hook. The patch's correctness depends on:
+      (a) `Qwen3TTSTalkerForConditionalGeneration` being a real class
+          (the type of `model.model.talker`), and
+      (b) its `.generate` being a callable (inherited from
+          `transformers.GenerationMixin.generate` per the qwen-tts
+          0.0.4 class hierarchy).
+    A silent upstream rename of either fails this test before the
+    talker patch can interpose on a non-existent method.
+    """
+    from qwen_tts.core.models.modeling_qwen3_tts import (
+        Qwen3TTSTalkerForConditionalGeneration,
+    )
+
+    assert isinstance(Qwen3TTSTalkerForConditionalGeneration, type), (
+        "Qwen3TTSTalkerForConditionalGeneration is not a class. "
+        "Story 16.8's talker-patch wire-up depends on `model.model.talker` "
+        "being an instance of this class. Update _build_true_stream_talker "
+        "before bumping the pin."
+    )
+    assert callable(getattr(
+        Qwen3TTSTalkerForConditionalGeneration, "generate", None
+    )), (
+        "Qwen3TTSTalkerForConditionalGeneration has no callable "
+        "attribute 'generate'. Story 16.8's talker-patch interposes on "
+        "this method (HF GenerationMixin protocol). The streamer kwarg "
+        "is forwarded through this method — without it, TRUE_STREAM "
+        "cannot stream at all."
+    )
+    # Story 16.8 forward-hook: services/qwen_tts_service.py:_build_true_stream_talker
+    # patches `model.model.talker.forward` to capture per-step `codec_ids`
+    # from `Qwen3TTSTalkerOutputWithPast.hidden_states[1]`. HF's
+    # `GenerationMixin._sample` loop drives forward via the model's
+    # `__call__`, which dispatches to `forward`. A future qwen-tts that
+    # renames or refactors the forward entrypoint breaks the hook.
+    assert callable(getattr(
+        Qwen3TTSTalkerForConditionalGeneration, "forward", None
+    )), (
+        "Qwen3TTSTalkerForConditionalGeneration has no callable "
+        "attribute 'forward'. Story 16.8's forward-hook interposes on "
+        "this method to capture multi-codebook codec_ids per step "
+        "(modeling_qwen3_tts.py:1738 returns "
+        "`hidden_states=(..., codec_ids)` from forward). Without this "
+        "method, the talker-patch's chunk capture mechanism breaks and "
+        "TRUE_STREAM produces silence."
+    )
+
+
+def test_qwen3_tts_wrapper_constructs_talker_attribute_in_init():
+    """Story 16.8 — pin `self.talker = Qwen3TTSTalkerForConditionalGeneration(...)`
+    in Qwen3TTSForConditionalGeneration.__init__.
+
+    services/qwen_tts_service.py:_build_true_stream_talker dereferences
+    `model.model.talker` — that attribute is created during
+    Qwen3TTSForConditionalGeneration.__init__ at modeling_qwen3_tts.py:1820
+    (`self.talker = Qwen3TTSTalkerForConditionalGeneration(self.config.talker_config)`).
+    A future qwen-tts version that renames the attribute (e.g., `self.gen_model`,
+    `self._talker`) would silently break the talker-patch wire-up — the patch
+    would `setattr` a new attribute rather than overriding the real one,
+    and HF's existing `self.talker.generate(...)` call site would still
+    hit the original unpatched method, leaving streaming broken.
+
+    Source-level inspection here pins the attribute name. Brittle (it
+    asserts on string content) but the alternative — instantiating the
+    full model — is too expensive for a trip-wire.
+    """
+    import inspect
+
+    from qwen_tts.core.models.modeling_qwen3_tts import (
+        Qwen3TTSForConditionalGeneration,
+    )
+
+    init_source = inspect.getsource(
+        Qwen3TTSForConditionalGeneration.__init__
+    )
+    assert "self.talker" in init_source, (
+        "Qwen3TTSForConditionalGeneration.__init__ no longer assigns "
+        "`self.talker = ...`. Story 16.8's talker-patch wire-up at "
+        "qwen_tts_service.py:_build_true_stream_talker dereferences "
+        "`model.model.talker` — if upstream renamed the attribute, the "
+        "patch must be updated in lockstep before bumping the pin."
+    )
+    assert "Qwen3TTSTalkerForConditionalGeneration" in init_source, (
+        "Qwen3TTSForConditionalGeneration.__init__ no longer constructs "
+        "the talker via Qwen3TTSTalkerForConditionalGeneration. The class "
+        "Story 16.8 depends on may have been replaced; verify the patch "
+        "still targets the right type."
+    )
+
+
+def test_qwen3_tts_wrapper_calls_self_talker_generate_in_generate():
+    """Story 16.8 — pin the call-site invariant our patch interposes on.
+
+    services/qwen_tts_service.py:_build_true_stream_talker installs a
+    streamer-injecting wrapper around `model.model.talker.generate` and
+    expects the wrapper's `Qwen3TTSForConditionalGeneration.generate(...)`
+    to invoke `self.talker.generate(...)` exactly once during preprocessing.
+    If a future qwen-tts version refactors to call the talker through a
+    different method (e.g., `self.talker.sample()`, `self.talker.forward()`,
+    or hand-rolled token sampling), our patch never fires and the
+    empty-chunks guard at qwen_tts_service.py:2845-2861 routes every
+    TRUE_STREAM dispatch to fallback — silently regressing latency
+    without any visible failure.
+
+    This source-level inspection is the trip-wire: it fails CI when the
+    call-site invariant breaks, before the silent regression can ship.
+    See modeling_qwen3_tts.py:2272-2278 for the current call site.
+    """
+    import inspect
+
+    from qwen_tts.core.models.modeling_qwen3_tts import (
+        Qwen3TTSForConditionalGeneration,
+    )
+
+    generate_source = inspect.getsource(
+        Qwen3TTSForConditionalGeneration.generate
+    )
+    assert "self.talker.generate(" in generate_source, (
+        "Qwen3TTSForConditionalGeneration.generate no longer invokes "
+        "`self.talker.generate(...)`. Story 16.8's talker-patch "
+        "interposes on that exact call site — without it, the streamer "
+        "kwarg is never injected and TRUE_STREAM silently falls back to "
+        "SENTENCE_STREAM on every dispatch. Update "
+        "_build_true_stream_talker (likely by switching to literal Path A "
+        "preprocessing replication) before bumping the qwen-tts pin."
     )

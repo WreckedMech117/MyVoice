@@ -2470,26 +2470,72 @@ class QwenTTSService(BaseService):
 
     def _build_true_stream_decode_fn(
         self, model: Any
-    ) -> Callable[[List[int]], np.ndarray]:
-        """Story 16.6 Task 3 — adapter wrapping ``model.speech_tokenizer.decode``.
+    ) -> Callable[[Any], np.ndarray]:
+        """Story 16.8 — adapter wrapping the qwen-tts speech tokenizer's decode.
 
         Returned callable conforms to ``StreamingDecoderWorker``'s P-6
-        ``Callable[[list[int]], np.ndarray]`` contract: input is the chunk's
-        codec token ids, output is a float32 PCM sample array.
+        contract: input is one chunk produced by the talker forward-hook
+        (a ``torch.Tensor`` of shape ``(N_steps, num_code_groups)``); output
+        is a float32 PCM sample array.
 
-        Best-effort wrapper. Story 16.7's empirical-validation harness
-        verifies this against real model output and tightens conversion if
-        perceptual seams or amplitude issues surface. The import-attribute
-        trip-wire at ``tests/test_qwen_tts_internals.py`` covers the
-        ``Qwen3TTSTokenizerV1Model.decode`` symbol; if upstream renames it,
-        the trip-wire fails before this adapter compiles in production.
+        Two Story-16.6 bugs uncovered and fixed in 16.8 against real
+        qwen-tts 0.0.4 (RTX 5090, see Story 16.8 Change Log entry #5):
+
+          1. ``model.speech_tokenizer`` does not exist — the speech
+             tokenizer lives on the inner ``Qwen3TTSForConditionalGeneration``
+             at ``model.model.speech_tokenizer`` (set during the inner
+             wrapper's ``from_pretrained`` at modeling_qwen3_tts.py:1920).
+          2. The 12Hz tokenizer's ``decode`` expects shape
+             ``(batch_size, codes_length, num_quantizers)`` (see
+             ``modeling_qwen3_tts_tokenizer_v2.py:1004``). Passing a flat
+             tensor of single-codebook tokens silently misinterprets
+             ``codes_length`` as ``num_quantizers``. The fix is to receive
+             multi-codebook ``codec_ids`` from the forward-hook and wrap
+             in a per-sample dict ``[{"audio_codes": chunk}]`` so the
+             outer ``Qwen3TTSTokenizer.decode`` normalizer adds the batch
+             dimension correctly.
+
+        The trip-wire test at ``tests/test_qwen_tts_internals.py`` covers
+        the ``Qwen3TTSTokenizerV1Model.decode`` symbol (Story 16.4 added
+        it; Story 16.8 left it unchanged). 12Hz models use V2 not V1, so
+        the 12Hz path is not currently pinned — opportunity for a future
+        trip-wire extension if 12Hz becomes critical.
         """
-        def _decode(chunk_tokens: List[int]) -> np.ndarray:
-            import torch as _torch  # lazy to keep test environments without
-            # CUDA-bound torch DLLs viable
-            codes = _torch.tensor(chunk_tokens, dtype=_torch.long).unsqueeze(0)
-            result = model.speech_tokenizer.decode(codes)
-            audio = result[0] if isinstance(result, tuple) else result
+        def _decode(chunk: Any) -> np.ndarray:
+            import torch as _torch  # lazy: keeps test envs without
+            # CUDA-bound torch DLLs viable until decode actually fires
+            # Forward-hook produces ``(N_steps, num_code_groups)`` tensors
+            # already; defensive coerce keeps us robust to upstream shape
+            # tweaks and to the residual-flush path (where the tensor may
+            # have come from torch.cat).
+            if not isinstance(chunk, _torch.Tensor):
+                chunk = _torch.as_tensor(chunk, dtype=_torch.long)
+            if chunk.dim() == 1:
+                # Defensive: a 1-D chunk would be single-codebook only;
+                # treat the lone dimension as ``codes_length`` and
+                # ``num_quantizers=1``. Decode will likely fail or
+                # produce wrong audio — the talker forward-hook should
+                # have produced 2-D — but this prevents a crash so the
+                # empty-chunks guard fires instead of an uncaught
+                # exception killing the worker thread.
+                chunk = chunk.unsqueeze(-1)
+            # ``Qwen3TTSTokenizer.decode`` accepts a list of dicts per
+            # qwen3_tts_tokenizer.py:307-311. Each dict's ``audio_codes``
+            # is the per-sample tensor of shape ``(N_steps, num_quantizers)``.
+            result = model.model.speech_tokenizer.decode(
+                [{"audio_codes": chunk}]
+            )
+            # ``decode`` returns ``(wavs: List[np.ndarray], sample_rate: int)``
+            # per qwen3_tts_tokenizer.py:281-283. We only have one sample
+            # in the per-call list above, so wavs[0] is our PCM.
+            if isinstance(result, tuple):
+                wavs = result[0]
+            else:
+                wavs = result
+            if isinstance(wavs, list) and wavs:
+                audio = wavs[0]
+            else:
+                audio = wavs
             if hasattr(audio, "detach"):
                 audio = audio.detach().cpu().numpy()
             return np.asarray(audio, dtype=np.float32).flatten()
@@ -2501,35 +2547,300 @@ class QwenTTSService(BaseService):
         request: "QwenTTSRequest",
         streamer: CodecTokenStreamer,
     ) -> Callable[[], None]:
-        """Story 16.6 Task 3 — talker callable for the TRUE_STREAM thread.
+        """Story 16.8 — talker callable using Path A (talker-patch variant).
 
-        Returned 0-arg callable runs ``model.model.generate(streamer=...)``
-        — the blocking GPU call that releases the GIL but does not yield to
-        asyncio. The caller spawns a ``threading.Thread`` around it. On any
-        exception (including upstream qwen-tts internals raising), the
-        callable sets ``streamer._cancel_event`` and calls ``streamer.end()``
-        so the worker exits cleanly via END_OF_STREAM rather than blocking
-        forever on ``queue.get()``.
+        Replaces Story 16.6's literal ``model.model.generate(streamer=streamer)``
+        wire-up — which Story 16.7 §3.1 measured as silently broken (50/50
+        utterances on the maintainer's RTX 5090 produced empty chunks
+        because the call passed no conditioning args) — with a patch-based
+        approach that reaches the canonical Path A target
+        (``self.talker.generate(inputs_embeds=..., streamer=streamer, ...)``)
+        without replicating the wrapper's ~250 lines of preprocessing.
 
-        Tests patch this method to return a controlled function that feeds
-        tokens at chosen cadence; production wiring is bounded by the
-        Story 16.1 trip-wire and exercised end-to-end by Story 16.7.
+        Why a talker-patch rather than full preprocessing replication. The
+        Story 16.8 Dev Notes describe two paths:
+
+          - Path B: rely on the wrapper's ``**kwargs`` to forward
+            ``streamer`` through to the inner ``self.talker.generate``.
+            Source-read of ``modeling_qwen3_tts.py:2042-2278`` and the
+            ``probe_qwen_tts_streamer.py`` empirical run both confirm the
+            wrapper drops ``streamer`` before reaching the inner call — Path
+            B is structurally broken at qwen-tts 0.0.4.
+          - Path A (literal "replicate preprocessing"): hand-roll the input
+            embedding tower (~150-250 lines of codec prefill, language
+            token resolution, speaker embedding construction, role prefix,
+            attention mask, trailing-text-hidden, batch left-padding).
+            Brittle to upstream qwen-tts changes; large maintenance
+            surface; duplicate of the wrapper's body.
+
+        The talker-patch variant lands the same destination as literal
+        Path A — ``self.talker.generate(streamer=streamer, ...)`` is
+        invoked with the wrapper's correctly-constructed ``inputs_embeds``,
+        ``attention_mask``, ``trailing_text_hidden``, and ``tts_pad_embed`` —
+        but *does not* duplicate the preprocessing in MyVoice. The trade-off:
+        it depends on the wrapper calling ``self.talker.generate(...)``
+        exactly once during ``model.generate_*(...)``, which the trip-wire
+        extension (``tests/test_qwen_tts_internals.py``) pins via attribute
+        and call-site assertions so a future qwen-tts version that fans out
+        to a different talker entrypoint will fail CI before silently
+        regressing streaming.
+
+        Concurrency: the patch is installed on the shared
+        ``model.model.talker`` instance for the duration of one
+        ``model.generate_*(...)`` call. Story 16.6's session-registry P-7
+        invariant (one in-flight TRUE_STREAM dispatch per service instance)
+        ensures the patch is single-threaded with respect to itself; the
+        outer ``try/finally`` restores the bound method on every exit
+        (success, exception, sentinel).
+
+        Cancellation invariant (D-11): the talker thread MUST NOT raise on
+        cancel. The patch is transparent to HF GenerationMixin's
+        cancellation flow — when ``streamer._cancel_event`` flips,
+        ``streamer.put`` becomes a no-op, HF iterates a few more times
+        producing tokens we drop, then completes cleanly and calls
+        ``streamer.end()``. No exceptions raised through HF internals;
+        CUDA state stays clean.
+
+        Short-circuit sentinel: HF's ``GenerationMixin.generate`` calls
+        ``streamer.end()`` when token generation completes; the wrapper
+        then runs a residual non-streaming ``speech_tokenizer.decode`` to
+        build the full waveform return tuple. Since the streaming worker
+        has already decoded chunk-by-chunk, that residual decode is
+        wasted GPU compute. Raising ``_TalkerStreamComplete`` from the
+        injecting wrapper short-circuits past it, saving ~the same time
+        as one non-streaming generation per dispatch.
         """
+        from myvoice.models.service_enums import QwenModelType
+
+        # Local sentinel so it does not leak past this dispatch.
+        class _TalkerStreamComplete(Exception):
+            """Raised by the streamer-injecting wrapper after
+            ``self.talker.generate`` returns, to skip the public wrapper's
+            residual non-streaming decode work (which the streaming worker
+            has already produced chunk-by-chunk)."""
+            pass
+
         def _run_talker() -> None:
+            real_talker_generate = model.model.talker.generate
+            real_talker_forward = model.model.talker.forward
+            forward_invocations_box = [0]
+            chunks_pushed_box = [0]
+            # Per-step buffer of multi-codebook codec_ids tensors. Each
+            # entry is shape ``(batch=1, num_code_groups)``. We push to
+            # ``streamer.queue`` directly (not via ``streamer.put``) so
+            # the buffer is in STEPS not flat ints — required because
+            # the qwen-tts 12Hz tokenizer's ``decode`` expects
+            # ``(N_steps, num_code_groups)`` per sample.
+            step_buffer: list = []
+            chunk_size = streamer.chunk_size
+            lookahead = streamer.lookahead
+            chunk_with_lookahead = chunk_size + lookahead
+
+            # Preserve the original forward's signature on our wrapper so
+            # HF GenerationMixin's ``_validate_model_kwargs`` introspection
+            # at ``transformers/generation/utils.py:1562-1566`` sees the
+            # full parameter list (``trailing_text_hidden``, ``tts_pad_embed``,
+            # ``subtalker_*``, etc.) rather than the wrapper's bare
+            # ``*args, **kwargs``. Without this, HF raises
+            # ``ValueError("The following model_kwargs are not used by the
+            # model")`` when the wrapper passes the talker's custom kwargs
+            # at modeling_qwen3_tts.py:2272-2278 — empirically observed in
+            # Story 16.8's RTX 5090 harness re-run.
+            import inspect as _inspect_local
             try:
-                # Best-effort wire-up — Story 16.7 validates kwargs against
-                # real qwen-tts and refines.
-                model.model.generate(streamer=streamer)
-                streamer.end()
+                _real_forward_sig = _inspect_local.signature(real_talker_forward)
+            except (ValueError, TypeError):  # pragma: no cover (defensive)
+                _real_forward_sig = None
+
+            def _streaming_forward(*args: Any, **kwargs: Any) -> Any:
+                """Forward-hook that captures multi-codebook ``codec_ids``
+                from each generation step and pushes chunks to the
+                streamer queue when ``chunk_size + lookahead`` STEPS have
+                accumulated.
+
+                Story 16.8 finding: HF ``GenerationMixin._sample`` calls
+                ``streamer.put(next_tokens)`` with the codec_head's
+                MAIN-codebook sample only — the other codebooks are
+                produced inside ``Qwen3TTSTalkerForConditionalGeneration.forward``
+                via ``code_predictor.generate`` (modeling_qwen3_tts.py:1671)
+                and returned in ``Qwen3TTSTalkerOutputWithPast.hidden_states[1]``
+                (line 1738). We bypass HF's per-token streamer protocol
+                entirely and capture from the forward output instead.
+                """
+                forward_invocations_box[0] += 1
+                output = real_talker_forward(*args, **kwargs)
+                # Prefill (inputs_embeds.shape[1] > 1): codec_ids is None
+                # per modeling_qwen3_tts.py:1665-1667. Skip — no codec
+                # tokens generated this step.
+                hidden_states = getattr(output, "hidden_states", None)
+                if hidden_states is None or len(hidden_states) < 2:
+                    return output
+                codec_ids = hidden_states[1]
+                if codec_ids is None:
+                    return output
+                # Cooperative cancel (D-11): stop accumulating but let
+                # HF iterate cleanly. The wrapper post-processing won't
+                # observe inconsistency because we short-circuit via
+                # _TalkerStreamComplete after generate returns.
+                if streamer._cancel_event.is_set():
+                    return output
+                step_buffer.append(codec_ids)
+                # Flush full chunks while threshold reached. ``while``
+                # because a single forward call shouldn't produce >1
+                # chunk's worth of steps, but defensive against future
+                # batch-wise generation patterns.
+                while len(step_buffer) >= chunk_with_lookahead:
+                    if streamer._cancel_event.is_set():
+                        break
+                    # Stack the first ``chunk_with_lookahead`` steps into
+                    # a (chunk_with_lookahead, num_code_groups) tensor.
+                    # Each step is shape ``(1, num_code_groups)``; cat
+                    # along dim=0 then squeeze the leading 1-batch dim.
+                    chunk_tensor = _torch_local.cat(
+                        step_buffer[:chunk_with_lookahead], dim=0
+                    )
+                    # Push to streamer.queue directly (bypass put/buffer).
+                    # Backpressure: queue.put blocks if maxsize reached;
+                    # HF generate yields the GIL between steps so the
+                    # decoder worker drains naturally.
+                    streamer.queue.put(chunk_tensor)
+                    chunks_pushed_box[0] += 1
+                    # Slide forward by chunk_size; keep the trailing
+                    # ``lookahead`` steps as left-context for next chunk.
+                    del step_buffer[:chunk_size]
+                return output
+
+            # Apply the captured signature so HF's introspection works.
+            if _real_forward_sig is not None:
+                _streaming_forward.__signature__ = _real_forward_sig
+            try:
+                _streaming_forward.__wrapped__ = real_talker_forward
+            except (AttributeError, TypeError):  # pragma: no cover (defensive)
+                pass
+
+            def _patched_talker_generate(*args: Any, **kwargs: Any) -> Any:
+                """Run the real generate (with forward-hook installed),
+                then short-circuit the wrapper's residual non-streaming
+                decode via _TalkerStreamComplete.
+
+                Do NOT inject ``streamer`` kwarg — HF's per-token streamer
+                protocol is incompatible with the qwen-tts multi-codebook
+                architecture (HF's ``streamer.put`` fires only with the
+                main codec_head's sample, but the speech_tokenizer's
+                ``decode`` requires all ``num_code_groups`` codebooks per
+                step). The forward-hook captures multi-codebook codec_ids
+                from the talker's per-step output instead.
+                """
+                real_talker_generate(*args, **kwargs)
+                raise _TalkerStreamComplete()
+
+            # Lazy-import torch here so the module-level ``import torch``
+            # in qwen_tts_service.py doesn't change. Avoids growing the
+            # import surface and keeps test environments without
+            # CUDA-bound torch DLLs viable.
+            import torch as _torch_local
+
+            def _flush_residual_and_eos(buf: list, strm: Any, torch_mod: Any) -> None:
+                """Push residual ``step_buffer`` as one final chunk (if any)
+                then push ``END_OF_STREAM`` so the worker exits cleanly. Both
+                are direct ``streamer.queue.put`` calls; the streamer's
+                int-buffer ``put()/end()`` mechanism is bypassed because
+                Story 16.8 streams whole multi-codebook tensors per step.
+                """
+                if buf:
+                    try:
+                        residual_tensor = torch_mod.cat(buf, dim=0)
+                        strm.queue.put(residual_tensor)
+                    except Exception:  # pragma: no cover (defensive)
+                        pass
+                    buf.clear()
+                try:
+                    strm.queue.put(END_OF_STREAM)
+                except Exception:  # pragma: no cover (defensive)
+                    pass
+
+            try:
+                model.model.talker.generate = _patched_talker_generate
+                model.model.talker.forward = _streaming_forward
+                try:
+                    if request.model_type == QwenModelType.CUSTOM_VOICE:
+                        model.generate_custom_voice(
+                            text=request.text,
+                            speaker=request.speaker or "",
+                            language=request.language or "Auto",
+                            instruct=request.instruct,
+                            non_streaming_mode=False,
+                        )
+                    elif request.model_type == QwenModelType.VOICE_DESIGN:
+                        model.generate_voice_design(
+                            text=request.text,
+                            instruct=request.instruct or "",
+                            language=request.language or "Auto",
+                            non_streaming_mode=False,
+                        )
+                    elif request.model_type == QwenModelType.BASE:
+                        if request.voice_clone_prompt is None:
+                            raise ValueError(
+                                "TRUE_STREAM voice-clone path requires "
+                                "request.voice_clone_prompt"
+                            )
+                        model.generate_voice_clone(
+                            text=request.text,
+                            language=request.language or "Auto",
+                            voice_clone_prompt=request.voice_clone_prompt,
+                            non_streaming_mode=False,
+                        )
+                    else:
+                        raise NotImplementedError(
+                            f"TRUE_STREAM does not support model_type "
+                            f"{request.model_type!r}"
+                        )
+                finally:
+                    # Always restore — patches must not leak past this
+                    # dispatch. Restoration order doesn't matter; both
+                    # are independent.
+                    model.model.talker.generate = real_talker_generate
+                    model.model.talker.forward = real_talker_forward
+            except _TalkerStreamComplete:
+                # Expected success path: forward-hook captured codec_ids per
+                # step and pushed chunks. Now flush residual step_buffer as
+                # the final chunk and push END_OF_STREAM to signal the worker.
+                _flush_residual_and_eos(step_buffer, streamer, _torch_local)
+                return
             except Exception as exc:
                 self.logger.exception(
                     f"[QwenTTS] TRUE_STREAM talker error: {exc}"
                 )
                 streamer._cancel_event.set()
+                # Drop residual on error path (cancel takes precedence) but
+                # still push END_OF_STREAM so the worker exits its loop.
+                step_buffer.clear()
                 try:
-                    streamer.end()
+                    streamer.queue.put(END_OF_STREAM)
                 except Exception:  # pragma: no cover (defensive)
                     pass
+                return
+
+            # The wrapper completed without firing the talker.generate
+            # patch — i.e., it returned before reaching
+            # ``self.talker.generate(...)``. Possible causes: an early-return
+            # in the wrapper, a validation short-circuit, or a qwen-tts
+            # version where the talker is invoked through a different
+            # entrypoint. Either way no codec_ids were captured, so signal
+            # end-of-stream and let the empty-chunks guard at the dispatch
+            # level (qwen_tts_service.py:2845-2861) route to the fallback
+            # chain.
+            self.logger.warning(
+                "[QwenTTS] TRUE_STREAM wrapper completed but "
+                "talker.generate was never invoked; the empty-chunks guard "
+                "will route to fallback"
+            )
+            step_buffer.clear()
+            try:
+                streamer.queue.put(END_OF_STREAM)
+            except Exception:  # pragma: no cover (defensive)
+                pass
+
         return _run_talker
 
     async def _generate_true_stream(

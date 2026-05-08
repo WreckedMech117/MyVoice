@@ -1337,3 +1337,534 @@ class TestSilentTalkerSurfacesAsFailure:
         _, fallback_target, fallback_tags = fallback_metrics[0]
         assert fallback_target == "sentence_stream"
         assert fallback_tags.get("from_mode") == "true_stream"
+
+
+# --------------------------------------------------------------------------- #
+# Story 16.8 — TestTrueStreamWireUpEndToEnd
+#
+# The Story 16.6 / 16.7 smoke tests above ALL monkey-patch
+# ``service._build_true_stream_talker`` to inject a controlled token-feeding
+# closure. That patching is what allowed Story 16.6's structural wire-up
+# bug — ``model.model.generate(streamer=streamer)`` with no conditioning
+# args — to ship: every test bypassed the real builder. This class is the
+# regression guard against another silent wire-up failure ever recurring:
+# it exercises the REAL ``_build_true_stream_talker`` body (the talker-patch
+# variant of Path A from Story 16.8) with a fake-model fixture whose
+# attribute graph satisfies the wire-up's runtime contract — a reachable
+# ``model.model.talker.generate`` call that the patch can interpose on,
+# and a ``model.generate_custom_voice`` that drives the wrapper through to
+# that call site.
+# --------------------------------------------------------------------------- #
+
+
+def _make_streamer_aware_fake_model(
+    step_count: int = 100, num_code_groups: int = 4,
+):
+    """Build a MagicMock whose attribute graph satisfies Story 16.8's
+    forward-hook wire-up.
+
+    Story 16.8 finding (2026-05-07): HF ``GenerationMixin._sample``'s
+    standard ``streamer.put(next_tokens)`` protocol fires only with the
+    main-codebook token; the qwen-tts talker is multi-codebook and the
+    12Hz speech-tokenizer's ``decode`` requires
+    ``(N_steps, num_code_groups)`` per sample. The production fix
+    captures ``codec_ids`` via a ``talker.forward`` hook (each forward
+    call returns ``Qwen3TTSTalkerOutputWithPast.hidden_states[1] = codec_ids``
+    of shape ``(batch=1, num_code_groups)``).
+
+    This fixture mimics that contract:
+      - ``talker.forward`` is called step_count + 1 times (1 prefill +
+        step_count generation steps). Prefill returns ``codec_ids=None``;
+        each generation step returns a deterministic
+        ``(1, num_code_groups)`` tensor.
+      - ``talker.generate`` simulates HF ``_sample``'s loop by invoking
+        ``talker.forward`` step_count + 1 times.
+      - ``generate_custom_voice`` (and the two siblings) simulate the
+        public wrapper by invoking ``talker.generate``.
+
+    The fixture does NOT replace ``_build_true_stream_talker`` itself —
+    that is the body under test. The forward-hook installed by
+    ``_build_true_stream_talker`` interposes on ``talker.forward``,
+    captures codec_ids, accumulates into step_buffer, and pushes chunks
+    to ``streamer.queue`` when ``chunk_size + lookahead`` steps land.
+
+    With ``CodecTokenStreamer`` defaults (chunk_size=25, lookahead=5),
+    ``step_count=100`` produces 3 chunks during generation (push points
+    at 30 / 55 / 80 steps; slide forward by 25 each time keeps last 5
+    as overlap) plus 1 residual chunk on flush — total 4 chunks.
+
+    Returns ``(mock_model, hits)`` where ``hits`` is a dict captured by
+    the fake methods so tests can assert on call counts.
+    """
+    import torch
+
+    mock_model = MagicMock()
+    hits = {
+        "talker_generate_calls": 0,
+        "talker_forward_calls": 0,
+        "custom_voice_calls": 0,
+        "voice_clone_calls": 0,
+        "voice_design_calls": 0,
+    }
+
+    def fake_talker_forward(*args, **kwargs):
+        hits["talker_forward_calls"] += 1
+        # First call: prefill (inputs_embeds.shape[1] > 1) — codec_ids
+        # is None per modeling_qwen3_tts.py:1665-1667.
+        if hits["talker_forward_calls"] == 1:
+            codec_ids = None
+        else:
+            # Deterministic per-step codec_ids; values are
+            # (step_index * 7) % 1024 across the num_code_groups
+            # codebooks. Just needs to be a valid LongTensor of the
+            # right shape for the decode_fn override to consume.
+            step_idx = hits["talker_forward_calls"] - 1
+            codec_ids = torch.tensor(
+                [[(step_idx * 7 + g) % 1024 for g in range(num_code_groups)]],
+                dtype=torch.long,
+            )
+        result = MagicMock()
+        # ``Qwen3TTSTalkerOutputWithPast.hidden_states = (real_hidden, codec_ids)``
+        # per modeling_qwen3_tts.py:1738.
+        result.hidden_states = (None, codec_ids)
+        return result
+
+    def fake_talker_generate(*args, **kwargs):
+        hits["talker_generate_calls"] += 1
+        # Simulate HF GenerationMixin._sample's loop: 1 prefill forward
+        # call + step_count generation forward calls. Each subsequent
+        # forward returns one step's codec_ids; the production
+        # forward-hook captures and accumulates.
+        for _ in range(step_count + 1):
+            mock_model.model.talker.forward(
+                inputs_embeds=None, attention_mask=None,
+            )
+        return MagicMock()
+
+    def fake_generate_custom_voice(
+        text, speaker, language, instruct=None, non_streaming_mode=False,
+    ):
+        hits["custom_voice_calls"] += 1
+        # Production wrapper at qwen3_tts_model.py:829 calls
+        # ``self.model.generate(...)`` which internally calls
+        # ``self.talker.generate(...)`` at modeling_qwen3_tts.py:2272.
+        # For the test, we shortcut to the talker.
+        return mock_model.model.talker.generate(
+            inputs_embeds=None,
+            attention_mask=None,
+            trailing_text_hidden=None,
+            tts_pad_embed=None,
+        )
+
+    def fake_generate_voice_design(
+        text, instruct, language, non_streaming_mode=False,
+    ):
+        hits["voice_design_calls"] += 1
+        return mock_model.model.talker.generate(
+            inputs_embeds=None, attention_mask=None,
+        )
+
+    def fake_generate_voice_clone(
+        text, language, voice_clone_prompt, non_streaming_mode=False,
+    ):
+        hits["voice_clone_calls"] += 1
+        return mock_model.model.talker.generate(
+            inputs_embeds=None, attention_mask=None,
+        )
+
+    mock_model.model.talker.forward = fake_talker_forward
+    mock_model.model.talker.generate = fake_talker_generate
+    mock_model.generate_custom_voice = fake_generate_custom_voice
+    mock_model.generate_voice_design = fake_generate_voice_design
+    mock_model.generate_voice_clone = fake_generate_voice_clone
+    return mock_model, hits
+
+
+class TestTrueStreamWireUpEndToEnd:
+    """Story 16.8 — regression guard for the real ``_build_true_stream_talker``
+    body. These tests do NOT monkey-patch ``_build_true_stream_talker``
+    itself; they install a streamer-shaped fake model and exercise the
+    production wire-up. A future regression that re-introduces the
+    Story 16.6 silent-failure shape (e.g., literal ``model.model.generate(
+    streamer=streamer)`` without conditioning, or a path that bypasses
+    ``model.generate_custom_voice``) will produce zero chunks here and
+    fail the empty-chunks assertion.
+    """
+
+    def test_real_wire_up_fires_streamer_for_custom_voice_request(
+        self, qapp, registry, coordinator, monkeypatch,
+    ):
+        """AC #2 happy path — the talker-patch installs a forward-hook on
+        ``model.model.talker.forward``, the wrapper's
+        ``self.talker.generate(...)`` runs HF ``_sample`` which calls
+        forward repeatedly, the hook captures multi-codebook codec_ids per
+        step, chunks land on ``streamer.queue``, the worker decodes them,
+        and the dispatch returns ``success=True`` with non-empty audio.
+        """
+        import torch
+        from myvoice.services.qwen_tts_service import (
+            GenerationMode, QwenModelType, QwenTTSRequest,
+        )
+
+        service, _placeholder_model = _build_true_stream_service(
+            registry, coordinator,
+        )
+        # Replace the placeholder mock with our forward-hook-aware fake.
+        # step_count=100 with chunk_size=25/lookahead=5 produces 3 chunks
+        # during generation + 1 residual = 4 chunks total.
+        fake_model, hits = _make_streamer_aware_fake_model(
+            step_count=100, num_code_groups=4,
+        )
+        service._model_registry.get_loaded_model = MagicMock(
+            return_value=fake_model
+        )
+        coordinator.play_dual_stream = AsyncMock(return_value=MagicMock())
+
+        # Override the decode_fn builder so we don't need a real
+        # speech_tokenizer. The fake decode_fn receives a (N_steps, Q)
+        # tensor and returns a deterministic float32 PCM array of length
+        # ``samples_per_step * N_steps`` so the worker's overlap-add trim
+        # has well-defined geometry.
+        SAMPLES_PER_STEP = 100
+
+        def fake_decode_fn_builder(model):
+            def decode(chunk_tensor):
+                # chunk_tensor: torch.Tensor of shape (N_steps, num_code_groups)
+                if isinstance(chunk_tensor, torch.Tensor):
+                    n_steps = chunk_tensor.shape[0]
+                else:
+                    n_steps = len(chunk_tensor)
+                return np.full(
+                    n_steps * SAMPLES_PER_STEP, 0.01, dtype=np.float32
+                )
+            return decode
+
+        monkeypatch.setattr(
+            service, "_build_true_stream_decode_fn", fake_decode_fn_builder
+        )
+
+        request = QwenTTSRequest(
+            text="hello world",
+            language="English",
+            model_type=QwenModelType.CUSTOM_VOICE,
+            speaker="Ryan",
+            streaming=True,
+        )
+
+        async def runner():
+            async def drainer(stop_evt):
+                while not stop_evt.is_set():
+                    qapp.processEvents()
+                    await asyncio.sleep(0.005)
+
+            stop_evt = asyncio.Event()
+            drain_task = asyncio.create_task(drainer(stop_evt))
+            try:
+                resp = await service._generate_true_stream(request)
+            finally:
+                stop_evt.set()
+                await drain_task
+            return resp
+
+        response = asyncio.run(runner())
+        for _ in range(50):
+            qapp.processEvents()
+            time.sleep(0.005)
+
+        # The wrapper fired exactly once.
+        assert hits["custom_voice_calls"] == 1, (
+            f"Expected 1 generate_custom_voice call, got "
+            f"{hits['custom_voice_calls']}; the talker-patch wrapper must "
+            f"route through the public entrypoint matching request.model_type"
+        )
+        # talker.generate fired exactly once (Story 16.8 invariant).
+        assert hits["talker_generate_calls"] == 1, (
+            f"Expected 1 talker.generate call, got "
+            f"{hits['talker_generate_calls']}"
+        )
+        # Forward-hook fired step_count + 1 times (1 prefill + 100 gen).
+        assert hits["talker_forward_calls"] == 101, (
+            f"Expected 101 talker.forward calls (1 prefill + 100 gen), got "
+            f"{hits['talker_forward_calls']}; the forward-hook may not be "
+            f"installed, OR fake_talker_generate's loop count drifted"
+        )
+
+        # Empty-chunks guard was NOT triggered: dispatch returned success.
+        assert response is not None
+        assert response.success is True, (
+            f"TRUE_STREAM dispatch returned failure: {response.error_message}"
+        )
+        assert response.mode == GenerationMode.STREAMING
+        assert response.audio_data is not None
+        assert response.audio_data.size > 0
+        assert response.chunks_generated >= 1, (
+            f"Expected >=1 chunks, got {response.chunks_generated}; the "
+            f"forward-hook may have produced 0 codec_id captures"
+        )
+
+    def test_patch_is_restored_after_dispatch_completes(
+        self, qapp, registry, coordinator, monkeypatch,
+    ):
+        """AC #2 invariant — Story 16.8's talker-patch installs a
+        streamer-injecting wrapper for the duration of one dispatch and
+        MUST restore the original ``model.model.talker.generate`` on exit
+        (success, exception, or sentinel). Otherwise a subsequent
+        non-streaming call (e.g., a SENTENCE_STREAM fallback re-using the
+        same model instance) would still have the patch installed and
+        fire the streamer in non-streaming context.
+        """
+        from myvoice.services.qwen_tts_service import (
+            QwenModelType, QwenTTSRequest,
+        )
+
+        import torch
+
+        service, _placeholder = _build_true_stream_service(
+            registry, coordinator,
+        )
+        fake_model, _hits = _make_streamer_aware_fake_model(
+            step_count=50, num_code_groups=4,
+        )
+        service._model_registry.get_loaded_model = MagicMock(
+            return_value=fake_model
+        )
+        coordinator.play_dual_stream = AsyncMock(return_value=MagicMock())
+
+        # Snapshot both originals — Story 16.8 patches BOTH .generate
+        # (for the _TalkerStreamComplete short-circuit) and .forward
+        # (for the multi-codebook codec_ids capture).
+        original_talker_generate = fake_model.model.talker.generate
+        original_talker_forward = fake_model.model.talker.forward
+
+        def fake_decode_fn_builder(model):
+            def decode(chunk_tensor):
+                n_steps = (
+                    chunk_tensor.shape[0]
+                    if isinstance(chunk_tensor, torch.Tensor)
+                    else len(chunk_tensor)
+                )
+                return np.full(n_steps * 50, 0.01, dtype=np.float32)
+            return decode
+
+        monkeypatch.setattr(
+            service, "_build_true_stream_decode_fn", fake_decode_fn_builder
+        )
+
+        request = QwenTTSRequest(
+            text="hello",
+            language="English",
+            model_type=QwenModelType.CUSTOM_VOICE,
+            speaker="Ryan",
+            streaming=True,
+        )
+
+        async def runner():
+            async def drainer(stop_evt):
+                while not stop_evt.is_set():
+                    qapp.processEvents()
+                    await asyncio.sleep(0.005)
+
+            stop_evt = asyncio.Event()
+            drain_task = asyncio.create_task(drainer(stop_evt))
+            try:
+                await service._generate_true_stream(request)
+            finally:
+                stop_evt.set()
+                await drain_task
+
+        asyncio.run(runner())
+        for _ in range(50):
+            qapp.processEvents()
+            time.sleep(0.005)
+
+        # After the dispatch, BOTH patches must be restored.
+        assert fake_model.model.talker.generate is original_talker_generate, (
+            "Story 16.8's talker.generate patch did not restore the "
+            "original after dispatch — the patch leaked past its scope "
+            "and would break a subsequent SENTENCE_STREAM fallback re-using "
+            "the same model instance."
+        )
+        assert fake_model.model.talker.forward is original_talker_forward, (
+            "Story 16.8's talker.forward patch did not restore the "
+            "original after dispatch — the forward-hook leak would break "
+            "a subsequent non-streaming call by intercepting its forward "
+            "outputs and pushing to a stale streamer."
+        )
+
+    def test_real_wire_up_cooperative_cancel_does_not_raise(
+        self, qapp, registry, coordinator, monkeypatch,
+    ):
+        """AC #2 cancel-mid-generation — the forward-hook checks
+        ``streamer._cancel_event.is_set()`` before appending each
+        captured ``codec_ids``; once cancel fires, accumulation stops and
+        no further chunks are pushed. The fake talker.generate returns
+        cleanly (no exception), the talker.generate patch's sentinel
+        raises, ``_run_talker``'s ``except _TalkerStreamComplete`` catches
+        it, residual is flushed (already-cancelled buffer may be empty),
+        END_OF_STREAM is pushed, the talker thread exits without
+        escalating to D-11's "no exceptions through HF internals"
+        violation.
+        """
+        import torch
+        from myvoice.services.qwen_tts_service import (
+            QwenModelType, QwenTTSRequest,
+        )
+
+        service, _placeholder = _build_true_stream_service(
+            registry, coordinator,
+        )
+        coordinator.play_dual_stream = AsyncMock(return_value=MagicMock())
+
+        # Fake talker that runs ~30 forward calls (1 prefill + 29 gen
+        # steps, enough to push 1 chunk before cancel), then BLOCKS on
+        # the cancel event mid-loop so cancel deterministically lands
+        # before completion. After cancel fires, continues a few more
+        # forward calls (mirroring HF's behavior of iterating a few more
+        # times after streamer goes silent).
+        cancel_observed = [False]
+        post_cancel_forward_calls = [0]
+        forward_call_count = [0]
+
+        def fake_talker_forward(*args, **kwargs):
+            forward_call_count[0] += 1
+            # Prefill = call #1, codec_ids=None.
+            if forward_call_count[0] == 1:
+                codec_ids = None
+            else:
+                step_idx = forward_call_count[0] - 1
+                codec_ids = torch.tensor(
+                    [[step_idx, step_idx + 1, step_idx + 2, step_idx + 3]],
+                    dtype=torch.long,
+                )
+            result = MagicMock()
+            result.hidden_states = (None, codec_ids)
+            return result
+
+        fake_model = MagicMock()
+        fake_model.model.talker.forward = fake_talker_forward
+
+        # The fake_talker_generate is called by the wrapper. It simulates
+        # HF _sample by calling forward in a loop, sleeping mid-loop to
+        # give the cancel coroutine time to fire ``request_cancel`` (which
+        # flips the streamer's cancel_event via the cancel hook), then
+        # continuing forward calls — the forward-hook in production will
+        # skip codec_id accumulation once cancel fires.
+        def fake_talker_generate(*args, **kwargs):
+            # Initial prefill + 29 generation steps populates step_buffer
+            # to 29 entries (one short of the 30-step chunk threshold,
+            # so no chunk is pushed yet).
+            for _ in range(30):
+                fake_model.model.talker.forward(*args, **kwargs)
+            # Sleep long enough for the cancel coroutine to run +
+            # request_cancel to propagate through the registry's
+            # cancel hook to streamer._cancel_event.
+            time.sleep(0.25)
+            cancel_observed[0] = True  # We waited; cancel hook had time.
+            # Continue feeding forward calls — the production
+            # forward-hook's cancel check will skip codec_id accumulation
+            # per D-11.
+            for _ in range(5):
+                fake_model.model.talker.forward(*args, **kwargs)
+                post_cancel_forward_calls[0] += 1
+            return MagicMock()
+
+        fake_model.model.talker.generate = fake_talker_generate
+
+        cv_call_count = [0]
+
+        def fake_generate_custom_voice(
+            text, speaker, language, instruct=None, non_streaming_mode=False,
+        ):
+            cv_call_count[0] += 1
+            return fake_model.model.talker.generate(
+                inputs_embeds=None,
+                attention_mask=None,
+            )
+
+        fake_model.generate_custom_voice = fake_generate_custom_voice
+        service._model_registry.get_loaded_model = MagicMock(
+            return_value=fake_model
+        )
+
+        def fake_decode_fn_builder(model):
+            def decode(chunk_tensor):
+                n_steps = (
+                    chunk_tensor.shape[0]
+                    if isinstance(chunk_tensor, torch.Tensor)
+                    else len(chunk_tensor)
+                )
+                return np.full(n_steps * 50, 0.01, dtype=np.float32)
+            return decode
+
+        monkeypatch.setattr(
+            service, "_build_true_stream_decode_fn", fake_decode_fn_builder
+        )
+
+        request = QwenTTSRequest(
+            text="hello world",
+            language="English",
+            model_type=QwenModelType.CUSTOM_VOICE,
+            speaker="Ryan",
+            streaming=True,
+        )
+
+        async def runner():
+            async def drainer(stop_evt):
+                while not stop_evt.is_set():
+                    qapp.processEvents()
+                    await asyncio.sleep(0.005)
+
+            stop_evt = asyncio.Event()
+            drain_task = asyncio.create_task(drainer(stop_evt))
+
+            async def cancel_after_first_tokens():
+                deadline = time.perf_counter() + 2.0
+                while (
+                    time.perf_counter() < deadline
+                    and service._current_session_id is None
+                ):
+                    await asyncio.sleep(0.001)
+                # Brief delay so the talker has fed the first 5 tokens
+                # and reached the cancel-event wait.
+                await asyncio.sleep(0.05)
+                if service._current_session_id is not None:
+                    service._session_registry.request_cancel(
+                        service._current_session_id
+                    )
+
+            cancel_task = asyncio.create_task(cancel_after_first_tokens())
+            try:
+                response = await service._generate_true_stream(request)
+            except Exception as exc:
+                stop_evt.set()
+                await drain_task
+                await cancel_task
+                raise AssertionError(
+                    f"Talker thread raised through HF internals "
+                    f"(D-11 invariant violated): {exc!r}"
+                ) from exc
+            finally:
+                stop_evt.set()
+                await drain_task
+                await cancel_task
+            return response
+
+        response = asyncio.run(runner())
+        for _ in range(50):
+            qapp.processEvents()
+            time.sleep(0.005)
+
+        # Cancel was actually observed (deterministic, not racy).
+        assert cancel_observed[0], (
+            "Cancel never fired during the talker — test rig is racy "
+            "or session_id was never set; assertions below are meaningless"
+        )
+        # Wrapper fired exactly once.
+        assert cv_call_count[0] == 1
+        # Dispatch returned without raising; D-11 invariant preserved.
+        assert response is not None
+        # post-cancel forward calls went through but the forward-hook's
+        # cancel check skipped codec_id accumulation (D-11). The dispatch
+        # did not crash.
+        assert post_cancel_forward_calls[0] == 5
+
