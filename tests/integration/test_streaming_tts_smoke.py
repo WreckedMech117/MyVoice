@@ -725,21 +725,35 @@ class TestTrueStreamDispatchEndToEnd:
         request_cancel → hook fires → streamer event flips → worker drains
         → posts ('cancel', sid) → registry CANCELLED. The dispatch path
         does NOT post a duplicate ('cancel', sid) per the P-7 invariant.
+
+        The talker BLOCKS until the cancel hook fires the streamer's cancel
+        event, guaranteeing cancel actually lands mid-stream (Story 16.6
+        review H2 — the previous version of this test used wallclock timing
+        and accepted ``cancel_count <= 1``, which silently passed when the
+        cancel never propagated).
         """
         from myvoice.services.qwen_tts_service import QwenModelType, QwenTTSRequest
 
         service, mock_model = _build_true_stream_service(registry, coordinator)
         coordinator.play_dual_stream = AsyncMock(return_value=MagicMock())
 
-        # Slow talker — takes ~200ms total so cancel can land mid-stream.
+        # Talker feeds 5 tokens (enough for first-chunk to fire and
+        # play_dual_stream to be called), then BLOCKS on the cancel event
+        # so cancel deterministically lands mid-stream.
         def fake_talker_builder(model, request, streamer):
             def run():
-                for tok in range(200):
+                for tok in range(5):
+                    streamer.put([tok])
+                # Block until cancel actually fires; ensures the test never
+                # races past the cancel point. 5s is a hard upper bound —
+                # the cancel_after_delay coroutine fires it within ~50ms.
+                streamer._cancel_event.wait(timeout=5.0)
+                # Continue feeding so the worker is still consuming when
+                # the next top-of-loop check sees the cancel event.
+                for tok in range(5, 200):
                     streamer.put([tok])
                     if streamer._cancel_event.is_set():
-                        # Stop early on cancel; put() is a no-op anyway.
                         break
-                    time.sleep(0.001)
                 try:
                     streamer.end()
                 except Exception:
@@ -768,18 +782,8 @@ class TestTrueStreamDispatchEndToEnd:
             streaming=True,
         )
 
-        # Capture cancel-related posts for invariant assertion.
-        cancel_posts: list = []
-        original_post = registry.post_mutation
-
-        def recording_post(method, *args):
-            if method == "cancel":
-                cancel_posts.append((time.perf_counter(), args))
-            original_post(method, *args)
-
-        # Don't replace the registry's post_mutation directly — that
-        # would shadow the registry's queued-connection wiring. Instead,
-        # subscribe to the session_state_changed signal post-fact.
+        # Count cancel transitions exactly (was '<=' before; AC #9 requires
+        # exactly one per session — Story 16.6 review H2 / Subtask 7.6).
         cancel_count_box = [0]
 
         def state_listener(sid_arg, _state):
@@ -798,15 +802,13 @@ class TestTrueStreamDispatchEndToEnd:
                     await asyncio.sleep(0.005)
 
             async def cancel_after_delay():
-                # Wait until the dispatcher has set _current_session_id
-                # AND the talker has produced at least one token.
                 deadline = time.perf_counter() + 2.0
                 while (
                     time.perf_counter() < deadline
                     and service._current_session_id is None
                 ):
                     await asyncio.sleep(0.001)
-                # Give the talker a moment to feed tokens.
+                # Wait briefly so the talker has fed its initial tokens.
                 await asyncio.sleep(0.05)
                 if service._current_session_id is not None:
                     service._session_registry.request_cancel(
@@ -829,12 +831,10 @@ class TestTrueStreamDispatchEndToEnd:
             qapp.processEvents()
             time.sleep(0.005)
 
-        # The dispatch returns either cancelled-response or successful-after
-        # -drain depending on timing. The behavioral guarantee is
-        # "no exception, registry reaches CANCELLED, exactly one cancel
-        # transition per session."
         assert response is not None
-        assert cancel_count_box[0] <= 1, (
+        # AC #9: exactly one cancel transition (P-7 — worker is canonical
+        # source; dispatcher must NOT double-post).
+        assert cancel_count_box[0] == 1, (
             f"Got {cancel_count_box[0]} cancelled-state transitions; "
             f"AC #9 requires exactly one (P-7 invariant)"
         )
@@ -915,6 +915,239 @@ class TestTrueStreamDispatchEndToEnd:
         assert resp2.success is True, f"second: {resp2.error_message}"
         # Two distinct sessions in the registry.
         assert len(registry._sessions) == 2
+
+    def test_cancel_before_first_chunk_returns_cleanly(
+        self, qapp, registry, coordinator, monkeypatch, event_loop_thread,
+    ):
+        """AC #9 / Subtask 7.4 — the cancel-before-first-chunk edge case.
+
+        The talker has not yet produced enough tokens to fill a chunk
+        (chunk_size=25) when cancel arrives. The dispatch must not crash,
+        must not leak threads, and must produce exactly one cancel
+        transition on the session.
+
+        The literal "cancel before talker_thread.start()" the AC text
+        describes is structurally untestable today — the dispatcher
+        unconditionally starts both threads — so this test exercises the
+        next-closest realistic timing (cancel before chunk-size threshold,
+        before play_dual_stream is invoked).
+        """
+        from myvoice.services.qwen_tts_service import QwenModelType, QwenTTSRequest
+
+        service, _mock_model = _build_true_stream_service(registry, coordinator)
+        coordinator.play_dual_stream = AsyncMock(return_value=MagicMock())
+
+        # Talker feeds 30 tokens (so chunk_size=25 produces one chunk and
+        # the worker processes it before cancel fires), then BLOCKS on
+        # cancel — guaranteeing cancel deterministically lands before
+        # finalize. After cancel, talker calls end() so the worker drains.
+        def fake_talker_builder(model, request, streamer):
+            def run():
+                for tok in range(30):
+                    streamer.put([tok])
+                streamer._cancel_event.wait(timeout=5.0)
+                try:
+                    streamer.end()
+                except Exception:
+                    pass
+            return run
+
+        def fake_decode_fn_builder(model):
+            def decode(chunk_tokens):
+                return np.array(
+                    [t * 0.01 for t in chunk_tokens], dtype=np.float32
+                )
+            return decode
+
+        monkeypatch.setattr(
+            service, "_build_true_stream_talker", fake_talker_builder
+        )
+        monkeypatch.setattr(
+            service, "_build_true_stream_decode_fn", fake_decode_fn_builder
+        )
+
+        request = QwenTTSRequest(
+            text="hello",
+            language="Auto",
+            model_type=QwenModelType.CUSTOM_VOICE,
+            speaker="Ryan",
+            streaming=True,
+        )
+
+        cancel_count_box = [0]
+
+        def state_listener(sid_arg, _state):
+            sess = registry.get(sid_arg)
+            if sess is not None and sess.state.value == "cancelled":
+                cancel_count_box[0] += 1
+
+        registry.session_state_changed.connect(state_listener)
+
+        async def runner():
+            stop_evt = asyncio.Event()
+
+            async def drainer():
+                while not stop_evt.is_set():
+                    qapp.processEvents()
+                    await asyncio.sleep(0.005)
+
+            async def cancel_early():
+                deadline = time.perf_counter() + 2.0
+                while (
+                    time.perf_counter() < deadline
+                    and service._current_session_id is None
+                ):
+                    await asyncio.sleep(0.001)
+                # Fire cancel quickly — before play_dual_stream's first
+                # invocation in normal flow.
+                if service._current_session_id is not None:
+                    service._session_registry.request_cancel(
+                        service._current_session_id
+                    )
+
+            drain_task = asyncio.create_task(drainer())
+            cancel_task = asyncio.create_task(cancel_early())
+            try:
+                resp = await service._generate_true_stream(request)
+            finally:
+                stop_evt.set()
+                await drain_task
+                await cancel_task
+            return resp
+
+        response = asyncio.run(runner())
+        for _ in range(50):
+            qapp.processEvents()
+            time.sleep(0.005)
+
+        # Dispatch returned a response (no exception leaked). Threads are
+        # daemon=True and local to _generate_true_stream, so reaching this
+        # point inside the pytest wallclock proves no leak.
+        assert response is not None
+        # Exactly one cancel transition — never zero (cancel missed), never
+        # two (double-post). P-7 invariant.
+        assert cancel_count_box[0] == 1, (
+            f"Got {cancel_count_box[0]} cancelled-state transitions; "
+            f"AC #9 requires exactly one"
+        )
+
+    def test_no_double_cancel_post_from_dispatch_path(
+        self, qapp, registry, coordinator, monkeypatch, event_loop_thread,
+    ):
+        """AC #9 / Subtask 7.6 — P-7 invariant: the worker's drain-on-cancel
+        is the canonical source of ``('cancel', sid)``. The dispatcher's
+        ``asyncio.CancelledError`` handler must NOT post a duplicate
+        ``('cancel', sid)`` itself, or Story 16.5 AC #1's "exactly one
+        cancel post" assertion fails.
+
+        Asserts on the count of ``post_mutation('cancel', sid)`` calls
+        observed (exactly one), regardless of whether they originated from
+        the worker or the dispatcher.
+        """
+        from myvoice.services.qwen_tts_service import QwenModelType, QwenTTSRequest
+
+        service, _mock_model = _build_true_stream_service(registry, coordinator)
+        coordinator.play_dual_stream = AsyncMock(return_value=MagicMock())
+
+        # Same blocking talker pattern as test_cancel_mid_true_stream so
+        # cancel deterministically lands mid-stream.
+        def fake_talker_builder(model, request, streamer):
+            def run():
+                for tok in range(5):
+                    streamer.put([tok])
+                streamer._cancel_event.wait(timeout=5.0)
+                for tok in range(5, 100):
+                    streamer.put([tok])
+                    if streamer._cancel_event.is_set():
+                        break
+                try:
+                    streamer.end()
+                except Exception:
+                    pass
+            return run
+
+        def fake_decode_fn_builder(model):
+            def decode(chunk_tokens):
+                return np.array(
+                    [t * 0.01 for t in chunk_tokens], dtype=np.float32
+                )
+            return decode
+
+        monkeypatch.setattr(
+            service, "_build_true_stream_talker", fake_talker_builder
+        )
+        monkeypatch.setattr(
+            service, "_build_true_stream_decode_fn", fake_decode_fn_builder
+        )
+
+        # Wrap registry.post_mutation to count ('cancel', sid) calls. We
+        # cannot replace the bound method (would break the queued-connection
+        # wiring), so subscribe at the call site by monkeypatching the
+        # module-level reference the dispatcher reads.
+        cancel_call_count = [0]
+        original_post_mutation = registry.post_mutation
+
+        def counting_post(method, *args, **kwargs):
+            if method == "cancel":
+                cancel_call_count[0] += 1
+            return original_post_mutation(method, *args, **kwargs)
+
+        # The dispatcher reads ``self._session_registry.post_mutation``
+        # at construction-time of the worker's _wrapped_post closure, so
+        # we patch the bound method on this specific registry instance.
+        monkeypatch.setattr(registry, "post_mutation", counting_post)
+
+        request = QwenTTSRequest(
+            text="hello",
+            language="Auto",
+            model_type=QwenModelType.CUSTOM_VOICE,
+            speaker="Ryan",
+            streaming=True,
+        )
+
+        async def runner():
+            stop_evt = asyncio.Event()
+
+            async def drainer():
+                while not stop_evt.is_set():
+                    qapp.processEvents()
+                    await asyncio.sleep(0.005)
+
+            async def cancel_after_delay():
+                deadline = time.perf_counter() + 2.0
+                while (
+                    time.perf_counter() < deadline
+                    and service._current_session_id is None
+                ):
+                    await asyncio.sleep(0.001)
+                await asyncio.sleep(0.05)
+                if service._current_session_id is not None:
+                    service._session_registry.request_cancel(
+                        service._current_session_id
+                    )
+
+            drain_task = asyncio.create_task(drainer())
+            cancel_task = asyncio.create_task(cancel_after_delay())
+            try:
+                resp = await service._generate_true_stream(request)
+            finally:
+                stop_evt.set()
+                await drain_task
+                await cancel_task
+            return resp
+
+        response = asyncio.run(runner())
+        for _ in range(50):
+            qapp.processEvents()
+            time.sleep(0.005)
+
+        assert response is not None
+        # P-7 invariant: exactly one ('cancel', sid) post — never zero
+        # (cancel was missed) and never two (dispatcher double-posted).
+        assert cancel_call_count[0] == 1, (
+            f"Got {cancel_call_count[0]} ('cancel', sid) posts; AC #9 / "
+            f"P-7 invariant requires exactly 1 (worker is canonical source)"
+        )
 
 
 # --------------------------------------------------------------------------- #

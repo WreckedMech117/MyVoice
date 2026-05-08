@@ -2734,7 +2734,10 @@ class QwenTTSService(BaseService):
 
                 # Story 16.5: register the cancel hook BEFORE starting the
                 # threads so a cancel that arrives during spawn fires.
-                event_loop = asyncio.get_event_loop()
+                # ``get_running_loop()`` is the correct API inside an async
+                # def — ``get_event_loop()`` is deprecated in Py 3.10+ and
+                # has surprise semantics on Py 3.12+ (Story 16.6 review H3).
+                event_loop = asyncio.get_running_loop()
                 hook_session_id = sid
 
                 def _cancel_hook() -> None:
@@ -3022,6 +3025,10 @@ class QwenTTSService(BaseService):
         )
 
         failures: List[Tuple[StreamingMode, BaseException]] = []
+        # Snapshot ``_failed_requests`` before the chain so the dispatcher's
+        # terminal-failure branch only increments if no inner method already
+        # did (Story 16.6 review M3 — AC #2: "incremented exactly once").
+        failed_requests_snapshot = getattr(self, "_failed_requests", 0)
 
         for i, current_mode in enumerate(chain):
             # Per-dispatch-entry metric (D-19 / P-9). session_id is the
@@ -3045,11 +3052,15 @@ class QwenTTSService(BaseService):
             except asyncio.CancelledError:
                 # User cancel — not a fallback trigger. Propagate.
                 raise
-            except Exception as exc:  # pragma: no cover (fallback paths covered)
+            except Exception as exc:
                 failures.append((current_mode, exc))
                 reason = repr(exc)
+                # AC #6 last clause — truncate to 200 chars with an explicit
+                # ellipsis suffix so downstream telemetry can distinguish a
+                # 200-char message from a truncated one (Story 16.6 review
+                # M2). Total bounded length = 199 + len('…') = 200 chars.
                 if len(reason) > 200:
-                    reason = reason[:200]
+                    reason = reason[:199] + "…"
                 if i + 1 < len(chain):
                     next_mode = chain[i + 1]
                     # ``getattr`` defensive against partial-init instances.
@@ -3078,8 +3089,13 @@ class QwenTTSService(BaseService):
                         hardware=hardware,
                     )
 
-        # All modes failed — synthesize unrecoverable response.
-        self._failed_requests = getattr(self, "_failed_requests", 0) + 1
+        # All modes failed — synthesize unrecoverable response. Only count
+        # this dispatch as a failure if no inner method already incremented
+        # the counter (Story 16.6 review M3 — AC #2 "exactly once"). When an
+        # inner method raises after its own ``_failed_requests += 1`` (real
+        # production paths), the snapshot diff is non-zero and we skip.
+        if getattr(self, "_failed_requests", 0) == failed_requests_snapshot:
+            self._failed_requests = failed_requests_snapshot + 1
         error_lines = "; ".join(f"{m.value}: {e}" for m, e in failures)
         return QwenTTSResponse(
             success=False,

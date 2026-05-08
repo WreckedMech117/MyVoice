@@ -93,4 +93,6 @@ development_status:
   16-5-cooperative-cancellation-chain: done
   16-6-true-stream-dispatch-and-three-mode-fallback-chain: done
   16-7-empirical-validation-gates-for-streaming-default: done
+  16-8-true-stream-real-wire-up: ready-for-dev
+  16-9-nfr1-reconciliation-sentence-stream-latency-investigation: backlog
   epic-16-retrospective: optional

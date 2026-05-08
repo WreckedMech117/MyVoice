@@ -481,6 +481,48 @@ class TestThreeModeFallbackChain:
         assert service._failed_requests - before_failed == 1
 
     @pytest.mark.asyncio
+    async def test_failed_request_counter_not_double_incremented_when_inner_method_already_counted(
+        self,
+    ):
+        """Story 16.6 review M3 — AC #2: ``_failed_requests`` is incremented
+        exactly once per dispatch, even when an inner method already
+        incremented its own counter before raising. Regression test for
+        the exact bug class (snapshot-based dedup)."""
+        service = _make_service()
+        request = _make_request()
+        before_failed = service._failed_requests
+
+        async def true_stream_increments_then_raises(_req):
+            # Mimics _generate_true_stream's real behavior: increment
+            # _failed_requests on a structural failure, then raise so the
+            # dispatcher's fallback chain triggers.
+            service._failed_requests += 1
+            raise RuntimeError("inner already counted")
+
+        with (
+            patch.object(
+                service,
+                "_generate_true_stream",
+                new=AsyncMock(side_effect=true_stream_increments_then_raises),
+            ),
+            patch.object(
+                service,
+                "_generate_streaming",
+                new=AsyncMock(side_effect=RuntimeError("ss fail")),
+            ),
+            patch.object(
+                service,
+                "_generate",
+                new=AsyncMock(side_effect=RuntimeError("b fail")),
+            ),
+        ):
+            await service._dispatch_by_streaming_mode(
+                request, StreamingMode.TRUE_STREAM
+            )
+        # Exactly one increment despite the inner method's bump.
+        assert service._failed_requests - before_failed == 1
+
+    @pytest.mark.asyncio
     async def test_fallback_count_incremented_per_successful_transition(self):
         """``_fallback_count`` counts mode-to-next-mode transitions, not
         terminal failures. Two transitions: TRUE_STREAM->SENTENCE_STREAM and
@@ -822,6 +864,75 @@ class TestStreamingModeFallbackMetric:
         reason = str(fallback_calls[0].tags.get("reason", ""))
         assert len(reason) <= 200, (
             f"reason tag is {len(reason)} chars; should be truncated to <= 200"
+        )
+
+    @pytest.mark.asyncio
+    async def test_truncated_reason_ends_with_ellipsis(self, monkeypatch):
+        """Story 16.6 review M2 — AC #6 last clause: truncated reason has
+        an explicit ``…`` suffix so downstream telemetry can distinguish a
+        200-char message from a truncated one. Regression test for the
+        exact bug class (truncation without suffix)."""
+        service = _make_service()
+        request = _make_request()
+        recorder = _MetricsRecorder()
+        monkeypatch.setattr(
+            "myvoice.services.qwen_tts_service.metrics.record", recorder
+        )
+        # 300-char message — guaranteed to trigger truncation.
+        long_message = "x" * 300
+        with (
+            patch.object(
+                service,
+                "_generate_true_stream",
+                new=AsyncMock(side_effect=RuntimeError(long_message)),
+            ),
+            patch.object(
+                service,
+                "_generate_streaming",
+                new=AsyncMock(return_value=_success_response(GenerationMode.STREAMING)),
+            ),
+            patch.object(service, "_generate", new=AsyncMock()),
+        ):
+            await service._dispatch_by_streaming_mode(
+                request, StreamingMode.TRUE_STREAM
+            )
+        fallback_calls = recorder.calls_for("streaming_mode_fallback")
+        reason = str(fallback_calls[0].tags.get("reason", ""))
+        assert reason.endswith("…"), (
+            f"truncated reason {reason!r} does not end with the documented "
+            f"'…' suffix; AC #6 requires an explicit truncation marker"
+        )
+
+    @pytest.mark.asyncio
+    async def test_short_reason_is_not_suffixed(self, monkeypatch):
+        """Sanity guard for the M2 fix — a short reason must NOT get an
+        ellipsis suffix (only truncated reasons do)."""
+        service = _make_service()
+        request = _make_request()
+        recorder = _MetricsRecorder()
+        monkeypatch.setattr(
+            "myvoice.services.qwen_tts_service.metrics.record", recorder
+        )
+        with (
+            patch.object(
+                service,
+                "_generate_true_stream",
+                new=AsyncMock(side_effect=RuntimeError("short message")),
+            ),
+            patch.object(
+                service,
+                "_generate_streaming",
+                new=AsyncMock(return_value=_success_response(GenerationMode.STREAMING)),
+            ),
+            patch.object(service, "_generate", new=AsyncMock()),
+        ):
+            await service._dispatch_by_streaming_mode(
+                request, StreamingMode.TRUE_STREAM
+            )
+        fallback_calls = recorder.calls_for("streaming_mode_fallback")
+        reason = str(fallback_calls[0].tags.get("reason", ""))
+        assert not reason.endswith("…"), (
+            f"short reason {reason!r} unexpectedly has the truncation suffix"
         )
 
 
