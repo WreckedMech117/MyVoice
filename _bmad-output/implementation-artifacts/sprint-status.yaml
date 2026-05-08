@@ -96,3 +96,10 @@ development_status:
   16-8-true-stream-real-wire-up: done
   16-9-nfr1-reconciliation-sentence-stream-latency-investigation: done
   epic-16-retrospective: done
+
+  # Epic 17 — Streaming Default Ramp (Phase ⊥-Ramp — audition-gated follow-up to Epic 16)
+  # Added 2026-05-08 per Epic 16 retrospective's explicit handoff (epic-16-retro-2026-05-08.md §"Significant Discoveries").
+  # Single-story epic: closes Story 16.7 AC #2's deferred multi-listener perceptual A/B audition.
+  epic-17: done
+  17-1-streaming-default-ramp: review
+  epic-17-retrospective: optional

@@ -800,7 +800,7 @@ qwen_tts_service                streaming_decoder              session_registry
 | NFR | Covered by |
 |---|---|
 | NFR1 First audio <2s | GPU: meets via TRUE_STREAM (~1.5–1.8s estimated). CPU: meets via inherited SENTENCE_STREAM (per FR2 row). **Empirical measurement gate at Phase ⊥ POC.** *(Story 16.9 reconciled 2026-05-08 — empirical contradiction; per-class targets adopted. See follow-up note below.)* |
-| NFR3 No audio stuttering | D-8 chunk + overlap-add with seam-quality A/B testing before flipping streaming default; sentence-stream/batch unchanged from V2 |
+| NFR3 No audio stuttering | D-8 chunk + overlap-add with seam-quality A/B testing before flipping streaming default; sentence-stream/batch unchanged from V2 *(Story 17.1 audition cleared 2026-05-08 — see follow-up note below.)* |
 | NFR4 UI <200ms | D-2 Qt-thread ownership of registry; mutation work bounded to state transitions, not waveform I/O |
 | NFR6 No crashes | D-12 import-attribute test + P-1 state-bound method validity (no silent no-ops) + P-7 clean cancellation (no half-state CUDA) |
 | NFR7 Graceful degradation | D-9 + the three-mode dispatch in `qwen_tts_service.py` (BATCH ← SENTENCE_STREAM ← TRUE_STREAM fallback chain) |
@@ -859,6 +859,36 @@ Source artifacts:
 - `_bmad-output/implementation-artifacts/16-9-gpu-sentence_stream-phase-profile.csv` (50 rows)
 - `_bmad-output/implementation-artifacts/16-9-gpu-sentence_stream-small-tier-comparison.csv` (17 rows)
 - `_bmad-output/implementation-artifacts/16-9-cpu-sentence_stream-stratified.csv` (10 rows)
+
+#### Story 17.1 Follow-up Note (Streaming Default Ramp Audition, 2026-05-08)
+
+Story 17.1 (single-story Epic 17 — Streaming Default Ramp) executed the deferred Story 16.7 AC #2 multi-listener perceptual A/B audition against the post-Story-16.8 regenerated fixture (`_bmad-output/implementation-artifacts/16-8-perceptual-fixtures/`). Three listeners (L1 = Commander; L2 + L3 = co-located in-person walkthrough listeners) labeled all 10 utterances of the perceptual-difficult subset (`s-014/15/16/17`, `m-011/12/13/14`, `l-013/14`) per the controlled defect vocabulary in `LISTENING-INSTRUCTIONS.md`. Total: 30 trials × A and B renditions per trial.
+
+Per-system defect-flag count (verbatim from `17-1-perceptual-ab-results.csv` joined against `16-8-perceptual-fixtures/_perlistener_truthtable.json`):
+
+| System | Trials | none | audible_seam | clipping | phase_artifact | tonal_distortion | other |
+|---|---|---|---|---|---|---|---|
+| TRUE_STREAM | 30 | 30 | **0** | 0 | 0 | 0 | 0 |
+| SENTENCE_STREAM | 30 | 30 | **0** | 0 | 0 | 0 | 0 |
+
+Per-listener subtotals: L1 = 0/10 audible_seam (TRUE_STREAM); L2 = 0/10; L3 = 0/10. Per-utterance subtotals: 0/3 audible_seam on every utterance for every system. No `(listener_id, utterance_id)` rows missing; no schema-validation or truth-table-join errors.
+
+**Verdict per the LISTENING-INSTRUCTIONS.md gate verbatim** (PASS iff zero listeners flagged `audible_seam` on any TRUE_STREAM pair): **PASS — outcome (a) per Story 17.1 AC #3.**
+
+**Architectural decision: streaming-default flag flip certified.** The existing `streaming_mode.py:54-56` hardware probe's TRUE_STREAM-on-CUDA default is the audited release default — no code change required (Epic 16 wired this in at Story 16.8 and the dispatch path has been live on this branch since 2026-05-08). NFR7 graceful-degradation chain (TRUE_STREAM → SENTENCE_STREAM → BATCH) is preserved unchanged. D-9 / NFR12 hardware-aware default (CPU stays on SENTENCE_STREAM) is preserved unchanged. No qwen-tts pin bump (pin remains at commit `1ab0dd75`). No NFR1 revisit (Story 16.9's per-class targets stand).
+
+**Methodology footnote.** L2 and L3 sessions were conducted as in-person walkthroughs with Commander as scribe (listener-id arg passed to `17-1-l1-audition-helper.py`; helper's per-utterance forced playback of trial-A and trial-B blind ensured per-pair attention before labeling; controlled-vocabulary input gates enforced the protocol). Listeners were co-located on Commander's playback hardware rather than independent setups; this is a real but lesser caveat — the architectural defense the story's N≥3 rule was designed to provide (independent per-utterance per-listener structured defect labeling) was preserved by the helper's controlled-vocabulary input gates and the listeners' independent-of-each-other answer recording. Captured in the routing artifact's §6 "Stakeholder sign-off" methodology disclosure for full transparency.
+
+**Informational signal.** L1 noted on m-012 that trial A (TRUE_STREAM in L1's randomization) was perceived as quieter than trial B (SENTENCE_STREAM) — a volume-amplitude observation, not a defect (zero `audible_seam` flagged on either trial; L1's `a_or_b_preferred = B` for that one utterance). L2 and L3 did not flag the same observation independently. Captured here for future hardware-aware default-tuning consideration; not actionable in this story.
+
+The streaming-default flag flip's three architectural prerequisites — (1) TRUE_STREAM viable (Story 16.8, closed 2026-05-08), (2) NFR1 reconciled (Story 16.9, closed 2026-05-08), (3) perceptual gate cleared (this story, 2026-05-08) — are all resolved. **Phase ⊥-Ramp closes. The V2 optimization pass closes.**
+
+Source artifacts:
+- `_bmad-output/implementation-artifacts/17-1-perceptual-ab-results.csv` (30 rows; canonical reproducibility fixture)
+- `_bmad-output/implementation-artifacts/17-1-correct-course-streaming-default-ramp.md` (stakeholder routing artifact, AC #4)
+- `_bmad-output/planning-artifacts/sprint-change-proposal-2026-05-08.md` (correct-course workflow native output)
+- `_bmad-output/implementation-artifacts/16-8-perceptual-fixtures/` (audible WAV fixture from Story 16.8 regeneration; truth-table at `_perlistener_truthtable.json` with L1/L2/L3 randomizations)
+- `_bmad-output/implementation-artifacts/17-1-streaming-default-ramp.md` (story document; Change Log #8 contains the verbatim verdict-computation tables)
 
 ### Implementation Readiness Validation — with surfaced gaps
 
