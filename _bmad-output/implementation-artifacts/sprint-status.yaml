@@ -85,7 +85,7 @@ development_status:
   epic-15-retrospective: done
 
   # Epic 16 — True Streaming TTS (Phase ⊥ — independent track)
-  epic-16: in-progress
+  epic-16: done
   16-1-qwen-tts-dependency-pin-and-import-attribute-test: done
   16-2-streaming-mode-enum-and-hardware-probe: done
   16-3-codectokenstreamer-with-bounded-queue: done
@@ -95,4 +95,4 @@ development_status:
   16-7-empirical-validation-gates-for-streaming-default: done
   16-8-true-stream-real-wire-up: done
   16-9-nfr1-reconciliation-sentence-stream-latency-investigation: done
-  epic-16-retrospective: optional
+  epic-16-retrospective: done
