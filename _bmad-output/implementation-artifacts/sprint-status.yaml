@@ -94,5 +94,5 @@ development_status:
   16-6-true-stream-dispatch-and-three-mode-fallback-chain: done
   16-7-empirical-validation-gates-for-streaming-default: done
   16-8-true-stream-real-wire-up: done
-  16-9-nfr1-reconciliation-sentence-stream-latency-investigation: backlog
+  16-9-nfr1-reconciliation-sentence-stream-latency-investigation: review
   epic-16-retrospective: optional
