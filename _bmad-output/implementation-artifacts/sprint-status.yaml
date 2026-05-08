@@ -92,5 +92,5 @@ development_status:
   16-4-streaming-decoder-worker-with-overlap-add: done
   16-5-cooperative-cancellation-chain: done
   16-6-true-stream-dispatch-and-three-mode-fallback-chain: done
-  16-7-empirical-validation-gates-for-streaming-default: review
+  16-7-empirical-validation-gates-for-streaming-default: done
   epic-16-retrospective: optional

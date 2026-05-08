@@ -655,7 +655,6 @@ async def _amain(args: argparse.Namespace) -> int:
         app_settings=settings,
     )
 
-    original_override = settings.streaming_mode_override
     use_public_dispatch = args.mode_override is None
 
     try:
@@ -677,7 +676,6 @@ async def _amain(args: argparse.Namespace) -> int:
         _print_aggregate_summary(rows, mode_label, env.cuda_available)
         return 0
     finally:
-        settings.streaming_mode_override = original_override
         try:
             await service.stop()
         except Exception:  # pragma: no cover - defensive cleanup

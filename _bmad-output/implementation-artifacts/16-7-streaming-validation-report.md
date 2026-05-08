@@ -18,10 +18,11 @@ independent failure modes that together block the streaming-default flag flip:
    calls `model.model.generate(streamer=streamer)` with no text/speaker/language
    conditioning (`qwen_tts_service.py:2522`). The wrapper raises
    immediately on every call; the talker thread silently swallows the exception
-   and exits. **51 of 51 TRUE_STREAM measurements failed with 0 chunks emitted
-   (100% failure rate).** This was hidden in production by the existing
-   exception-swallow in `_run_talker` and surfaced by Story 16.7's first
-   empirical run against the real qwen-tts model (the smoke tests at
+   and exits. **50 of 50 TRUE_STREAM measurements failed with 0 chunks emitted
+   (100% failure rate; the harness's default `--utterance-count 50` consumed
+   the first 50 of the 51-utterance input set).** This was hidden in production
+   by the existing exception-swallow in `_run_talker` and surfaced by Story 16.7's
+   first empirical run against the real qwen-tts model (the smoke tests at
    `tests/integration/test_streaming_tts_smoke.py:559,674,...` all monkey-patched
    the talker, so the real-model path had never been exercised).
 2. **SENTENCE_STREAM does NOT meet NFR1 across the input set on either GPU or
@@ -122,12 +123,12 @@ is wired.
 
 ## 3. GPU latency results
 
-### 3.1 TRUE_STREAM (`16-7-gpu-latency-measurements.csv`, n=51)
+### 3.1 TRUE_STREAM (`16-7-gpu-latency-measurements.csv`, n=50)
 
 | Metric | Value |
 |---|---|
 | Rows with `error_flag == ""` | 0 |
-| Rows with `error_flag == "RuntimeError('TRUE_STREAM produced 0 audio chunks ...')"` | 51 |
+| Rows with `error_flag == "RuntimeError('TRUE_STREAM produced 0 audio chunks ...')"` | 50 |
 | Fallback rate (talker failure) | 100% |
 | p50 first-chunk latency | N/A (no successful measurements) |
 | p95 first-chunk latency | N/A |
@@ -169,15 +170,18 @@ Top 5 slowest measurements (all long-class, 158–212 chars):
 - medium: 0 of 17 measurements met NFR1.
 - long: 0 of 16 measurements met NFR1.
 
-**Note on the harness's `error_flag` column:** every row in this CSV is
-flagged `fallback_occurred` due to a harness classifier bug (false positive)
-where `GenerationMode.STREAMING.value` ("streaming") was compared against
-`StreamingMode.SENTENCE_STREAM.value` ("sentence_stream") and the mismatch
-inferred a fallback. The latency numbers themselves are valid — these are
-real successful direct `_generate_streaming` calls. The harness fix landed
-in the same Story 16.7 cycle (`scripts/validate_streaming_default.py`
-`_classify_dispatched_mode`) so future runs produce clean CSVs; the existing
-CSV is preserved as-committed for reproducibility per AC #7.
+**Note on the harness's `error_flag` column:** the first-run CSV had every
+row flagged `fallback_occurred` and `mode_dispatched=streaming` due to a
+harness classifier bug (false positive) where `GenerationMode.STREAMING.value`
+("streaming") was compared against `StreamingMode.SENTENCE_STREAM.value`
+("sentence_stream") and the mismatch inferred a fallback. The latency
+numbers themselves are valid — these are real successful direct
+`_generate_streaming` calls. The harness fix landed in
+`scripts/validate_streaming_default.py::_classify_dispatched_mode` and the
+post-review pass corrected the committed CSV in-place (`mode_dispatched
+=streaming → sentence_stream`, `error_flag=fallback_occurred → ""`) so the
+artifact now matches what the committed harness produces — re-running the
+harness against the same input set will reproduce this CSV.
 
 ### 3.3 No-override resolver path (not run)
 
@@ -221,11 +225,19 @@ under the existing `LISTENING-INSTRUCTIONS.md` protocol.
 | max | 4.897s | FAIL |
 | mean | 3.037s | FAIL |
 
-**0 of 10 short-class measurements** met NFR1 on CPU. The architecture's
-"NFR1 satisfaction on CPU is therefore inherited [from V2 baseline], not
-promised by streaming" framing is contradicted by this measurement —
-SENTENCE_STREAM on CPU does not deliver sub-2s first audio with qwen-tts
-0.0.4 + the CUSTOM_VOICE model + Discord-call-length inputs.
+**0 of 10 short-class measurements** met NFR1 on CPU. **Bounded
+conclusion:** within the short-class subset measured here, the
+architecture's "NFR1 satisfaction on CPU is therefore inherited [from V2
+baseline], not promised by streaming" framing (architecture
+line 802) is contradicted — SENTENCE_STREAM on CPU does not deliver sub-2s
+first audio for short Discord-call patter with qwen-tts 0.0.4 + the
+CUSTOM_VOICE model. The result generalises *if* and *only if* short-class
+inputs are the easiest case for SENTENCE_STREAM (a reasonable but
+not-yet-verified assumption — medium/long inputs make the model's first
+sentence boundary later, which should make first-audio latency higher, not
+lower; that direction supports generalisation). Story 16.9's reconciliation
+work should re-measure across all three classes before drawing the final
+inheritance verdict.
 
 This is a SEPARATE finding from the TRUE_STREAM gate but is a **release
 blocker** for the streaming-default flag flip even after Story 16.8 lands —
@@ -233,12 +245,13 @@ flipping the default to TRUE_STREAM only helps GPU users; CPU users still
 need NFR1 compliance via SENTENCE_STREAM and that compliance is not
 empirically verified.
 
-**Note on sample size:** the CPU run was 10 utterances (per AC #3's "≥10
-records" floor), all short-class. medium- and long-class CPU measurements
-are not yet captured. A follow-up CPU run extending to medium + long would
-strengthen the inheritance-violation finding but is not gating; the failure
-is already empirically demonstrated for short-class which is the easiest
-case for SENTENCE_STREAM to satisfy.
+**Note on sample size and class coverage:** the CPU run was 10 utterances
+(per AC #3's "≥10 records" floor), all short-class because the harness loads
+`utterances[:limit]` from a class-ordered input set. medium- and long-class
+CPU measurements are not yet captured; the inheritance verdict above is
+explicitly bounded to short-class. A follow-up CPU run with stratified
+sampling (e.g. 4 short / 4 medium / 2 long) would lift the bound; the
+empirical short-class failure is already strong enough to gate the flag flip.
 
 ---
 
