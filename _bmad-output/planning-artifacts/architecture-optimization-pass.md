@@ -820,16 +820,18 @@ qwen_tts_service                streaming_decoder              session_registry
 
 Empirical measurement on the maintainer's RTX 5090 + qwen-tts 0.0.4 host (Story 16.7 §3.2 + Story 16.9 Tasks 2 / 3.2 / 6) demonstrated that the original NFR1 projection above (`~1.5–1.8s estimated`) was empirically contradicted across all input classes:
 
-| Path | n | first-chunk p95 | NFR1 (<2s) |
+| Path | n | first-chunk p95¹ | NFR1 (<2s) |
 |------|---|-----------------|------------|
 | GPU TRUE_STREAM (post-Story-16.8 wire-up) | 50 | 6.37s | FAIL (3.19× over) |
-| GPU SENTENCE_STREAM short (drop s-001 warmup) | 16 | 4.18s | FAIL (2.09× over; 9/16 clear) |
+| GPU SENTENCE_STREAM short (steady-state)¹ | 17 (gen) / 16 (clearance) | 4.18s | FAIL (2.09× over; 9/16 clear) |
 | GPU SENTENCE_STREAM medium | 17 | 8.74s | FAIL (4.37× over; 0/17 clear) |
 | GPU SENTENCE_STREAM long | 16 | 25.23s | FAIL (12.62× over) |
 | GPU SENTENCE_STREAM small-tier (0.6B) short | 17 | 7.94s | FAIL (small tier ~2× *slower* than 3B `quality` on Blackwell) |
 | CPU SENTENCE_STREAM short stratified | 4 | 5.40s | FAIL |
 | CPU SENTENCE_STREAM medium stratified | 4 | 7.85s | FAIL |
 | CPU SENTENCE_STREAM long stratified | 2 | 22.37s | FAIL |
+
+> **¹** The "GPU SENTENCE_STREAM short (steady-state)" row mixes column sources (clarification added by code-review pass — Story 16.9 Change Log #4 / M1): cited 4.18s is `generate_seconds` p95 at n=17 (steady-state per-utterance dispatch cost; user-facing first-chunk latency once model is warm); "9/16 clear" is computed from `first_chunk_latency_seconds` at n=16 (drop s-001 warmup whose 4.79s includes a 3.65s cold model_load contribution paid once per session). Strictly disambiguated: `first_chunk_latency_seconds` p95 (n=17, includes s-001) = 4.93s; `first_chunk_latency_seconds` p95 (n=16, drop s-001) = 4.26s; `generate_seconds` p95 (n=17) = 4.18s. All three FAIL the original 2s ceiling and pass the new ≤5.0s short-class target. For medium/long classes the columns are equivalent because cold model load contributes only to s-001 (class-short).
 
 Phase-decomposition profiling (Story 16.9 AC #1) showed `_generate_sync` (the `model.generate_custom_voice` invocation site) accounts for **≥97% of first-chunk wallclock** on both GPU and CPU; `_split_text_for_streaming`, registry `post_mutation`, and chunk-delivery overhead are individually ≤0.1% of total. The 3B `quality` model on RTX 5090 + qwen-tts 0.0.4 has a **~1.2s per-utterance floor** for any input; the length-latency slope is ~+0.10 sec/char (Pearson r = +0.915, n=49). The 0.6B `small` tier is empirically slower than the 3B `quality` tier on Blackwell (Story 16.9 Task 3.2 reversal), so a model-tier fallback is **ruled out**. Aggressive splitter changes cannot clear the original 2s target without harming voice quality (audition deferred to a future "streaming default ramp" story per Story 16.7 §6.1).
 

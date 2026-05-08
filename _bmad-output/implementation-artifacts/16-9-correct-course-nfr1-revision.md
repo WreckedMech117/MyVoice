@@ -2,7 +2,7 @@
 
 > **Status:** Approved 2026-05-08 by Commander (sole stakeholder per `memory/production_release_state.md`).
 > **Trigger:** Story 16.9 AC #3 outcome (c) — contract revision.
-> **Routing surface:** `/bmad-bmm-dev-story` interactive prompt (single-stakeholder routing; the user's decision in the prompt constitutes the stakeholder sign-off that `/bmad-bmm-correct-course` would otherwise capture).
+> **Routing surface:** `/bmad-bmm-dev-story` interactive `AskUserQuestion` prompt — **substituted for** the literal `/bmad-bmm-correct-course` workflow named in AC #3 outcome (c). For solo-dev with Commander as sole stakeholder, the substitution preserves the spirit of AC #3 (stakeholder approval captured in writing alongside the architecture amendment) but does not follow the literal AC text. Disclosed in story Change Log #4 / M3 by the code-review pass; this artifact is the load-bearing record of the decision regardless of the workflow that surfaced it.
 
 ## 1. Why this routing exists
 
@@ -14,9 +14,11 @@ Story 16.7 §3.2 + §5 produced empirical first-audio-latency measurements on th
 
 | Class | n | first_chunk p50 | first_chunk p95 | first_chunk max | NFR1 (<2s) clearance |
 |-------|---|-----------------|-----------------|-----------------|----------------------|
-| short (drop s-001 warmup) | 16 | 1.84s | 4.18s | 5.47s | 9 / 16 |
+| short (steady-state)¹ | 17 (gen) / 16 (clearance) | 1.84s | 4.18s | 5.47s | 9 / 16 |
 | medium | 17 | 5.45s | 8.74s | 10.06s | 0 / 17 |
 | long | 16 | 13.93s | 25.23s | 25.51s | 0 / 16 |
+
+> **¹** The short row mixes column sources (clarification added by code-review pass — story Change Log #4 / M1): the cited p50 / p95 / max (1.84 / 4.18 / 5.47) are `generate_seconds` aggregates at n=17 (steady-state per-utterance dispatch cost, the user-facing first-chunk latency once the model is warm); the "9 / 16 cleared" count is computed from `first_chunk_latency_seconds` at n=16 (drop s-001 warmup whose 4.79s includes a 3.65s cold model_load contribution paid once per session). Strictly disambiguated: `first_chunk_latency_seconds` p95 (n=17, includes s-001) = 4.93s; `first_chunk_latency_seconds` p95 (n=16, drop s-001) = 4.26s; `generate_seconds` p95 (n=17) = 4.18s. All three pass the new ≤5.0s short-class target. For medium/long classes the columns are equivalent because cold model load contributes only to s-001 (which is class-short).
 
 **Phase share across all valid rows (n=50):** generate=99.0% / model_load=1.0% / split=0% / decode=0% / deliver=0%. Source: `_bmad-output/implementation-artifacts/16-9-gpu-sentence_stream-phase-profile.csv`.
 
@@ -75,7 +77,7 @@ Cross-class Pearson r = +0.915 (n=49, s-001 warmup dropped). Linear slope ≈ +0
 
 - **Stakeholder:** Commander (`wreckedmech@gmail.com`; sole stakeholder per `memory/production_release_state.md`).
 - **Decision date:** 2026-05-08.
-- **Decision channel:** `/bmad-bmm-dev-story` interactive `AskUserQuestion` prompt.
+- **Decision channel:** `/bmad-bmm-dev-story` interactive `AskUserQuestion` prompt — **substituted for** the literal `/bmad-bmm-correct-course` workflow that AC #3 outcome (c) names. For solo-dev with Commander as sole stakeholder, the substitution preserves the spirit of AC #3 (a written, committed stakeholder-sign-off artifact alongside the architecture amendment) but does not follow the literal AC text. Disclosed in story Change Log #4 / M3.
 - **Approved option:** "(c) pure contract revision — Recommended" with the proposed per-class wording in §4 above.
 - **Conditions:** none. The decision was approved without modification.
 

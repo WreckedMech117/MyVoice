@@ -16,7 +16,7 @@ The architecture document was amended in two places (`architecture-optimization-
 
 ### 2.1 Phase-profiling instrumentation choice
 
-Subtask 1.1 chose **option (a1)** — extension of `scripts/validate_streaming_default.py` with a `--profile-phases` flag — over (a2) authoring a sibling profiler. Net new lines in the harness: ~280 lines (PhaseProfile dataclass, `_profile_phases` context manager, four new argparse flags, conditional CSV-column writing, per-class per-phase aggregate printer, stratified-sample selector). The (a1) line count exceeds the story's 50-line guideline; (a2) was rejected because it would require duplicating ~200 lines of harness boilerplate (DLL preamble, environment capture, mock audio coordinator, request builder, async main loop, argparse). The phase profiling is logically a superset of the harness's existing scope, and (a2) duplication tax > (a1) growth tax.
+Subtask 1.1 chose **option (a1)** — extension of `scripts/validate_streaming_default.py` with a `--profile-phases` flag — over (a2) authoring a sibling profiler. Net new lines in the harness: **+461 / -17 = +444 net new lines** per `git diff --stat` (PhaseProfile dataclass, `_profile_phases` context manager, four new argparse flags, conditional CSV-column writing, per-class per-phase aggregate printer, stratified-sample selector). The initial draft estimate was "~280 net new lines"; the figure was corrected post-commit by the code-review pass (see story Change Log #4 / L1). The (a1) line count exceeds the story's 50-line guideline; (a2) was rejected because it would require duplicating ~200 lines of harness boilerplate (DLL preamble, environment capture, mock audio coordinator, request builder, async main loop, argparse). The phase profiling is logically a superset of the harness's existing scope, and (a2) duplication tax > (a1) growth tax.
 
 The instrumentation patches three call surfaces from harness-side via a per-utterance context manager:
 
@@ -53,9 +53,13 @@ Per-class per-phase aggregates (s-001 warmup outlier dropped from short class fo
 
 | Class | n | split p95 | model_load p95 | generate p95 | decode p95 | deliver p95 | first_chunk p95 |
 |-------|---|-----------|----------------|--------------|------------|-------------|-----------------|
-| short | 17 | 0.0000s | 0.7296s | 4.18s | 0.0000s | 0.0001s | 4.18s |
+| short | 17 | 0.0000s | 0.7296s¹ | 4.18s² | 0.0000s | 0.0001s | 4.18s² |
 | medium | 17 | 0.0000s | 0.0000s | 8.74s | 0.0000s | 0.0001s | 8.74s |
 | long | 16 | 0.0000s | 0.0000s | 25.23s | 0.0000s | 0.0001s | 25.23s |
+
+> **¹** The `model_load p95 = 0.7296s` for short class is a numpy-default linearly-interpolated p95 across 17 rows where 16 are ~9 µs (cache hit) and 1 (s-001) is 3.65s (cold load). Statistically correct but practically bimodal — typical first-utterance model_load on a warm process is ~µs, cold-start is ~3.65s once.
+>
+> **²** The short-class `first_chunk p95` cell is the same 4.18s as `generate p95` because in this report's framing the user-facing first-chunk latency is the steady-state per-utterance dispatch cost, with cold model load amortized once per session (not paid per request). Strictly numerical disambiguation: `first_chunk_latency_seconds` p95 (n=17, includes s-001 with model_load+generate=4.79s) = **4.93s**; `first_chunk_latency_seconds` p95 (n=16, drop s-001) = **4.26s**; `generate_seconds` p95 (n=17) = **4.18s**. All three pass the new ≤5.0s short-class target adopted by Story 16.9 outcome (c). For medium/long classes the columns are equivalent because cold model load contributes only to s-001. (Disambiguation added by code-review pass — see story Change Log #4 / M1.)
 
 Aggregate phase share across all 50 valid rows: **generate=99.0%** / model_load=1.0% / split=0% / decode=0% / deliver=0%. Phase-sum vs first_chunk_latency_seconds sanity check: median gap ≤ 0.02% across all classes (within 5% threshold ✓).
 
@@ -82,7 +86,7 @@ Loaded via `--quality-tier small` flag on the harness, which calls `service._mod
 
 Aggregate phase share: generate=97.1% / model_load=2.9% / others ≤0.1%. The CPU phase decomposition mirrors the GPU finding: `_generate_sync` is the dominant cost on both hardware classes. The CPU's 5.40s short-class p95 is roughly comparable to GPU's 4.18s — the CPU on this host (32+ logical cores) is competitive with GPU for short-class inference, which is unusual but consistent with the small-batch / single-utterance nature of the workload.
 
-`mode_dispatched` for every CPU row was `sentence_stream` (no fallback; D-9 / NFR12 invariant holds).
+`mode_dispatched` for every CPU row was `sentence_stream` — but **see story Change Log #4 / M2**: with `--mode-override sentence_stream` the harness invokes `service._generate_streaming(request)` directly, bypassing the public `_dispatch_by_streaming_mode` path that emits `streaming_mode` / `streaming_mode_fallback` metrics. `_classify_dispatched_mode` therefore falls through to `dispatched = requested` for every row, so the "no-fallback" observation is true *by construction* rather than empirically verified by Story 16.9's harness runs. The D-9 / NFR12 hardware-aware-default invariant is verified in production by the dispatch-chain unit tests at `tests/unit/services/test_qwen_tts_service_dispatch.py` (unchanged), not by this harness run.
 
 ## 4. Hypothesis verdicts
 
@@ -138,7 +142,7 @@ The decision was routed through stakeholder sign-off via `/bmad-bmm-dev-story`'s
 
 **Harness changes (committed):**
 
-- `scripts/validate_streaming_default.py`: extended with `--profile-phases`, `--quality-tier`, `--stratified-sample`, `--output-csv-name` flags; new `PhaseProfile` dataclass; new `_profile_phases` context manager; new per-class per-phase aggregate printer. ~280 net new lines. The Story 16.7 invocation paths are unchanged when none of the new flags are set.
+- `scripts/validate_streaming_default.py`: extended with `--profile-phases`, `--quality-tier`, `--stratified-sample`, `--output-csv-name` flags; new `PhaseProfile` dataclass; new `_profile_phases` context manager; new per-class per-phase aggregate printer. **+461 / -17 = +444 net new lines** per `git diff --stat` (the initial draft "~280" estimate was corrected post-commit by the code-review pass — see story Change Log #4 / L1). The Story 16.7 invocation paths are unchanged when none of the new flags are set.
 
 **Committed CSVs (force-added via `git add -f`):**
 
@@ -150,7 +154,7 @@ The decision was routed through stakeholder sign-off via `/bmad-bmm-dev-story`'s
 
 The CPU stratified sample (n=10, 4 short + 4 medium + 2 long; `16-9-cpu-sentence_stream-stratified.csv`) confirms that CPU SENTENCE_STREAM also fails the original 2s NFR1 ceiling across all classes (short p95=5.40s, medium p95=7.85s, long p95=22.37s). The CPU phase decomposition mirrors the GPU finding: generate=97.1% / model_load=2.9% / others ≤0.1%. `_generate_sync` is the dominant cost on both hardware classes; the bottleneck is upstream of the dispatch chain.
 
-Per the revised NFR1, **CPU SENTENCE_STREAM is exempted from the streaming-NFR1 contract**; CPU users fall back to the V2 baseline. Hardware-aware default (D-9 / NFR12) ensures CPU users do not encounter TRUE_STREAM. This formalizes what was already true in practice: Story 16.7 §5's CPU baseline was already over the 2s ceiling for non-trivially-short inputs; the original "CPU: meets via inherited SENTENCE_STREAM" framing was empirically optimistic.
+Per the revised NFR1, **CPU SENTENCE_STREAM is exempted from the streaming-NFR1 contract**; CPU users fall back to the V2 baseline. Hardware-aware default (D-9 / NFR12) ensures CPU users do not encounter TRUE_STREAM — verified in production by the dispatch-chain unit tests at `tests/unit/services/test_qwen_tts_service_dispatch.py` (unchanged), **not** by Story 16.9's harness runs (which use direct-dispatch via `--mode-override` and therefore bypass the metric-emitting public path; see §3.3 footnote and story Change Log #4 / M2). This formalizes what was already true in practice: Story 16.7 §5's CPU baseline was already over the 2s ceiling for non-trivially-short inputs; the original "CPU: meets via inherited SENTENCE_STREAM" framing was empirically optimistic.
 
 The CPU verdict joins the GPU verdict: outcome (c) contract revision applies symmetrically, with the additional clause that CPU is structurally exempted (not subject to a per-class target) because CPU users are on the V2 baseline path.
 
