@@ -915,3 +915,192 @@ class TestTrueStreamDispatchEndToEnd:
         assert resp2.success is True, f"second: {resp2.error_message}"
         # Two distinct sessions in the registry.
         assert len(registry._sessions) == 2
+
+
+# --------------------------------------------------------------------------- #
+# Story 16.7 — TestSilentTalkerSurfaceAsFailure (regression: empty-chunk guard)
+# --------------------------------------------------------------------------- #
+
+
+class TestSilentTalkerSurfacesAsFailure:
+    """Story 16.7 empirical-validation regression — when the talker thread
+    silently fails (its except branch in ``_build_true_stream_talker``
+    swallows all exceptions and just calls ``streamer.end()``), the dispatch
+    used to return ``success=True`` with zero-sample audio. The fallback
+    chain never fired and CUDA users heard silence.
+
+    These tests mirror the EXACT bug class (per
+    ``memory/code_review_regression_test_exact_class.md``):
+      1. ``_generate_true_stream`` raises ``RuntimeError`` when the talker
+         emits zero tokens, so the dispatcher's fallback chain catches it.
+      2. ``_dispatch_by_streaming_mode(request, TRUE_STREAM)`` falls back
+         to SENTENCE_STREAM when TRUE_STREAM raises the empty-chunks error.
+    """
+
+    @pytest.mark.qt_no_exception_capture
+    def test_zero_token_talker_raises_so_fallback_chain_fires(
+        self, qapp, registry, coordinator, monkeypatch,
+    ):
+        """A talker that emits 0 tokens (mirroring the silent-failure mode
+        Story 16.6 shipped) must surface as a raised exception, not as a
+        successful empty-audio response. This is the load-bearing guard for
+        Story 16.7 AC #5's fallback semantics.
+        """
+        from myvoice.services.qwen_tts_service import QwenModelType, QwenTTSRequest
+        service, _mock_model = _build_true_stream_service(registry, coordinator)
+
+        coordinator.play_dual_stream = AsyncMock(return_value=MagicMock())
+
+        def silent_talker_builder(model, request, streamer):
+            def run():
+                # Emit no tokens at all — exactly the production failure mode
+                # observed during Story 16.7's first empirical run on the RTX
+                # 5090 host (real-model talker raised, swallowed by the
+                # except branch, ``streamer.end()`` called with empty queue).
+                streamer.end()
+            return run
+
+        def fake_decode_fn_builder(model):
+            def decode(chunk_tokens):
+                return np.array([0.0] * len(chunk_tokens), dtype=np.float32)
+            return decode
+
+        monkeypatch.setattr(
+            service, "_build_true_stream_talker", silent_talker_builder
+        )
+        monkeypatch.setattr(
+            service, "_build_true_stream_decode_fn", fake_decode_fn_builder
+        )
+
+        recorder = _RecordingMetricsRecorder()
+        monkeypatch.setattr(
+            "myvoice.services.qwen_tts_service.metrics.record", recorder
+        )
+
+        request = QwenTTSRequest(
+            text="hello world",
+            language="Auto",
+            model_type=QwenModelType.CUSTOM_VOICE,
+            speaker="Ryan",
+            streaming=True,
+        )
+
+        async def runner():
+            async def drainer(stop_evt):
+                while not stop_evt.is_set():
+                    qapp.processEvents()
+                    await asyncio.sleep(0.005)
+
+            stop_evt = asyncio.Event()
+            drain_task = asyncio.create_task(drainer(stop_evt))
+            try:
+                with pytest.raises(RuntimeError, match="0 audio chunks"):
+                    await service._generate_true_stream(request)
+            finally:
+                stop_evt.set()
+                await drain_task
+
+        asyncio.run(runner())
+        for _ in range(50):
+            qapp.processEvents()
+            time.sleep(0.005)
+
+    @pytest.mark.qt_no_exception_capture
+    def test_dispatch_fallback_chain_routes_to_sentence_stream_on_silent_talker(
+        self, qapp, registry, coordinator, monkeypatch,
+    ):
+        """When TRUE_STREAM raises the empty-chunks error, the existing
+        ``_dispatch_by_streaming_mode`` fallback chain must route to
+        SENTENCE_STREAM and return its successful response. This is the
+        end-to-end NFR7 graceful-degradation path Story 16.7 unblocks.
+        """
+        from myvoice.services.qwen_tts_service import (
+            GenerationMode, QwenModelType, QwenTTSRequest, QwenTTSResponse,
+        )
+        from myvoice.services.tts_streaming import StreamingMode
+
+        service, _mock_model = _build_true_stream_service(registry, coordinator)
+        coordinator.play_dual_stream = AsyncMock(return_value=MagicMock())
+
+        # Silent talker — talker thread produces 0 tokens, so
+        # _generate_true_stream raises RuntimeError per the fix.
+        def silent_talker_builder(model, request, streamer):
+            def run():
+                streamer.end()
+            return run
+
+        def fake_decode_fn_builder(model):
+            def decode(chunk_tokens):
+                return np.array([0.0] * len(chunk_tokens), dtype=np.float32)
+            return decode
+
+        monkeypatch.setattr(
+            service, "_build_true_stream_talker", silent_talker_builder
+        )
+        monkeypatch.setattr(
+            service, "_build_true_stream_decode_fn", fake_decode_fn_builder
+        )
+
+        # Mock _generate_streaming so the fallback path returns a
+        # deterministic success response we can assert on.
+        sentence_response = QwenTTSResponse(
+            success=True,
+            audio_data=np.zeros(2400, dtype=np.float32),
+            sample_rate=24000,
+            mode=GenerationMode.STREAMING,
+            chunks_generated=2,
+        )
+        monkeypatch.setattr(
+            service, "_generate_streaming",
+            AsyncMock(return_value=sentence_response),
+        )
+
+        recorder = _RecordingMetricsRecorder()
+        monkeypatch.setattr(
+            "myvoice.services.qwen_tts_service.metrics.record", recorder
+        )
+
+        request = QwenTTSRequest(
+            text="hello world",
+            language="Auto",
+            model_type=QwenModelType.CUSTOM_VOICE,
+            speaker="Ryan",
+            streaming=True,
+        )
+
+        async def runner():
+            async def drainer(stop_evt):
+                while not stop_evt.is_set():
+                    qapp.processEvents()
+                    await asyncio.sleep(0.005)
+
+            stop_evt = asyncio.Event()
+            drain_task = asyncio.create_task(drainer(stop_evt))
+            try:
+                resp = await service._dispatch_by_streaming_mode(
+                    request, StreamingMode.TRUE_STREAM,
+                )
+            finally:
+                stop_evt.set()
+                await drain_task
+            return resp
+
+        response = asyncio.run(runner())
+        for _ in range(50):
+            qapp.processEvents()
+            time.sleep(0.005)
+
+        # The fallback chain caught the TRUE_STREAM RuntimeError, ran
+        # SENTENCE_STREAM, and returned its successful response.
+        assert response is sentence_response
+        assert response.success is True
+        assert response.audio_data.shape == (2400,)
+
+        # Story 16.6 fallback metric fired with from_mode=true_stream and
+        # next-mode=sentence_stream.
+        fallback_metrics = recorder.calls_for("streaming_mode_fallback")
+        assert len(fallback_metrics) == 1
+        # tags is the third element of the recorder tuple.
+        _, fallback_target, fallback_tags = fallback_metrics[0]
+        assert fallback_target == "sentence_stream"
+        assert fallback_tags.get("from_mode") == "true_stream"

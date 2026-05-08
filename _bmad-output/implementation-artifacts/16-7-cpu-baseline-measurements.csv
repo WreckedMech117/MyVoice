@@ -1,0 +1,11 @@
+utterance_id,text_length_chars,text_class,mode_requested,mode_dispatched,first_chunk_latency_seconds,total_audio_seconds,audio_sample_count,error_flag,wallclock_timestamp,qwen_tts_pin,torch_version,gpu_name
+s-001,7,short,sentence_stream,streaming,4.222464323043823,0.6169,14805,fallback_occurred,2026-05-08T02:02:40.336976+00:00,0.0.4,2.10.0+cu128,cpu
+s-002,8,short,sentence_stream,streaming,2.0409445762634277,0.7769,18645,fallback_occurred,2026-05-08T02:02:44.562944+00:00,0.0.4,2.10.0+cu128,cpu
+s-003,16,short,sentence_stream,streaming,4.896667718887329,1.9769,47445,fallback_occurred,2026-05-08T02:02:46.609889+00:00,0.0.4,2.10.0+cu128,cpu
+s-004,11,short,sentence_stream,streaming,3.6580636501312256,1.4969,35925,fallback_occurred,2026-05-08T02:02:51.512559+00:00,0.0.4,2.10.0+cu128,cpu
+s-005,18,short,sentence_stream,streaming,3.1135149002075195,1.2569,30165,fallback_occurred,2026-05-08T02:02:55.174622+00:00,0.0.4,2.10.0+cu128,cpu
+s-006,17,short,sentence_stream,streaming,2.57364559173584,1.0169,24405,fallback_occurred,2026-05-08T02:02:58.296637+00:00,0.0.4,2.10.0+cu128,cpu
+s-007,14,short,sentence_stream,streaming,2.3530120849609375,0.9369,22485,fallback_occurred,2026-05-08T02:03:00.874283+00:00,0.0.4,2.10.0+cu128,cpu
+s-008,12,short,sentence_stream,streaming,2.9051897525787354,1.1769,28245,fallback_occurred,2026-05-08T02:03:03.230795+00:00,0.0.4,2.10.0+cu128,cpu
+s-009,10,short,sentence_stream,streaming,2.3100016117095947,0.9369,22485,fallback_occurred,2026-05-08T02:03:06.141989+00:00,0.0.4,2.10.0+cu128,cpu
+s-010,8,short,sentence_stream,streaming,2.2921042442321777,0.8569,20565,fallback_occurred,2026-05-08T02:03:08.457491+00:00,0.0.4,2.10.0+cu128,cpu

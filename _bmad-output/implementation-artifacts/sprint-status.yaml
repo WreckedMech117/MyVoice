@@ -1,0 +1,96 @@
+# generated: 2026-05-03
+# project: MyVoice V2 (Optimization Pass)
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: _bmad-output/implementation-artifacts
+# scope: optimization-pass (V2 baseline + VoiceDesign archived to planning-artifacts/_archive/)
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - SM typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+#
+# SEQUENCING (from architecture-optimization-pass.md D-20):
+# ========================================================
+# - Epics 11-15 must land in order (Foundation → Indicator → Queue → Save → Clear Comms)
+# - Epic 16 (Streaming) is independent — can land before, between, or after any of 11-15
+# - Within each epic, stories are numbered in implementation order
+
+generated: 2026-05-03
+project: MyVoice V2 (Optimization Pass)
+project_key: NOKEY
+tracking_system: file-system
+story_location: "_bmad-output/implementation-artifacts"
+
+development_status:
+  # Epic 11 — Session Foundation (Phase 1) — net-zero behavior change
+  epic-11: done
+  11-1-generation-session-state-machine: done
+  11-2-session-registry-with-qt-thread-ownership: done
+  11-3-observability-metrics-helper: done
+  11-4-qwenttsservice-integration-with-sessionregistry: done
+  epic-11-retrospective: done
+
+  # Epic 12 — Indicator State Truth (Phase 2 — OFR-D)
+  epic-12: in-progress
+  12-1-servicestatusindicator-rewire-to-single-signal-source: done
+  12-2-focal-session-property-and-current-session-changed-signal: done
+  12-3-indicator-ui-test-suite-migration: done
+  epic-12-retrospective: optional
+
+  # Epic 13 — Playback Queue (Phase 3 — OFR-C)
+  epic-13: done
+  13-1-playbackqueue-with-fifo-ordering-and-depth-signal: done
+  13-2-audiocoordinator-integration-with-playbackqueue: done
+  13-3-playback-last-preservation-validation: done
+  13-4-queue-depth-indicator-badge: done
+  epic-13-retrospective: done
+
+  # Epic 14 — Save Generation (Phase 4 — OFR-A)
+  epic-14: done
+  14-1-saveable-session-lifecycle-policy: done
+  14-2-save-button-with-enablement-signal: done
+  14-3-save-dialog-with-wav-writer-and-save-during-streaming-flow: done
+  epic-14-retrospective: optional
+
+  # Epic 15 — Clear Comms (Phase 5 — OFR-B)
+  epic-15: in-progress
+  15-1-preloaded-source-audio-loader: done
+  15-2-clear-comms-button-with-interrupt-by-default: done
+  15-3-clear-comms-settings-panel: done
+  epic-15-retrospective: done
+
+  # Epic 16 — True Streaming TTS (Phase ⊥ — independent track)
+  epic-16: in-progress
+  16-1-qwen-tts-dependency-pin-and-import-attribute-test: done
+  16-2-streaming-mode-enum-and-hardware-probe: done
+  16-3-codectokenstreamer-with-bounded-queue: done
+  16-4-streaming-decoder-worker-with-overlap-add: done
+  16-5-cooperative-cancellation-chain: done
+  16-6-true-stream-dispatch-and-three-mode-fallback-chain: done
+  16-7-empirical-validation-gates-for-streaming-default: review
+  epic-16-retrospective: optional

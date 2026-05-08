@@ -2839,6 +2839,21 @@ class QwenTTSService(BaseService):
                         f"{join_timeout_s}s"
                     )
 
+            # Story 16.7 empirical finding: when the talker thread silently
+            # fails (its except branch in ``_build_true_stream_talker`` swallows
+            # all exceptions and just calls ``streamer.end()``), the worker
+            # drains an empty queue and ``accumulated_chunks`` stays empty.
+            # Without this guard, the dispatch returns ``success=True`` with
+            # zero-sample audio, the fallback chain never fires, and the user
+            # hears silence on the production CUDA path. Raising here lets
+            # ``_dispatch_by_streaming_mode`` route to SENTENCE_STREAM per
+            # NFR7's graceful-degradation contract.
+            if not accumulated_chunks and not self._cancel_requested:
+                raise RuntimeError(
+                    "TRUE_STREAM produced 0 audio chunks — talker thread "
+                    "likely raised (see prior log). Routing to fallback chain."
+                )
+
             # Build the complete audio array from accumulated chunks.
             if accumulated_chunks:
                 complete_audio = np.concatenate(accumulated_chunks)
