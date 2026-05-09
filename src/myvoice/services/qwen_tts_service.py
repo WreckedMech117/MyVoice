@@ -3901,8 +3901,54 @@ class QwenTTSService(BaseService):
                         nonlocal first_chunk_time
                         if first_chunk_time is None:
                             first_chunk_time = time.time() - start_time
-                        accumulated_chunks.append(np.asarray(args[2]))
+                        chunk_data = np.asarray(args[2])
+                        accumulated_chunks.append(chunk_data)
+                        chunk_index = chunk_count_box[0]
                         chunk_count_box[0] += 1
+                        # Story 17.3: emit progressive-playback callback. Parallels
+                        # SENTENCE_STREAM at qwen_tts_service.py:3071-3082. Additive to
+                        # the accumulator/counter; never replaces them. Wrapped so a
+                        # buggy consumer cannot break the producer thread.
+                        if self._audio_chunk_ready_callback is not None:
+                            try:
+                                self._audio_chunk_ready_callback(
+                                    AudioChunk(
+                                        audio_data=chunk_data,
+                                        sample_rate=sample_rate,
+                                        chunk_index=chunk_index,
+                                        is_final=False,
+                                        text_segment="",
+                                    )
+                                )
+                            except Exception:
+                                self.logger.exception(
+                                    "[QwenTTS] TRUE_STREAM "
+                                    "_audio_chunk_ready_callback raised on "
+                                    "append_chunk; swallowing"
+                                )
+                    elif args and args[0] == 'finalize':
+                        # Story 17.3: synthetic terminal AudioChunk lets the
+                        # progressive-playback consumer close its open audio session
+                        # without needing a separate "stream done" channel.
+                        # Zero-length payload — consumer must skip play_audio_chunk
+                        # if audio_data.size == 0.
+                        if self._audio_chunk_ready_callback is not None:
+                            try:
+                                self._audio_chunk_ready_callback(
+                                    AudioChunk(
+                                        audio_data=np.zeros(0, dtype=np.float32),
+                                        sample_rate=sample_rate,
+                                        chunk_index=chunk_count_box[0],
+                                        is_final=True,
+                                        text_segment="",
+                                    )
+                                )
+                            except Exception:
+                                self.logger.exception(
+                                    "[QwenTTS] TRUE_STREAM terminal "
+                                    "_audio_chunk_ready_callback raised on "
+                                    "finalize; swallowing"
+                                )
 
                 worker = StreamingDecoderWorker(
                     streamer=streamer,

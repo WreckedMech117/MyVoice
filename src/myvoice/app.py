@@ -174,6 +174,20 @@ class MyVoiceApp(QObject):
         # forever across many Replay clicks.
         self._advanced_replay_tokens: _BoundedDedupSet = _BoundedDedupSet()
 
+        # Story 17.3 — Phase ⊥-Polish: progressive-playback consumer state.
+        # _progressive_playback_active is latched True from chunk 0 of a
+        # streaming generation and consumed (cleared) by either the dispatch
+        # skip-branch (normal path) or the cancel handler (interrupt path).
+        # The audio device session is closed on the terminal AudioChunk
+        # (is_final=True) but the flag stays True so _play_generated_audio
+        # knows to skip its play_dual_stream call — clearing the flag at
+        # is_final would race the dispatch on the asyncio loop ordering.
+        self._progressive_playback_active: bool = False
+        self._progressive_playback_sample_rate: int = 0
+        # Lazy-initialized: asyncio.Lock requires a running event loop to
+        # construct, so first use creates it inside the handler coro.
+        self._progressive_playback_lock: Optional[asyncio.Lock] = None
+
         # Connect application signals
         self.qt_app.aboutToQuit.connect(self._on_about_to_quit)
 
@@ -416,6 +430,16 @@ class MyVoiceApp(QObject):
             # for this attempt — next attempt (post-init) hits the cache.
             self._tts_service.set_whisper_init_callback(
                 self._on_whisper_init_requested
+            )
+
+            # Story 17.3 — wire the progressive-playback consumer so the
+            # SENTENCE_STREAM and TRUE_STREAM chunk-emit callbacks (per
+            # qwen_tts_service.py:3071-3082 and :3897-3947) reach the
+            # AudioCoordinator's start_streaming_session/play_audio_chunk
+            # /stop_streaming_session triplet. Closes the user-perceived
+            # progressive-playback gap surfaced by Story 17.2's smoke.
+            self._tts_service.set_audio_chunk_ready_callback(
+                self._on_audio_chunk_ready
             )
 
             # Start TTS service (DIRECT AWAIT)
@@ -1110,6 +1134,28 @@ class MyVoiceApp(QObject):
                 asyncio.ensure_future(
                     self._audio_coordinator.stop_all_playback(), loop=loop
                 )
+                # Story 17.3 — Phase ⊥-Polish: when a progressive-playback
+                # session is open (TRUE_STREAM/SENTENCE_STREAM mid-stream),
+                # stop_all_playback's batch-mode targets do not include the
+                # streaming PyAudio session. Fire stop_streaming_session()
+                # additively so the open stream closes within ~50ms (one
+                # chunk's buffer drain). Ordered AFTER the streamer-cancel
+                # chain (Story 16.5's streamer._cancel_event.set() fires
+                # synchronously inside cancel_generation above) so the
+                # producer stops before the consumer.
+                if self._progressive_playback_active:
+                    asyncio.ensure_future(
+                        self._audio_coordinator.stop_streaming_session(),
+                        loop=loop,
+                    )
+                    # Clear the flag immediately so a subsequent generation
+                    # opens a fresh session (chunk 0 sees False, opens).
+                    # Subsequent _play_generated_audio for this cancelled
+                    # generation will see False and fall through to the
+                    # batch path — but the cancelled session has already
+                    # been discarded by cancel_generation, so the assembled
+                    # buffer (if any) is dropped before reaching dispatch.
+                    self._progressive_playback_active = False
             else:
                 self.logger.debug("Stop requested but audio coordinator not available")
 
@@ -2295,6 +2341,135 @@ class MyVoiceApp(QObject):
                 "error"
             )
 
+    # --------------------------------------------------------------- #
+    # Story 17.3 — progressive-playback consumer (Phase ⊥-Polish)
+    # --------------------------------------------------------------- #
+
+    def _on_audio_chunk_ready(self, chunk) -> None:
+        """Story 17.3 — synchronous trampoline for the TTS-service chunk
+        callback.
+
+        Fires from the StreamingDecoderWorker thread (TRUE_STREAM) or the
+        SENTENCE_STREAM async generation context. Schedules
+        ``_handle_progressive_chunk_async`` onto the orchestrator's
+        ``self.loop`` via ``asyncio.run_coroutine_threadsafe`` so all
+        AudioCoordinator calls run on the main event loop and so a slow
+        consumer can never block the producer.
+        """
+        try:
+            loop = getattr(self, "loop", None)
+            if loop is None or loop.is_closed():
+                return
+            asyncio.run_coroutine_threadsafe(
+                self._handle_progressive_chunk_async(chunk), loop
+            )
+        except Exception:
+            self.logger.exception(
+                "Failed to schedule progressive-playback chunk handler"
+            )
+
+    async def _handle_progressive_chunk_async(self, chunk) -> None:
+        """Story 17.3 — process one progressive-playback ``AudioChunk``.
+
+        State machine:
+          - chunk 0 (or first chunk after a stale state) opens the audio
+            device session via ``start_streaming_session(sample_rate=...)``
+            and sets ``_progressive_playback_active = True``.
+          - chunks 1..N convert PCM float32 → int16 bytes and call
+            ``play_audio_chunk(bytes, is_final=False)``.
+          - the synthetic terminal ``AudioChunk(is_final=True)`` (emitted
+            by qwen_tts_service.py:_wrapped_post on finalize) closes the
+            session via ``stop_streaming_session()``. The flag is
+            intentionally NOT cleared here — ``_play_generated_audio``
+            consumes (clears) it inside the dispatch skip-branch so the
+            two paths are unambiguously sequenced on the asyncio loop.
+
+        Open failure falls through to batch playback (NFR7-style graceful
+        degradation): the flag stays False so the assembled buffer plays
+        via ``_play_generated_audio``'s normal path.
+        """
+        import numpy as np
+
+        if self._progressive_playback_lock is None:
+            self._progressive_playback_lock = asyncio.Lock()
+
+        async with self._progressive_playback_lock:
+            # Story 17.3 AC #5 — NFR7 fallback continuity: a chunk_index=0
+            # while ``_progressive_playback_active`` is already True means
+            # a fresh stream is starting on top of a stale session — the
+            # canonical case is TRUE_STREAM raising mid-stream and
+            # SENTENCE_STREAM taking over (variant (b): clean cut + fresh
+            # restart). Close the stale session FIRST so the new session
+            # can open cleanly. Audible effect: ~50-100ms gap between the
+            # partial TRUE_STREAM audio and the SENTENCE_STREAM audio.
+            if (
+                chunk.chunk_index == 0
+                and self._progressive_playback_active
+                and self._audio_coordinator is not None
+            ):
+                try:
+                    await self._audio_coordinator.stop_streaming_session()
+                except Exception:
+                    self.logger.warning(
+                        "Stale progressive playback session close failed "
+                        "during fallback restart (non-fatal)",
+                        exc_info=True,
+                    )
+                self._progressive_playback_active = False
+
+            if not self._progressive_playback_active:
+                if self._audio_coordinator is None:
+                    return
+                try:
+                    await self._audio_coordinator.start_streaming_session(
+                        sample_rate=chunk.sample_rate,
+                        channels=1,
+                        sample_width=2,
+                    )
+                except Exception:
+                    self.logger.warning(
+                        "Progressive playback session open failed; "
+                        "falling back to batch playback",
+                        exc_info=True,
+                    )
+                    self._progressive_playback_active = False
+                    return
+                self._progressive_playback_active = True
+                self._progressive_playback_sample_rate = chunk.sample_rate
+                self.logger.info(
+                    "Progressive playback session opened: "
+                    f"sample_rate={chunk.sample_rate}Hz"
+                )
+
+            if chunk.is_final:
+                try:
+                    await self._audio_coordinator.stop_streaming_session()
+                except Exception:
+                    self.logger.warning(
+                        "Progressive playback session close failed (non-fatal)",
+                        exc_info=True,
+                    )
+                return
+
+            if chunk.audio_data.size == 0:
+                # Defensive: zero-length non-final chunk shouldn't happen,
+                # but skip silently if it does so play_audio_chunk doesn't
+                # see an empty buffer.
+                return
+
+            audio_bytes = (
+                np.clip(chunk.audio_data, -1.0, 1.0) * 32767
+            ).astype(np.int16).tobytes()
+            try:
+                await self._audio_coordinator.play_audio_chunk(
+                    audio_bytes, is_final=False
+                )
+            except Exception:
+                self.logger.warning(
+                    "Progressive playback chunk write failed (non-fatal)",
+                    exc_info=True,
+                )
+
     def _on_tts_generation_complete(self, response):
         """
         Handle TTS generation completion with dual-stream playback.
@@ -2419,6 +2594,30 @@ class MyVoiceApp(QObject):
             if not self._claim_queue_slot_or_defer(
                 queue_token, audio_data, session_id
             ):
+                return
+
+            # Story 17.3 — Phase ⊥-Polish: if the just-completed generation
+            # produced audio progressively (chunk callback opened a streaming
+            # session and wrote each chunk to the audio device), the
+            # assembled buffer has already played to the user's speakers.
+            # Skip the batch ``play_dual_stream`` to avoid double-playback,
+            # but release the queue slot so the next dispatch can advance
+            # — without this release the queue would stay stuck on this
+            # token because the dual-fire ``_on_playback_complete`` chain
+            # never runs (no actual play_dual_stream/play_monitor_audio
+            # call to drive it). The cached WAV file (written by
+            # ``_save_audio_to_cache`` inside the dispatch chain) remains
+            # the source of truth for Replay (Story 13.3) and
+            # save-during-streaming (Story 14.3) is wired separately
+            # through SessionRegistry chunk events — neither depends on
+            # ``play_dual_stream`` actually firing.
+            if self._progressive_playback_active:
+                self.logger.info(
+                    "Progressive playback already active; skipping batch "
+                    f"dispatch (queue_token={queue_token})"
+                )
+                self._progressive_playback_active = False
+                self._release_queue_slot_on_failure(queue_token)
                 return
 
             # Get device preferences from settings
