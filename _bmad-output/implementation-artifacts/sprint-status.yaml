@@ -99,7 +99,13 @@ development_status:
 
   # Epic 17 — Streaming Default Ramp (Phase ⊥-Ramp — audition-gated follow-up to Epic 16)
   # Added 2026-05-08 per Epic 16 retrospective's explicit handoff (epic-16-retro-2026-05-08.md §"Significant Discoveries").
-  # Single-story epic: closes Story 16.7 AC #2's deferred multi-listener perceptual A/B audition.
-  epic-17: done
+  # Originally a single-story epic (17.1 closes Story 16.7 AC #2's deferred multi-listener perceptual A/B audition).
+  # Re-opened 2026-05-08 per Story tooling-2 closure: discovered TRUE_STREAM voice_clone_prompt
+  # regression for CLONED voices in bundled UI flow (tooling-2-build-tools-audit-evidence.md §7.2).
+  # Story 17.2 precomputes the embedding lazily on first use and persists to <voice>.pt — closes
+  # the Phase ⊥-Ramp user-reach gap (Story 17.1 certified TRUE_STREAM; 17.2 makes it actually
+  # reach CLONED-voice users at install time).
+  epic-17: in-progress
   17-1-streaming-default-ramp: done
+  17-2-cloned-voice-truestream-prompt-precompute: in-progress
   epic-17-retrospective: optional

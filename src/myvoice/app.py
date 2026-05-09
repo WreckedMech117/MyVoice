@@ -402,6 +402,22 @@ class MyVoiceApp(QObject):
             # Set up health status callback BEFORE starting service
             self._tts_service.set_health_status_callback(self._on_tts_health_status_changed)
 
+            # Story 17.2 — wire UI feedback for the lazy CLONED-voice
+            # voice_clone_prompt precompute (cache miss surfaces a transient
+            # "Preparing voice for streaming…" message in the TTS indicator).
+            self._tts_service.set_preparing_voice_callback(
+                self._on_tts_preparing_voice_message
+            )
+            # Story 17.2 — orchestrator-driven on-demand Whisper init.
+            # When the precompute hits a cache miss with no Whisper service
+            # wired (e.g. user has not opened Voice Design Studio yet), the
+            # callback fires init in the background; the precompute itself
+            # raises so the dispatch chain falls through to SENTENCE_STREAM
+            # for this attempt — next attempt (post-init) hits the cache.
+            self._tts_service.set_whisper_init_callback(
+                self._on_whisper_init_requested
+            )
+
             # Start TTS service (DIRECT AWAIT)
             await self._tts_service.start()
             self.logger.info("TTS service started successfully")
@@ -433,6 +449,28 @@ class MyVoiceApp(QObject):
             await self._voice_manager.start()
             self.logger.info("Voice profile service started successfully")
             self._on_voice_service_started(None)
+
+            # Story 17.2 — wire VoiceProfileManager into TTS service so the
+            # CLONED-voice voice_clone_prompt cache can hydrate from disk
+            # at startup (and resolve VoiceProfile objects on cache miss
+            # for transcription-status updates). Hydration runs as a
+            # fire-and-forget background task because (i) it scans disk
+            # for .pt files and (ii) it must not block the rest of startup.
+            try:
+                self._tts_service.set_voice_profile_manager(self._voice_manager)
+                self._run_async_task(
+                    self._tts_service.hydrate_voice_clone_prompt_cache(),
+                    on_success=lambda result: self.logger.info(
+                        f"Voice clone prompt cache hydration: {result}"
+                    ),
+                    on_error=lambda error: self.logger.warning(
+                        f"Voice clone prompt cache hydration failed: {error}"
+                    ),
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    f"Voice clone prompt cache wiring failed: {exc}"
+                )
 
             # Preload the appropriate model based on cached active voice profile
             # This ensures fast first generation without model switching delay
@@ -1715,6 +1753,53 @@ class MyVoiceApp(QObject):
             )
             self._main_window.update_service_status("TTS", status_info)
 
+    def _on_tts_preparing_voice_message(self, message: Optional[str]):
+        """Story 17.2 AC #4 — surface the lazy-precompute status on the TTS
+        indicator. Called with a string on cache miss entry, with None on
+        exit (success or failure). Cache hits never invoke this callback,
+        so steady-state generations remain visually invisible.
+
+        Implemented by re-emitting the indicator's last known status with
+        the ``preparing_voice_message`` field set. Keeps the existing
+        ``health_status``/``error_message`` semantics untouched (this is
+        an additive UX hint, not a state mutation).
+        """
+        if not self._main_window:
+            return
+        # Reuse the indicator's current status if we have one cached;
+        # otherwise synthesize HEALTHY+RUNNING (the precompute only fires
+        # when the TTS service is up).
+        current = None
+        try:
+            indicator = (
+                self._main_window.get_service_indicator("TTS")
+                if hasattr(self._main_window, "get_service_indicator")
+                else None
+            )
+            if indicator is not None and hasattr(indicator, "get_current_status"):
+                current = indicator.get_current_status()
+        except Exception:
+            current = None
+
+        status_info = ServiceStatusInfo(
+            service_name="TTS",
+            status=current.status if current is not None else ServiceStatus.RUNNING,
+            health_status=(
+                current.health_status if current is not None
+                else ServiceHealthStatus.HEALTHY
+            ),
+            last_check=datetime.now(),
+            error_message=current.error_message if current is not None else None,
+            uptime_seconds=current.uptime_seconds if current is not None else None,
+            preparing_voice_message=message,
+        )
+        try:
+            self._main_window.update_service_status("TTS", status_info)
+        except Exception as exc:
+            self.logger.warning(
+                f"Failed updating TTS indicator with preparing-voice message: {exc}"
+            )
+
     def _on_tts_health_status_changed(self, health_status: ServiceHealthStatus, error_message: Optional[str]):
         """
         Callback for TTS service health status changes.
@@ -1896,6 +1981,20 @@ class MyVoiceApp(QObject):
             if self._main_window:
                 self._main_window.set_whisper_service(self._whisper_service)
                 self.logger.debug("Whisper service propagated to MainWindow")
+
+            # Story 17.2: Propagate Whisper service to TTS so the lazy
+            # CLONED-voice voice_clone_prompt precompute can transcribe
+            # ref_audio when no .txt sidecar exists. Without this, the
+            # precompute raises and the dispatch chain falls through to
+            # SENTENCE_STREAM (NFR7); with it, TRUE_STREAM works first-try.
+            if hasattr(self, "_tts_service") and self._tts_service:
+                try:
+                    self._tts_service.set_whisper_service(self._whisper_service)
+                    self.logger.debug("Whisper service propagated to TTS")
+                except Exception as exc:
+                    self.logger.warning(
+                        f"Failed propagating Whisper to TTS: {exc}"
+                    )
 
             self.logger.info("Whisper service initialized successfully on-demand")
             return True

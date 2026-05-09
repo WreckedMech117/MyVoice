@@ -288,6 +288,14 @@ class ServiceStatusIndicator(QWidget):
             f"Status: {self._status_info.status_display}",
         ]
 
+        # Story 17.2 — surface the transient precompute message above the
+        # standard fields so users see the first-run cause of any latency.
+        preparing_msg = getattr(
+            self._status_info, "preparing_voice_message", None
+        )
+        if preparing_msg:
+            tooltip_lines.append(f"<i>{preparing_msg}</i>")
+
         if self._status_info.last_check:
             age_seconds = (self._status_info.last_check.timestamp() -
                           self._status_info.last_check.timestamp()) if self._status_info.last_check else 0

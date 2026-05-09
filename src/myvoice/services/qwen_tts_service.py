@@ -13,11 +13,13 @@ Story 1.5: Startup & Bundled Voices
 """
 
 import asyncio
+import json
 import logging
 import re
 import tempfile
 import threading
 import time
+import weakref
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Dict, Any, Callable, List, Tuple, AsyncIterator
@@ -627,8 +629,41 @@ class QwenTTSService(BaseService):
         # drop the registration.
         self._latency_aggregator = _FirstChunkLatencyAggregator(self)
 
-        # Voice clone prompt cache (for reusing voice clone prompts)
-        self._voice_clone_prompts: Dict[str, Any] = {}
+        # Voice clone prompt cache (Story 17.2 — wired into generate_voice_clone).
+        # Key: (str(ref_audio.resolve()), tier) where tier ∈ {"quality", "small"}.
+        # Tier-locked because the 1.7B/0.6B Qwen3 models produce embeddings with
+        # different hidden dimensions; the same .pt cannot serve both.
+        self._voice_clone_prompts: Dict[Tuple[str, str], Any] = {}
+        # Per-voice asyncio.Lock registry. WeakValueDictionary so locks for
+        # deleted/unloaded voices are GC'd; the registry mutation itself is
+        # guarded by `_voice_clone_prompt_locks_guard` (lazy-init under
+        # asyncio because Lock requires a running event loop).
+        self._voice_clone_prompt_locks: "weakref.WeakValueDictionary[Tuple[str, str], asyncio.Lock]" = (
+            weakref.WeakValueDictionary()
+        )
+        self._voice_clone_prompt_locks_guard: Optional[asyncio.Lock] = None
+
+        # Story 17.2 — Whisper integration for lazy CLONED-voice precompute.
+        # Wired post-construction by the orchestrator after on-demand
+        # WhisperSubprocessService init lands (app.py:_initialize_whisper_
+        # service_on_demand). When None, precompute raises so the dispatch
+        # chain falls through to SENTENCE_STREAM (NFR7 preserved).
+        self._whisper_service: Optional[Any] = None
+        # Optional fire-and-forget callback the orchestrator wires so the
+        # precompute can request on-demand Whisper init when it discovers
+        # _whisper_service is None on the very first call.
+        self._whisper_init_callback: Optional[Callable[[], None]] = None
+
+        # Story 17.2 — VoiceProfileManager handle for startup hydration of
+        # the cache. Wired post-construction; hydration is a separate explicit
+        # call, not auto-fired in start(), because the orchestrator constructs
+        # the manager AFTER tts.start() returns.
+        self._voice_profile_manager: Optional[Any] = None
+
+        # Story 17.2 — UI feedback for first-run precompute (AC #4). The
+        # orchestrator wires a callback that translates the (Optional[str])
+        # message into a ServiceStatusInfo update for the TTS indicator.
+        self._preparing_voice_callback: Optional[Callable[[Optional[str]], None]] = None
 
         self.logger.info(
             f"QwenTTSService initialized: device={device}, cache_dir={self._cache_dir}"
@@ -1079,6 +1114,512 @@ class QwenTTSService(BaseService):
             request, self._resolve_streaming_mode()
         )
 
+    # ----- Story 17.2: lazy + persistent voice_clone_prompt precompute --- #
+
+    # qwen-tts pin per requirements.txt:23 — embedded in .pt.meta.json so a
+    # future pin bump invalidates cached embeddings (defensive: today's pin
+    # is unchanged; this guard ensures a future bump is safe).
+    _QWEN_TTS_PIN_HASH = "1ab0dd75"
+    # Whisper retry policy for the lazy-precompute (AC #2): three attempts
+    # total, with progressive backoff between. The bundled subprocess
+    # Whisper path (whisper_subprocess.py) typically completes in 1-3s
+    # cold, so 1s + 3s gives ~5s envelope before declaring FAILED.
+    _WHISPER_RETRY_BACKOFFS_SECONDS: Tuple[float, ...] = (1.0, 3.0)
+
+    def set_whisper_service(self, whisper_service: Any) -> None:
+        """Story 17.2 AC #2 — orchestrator-injected WhisperSubprocessService.
+
+        Wired by ``app.py:_initialize_whisper_service_on_demand`` after the
+        on-demand init flow lands. When None, the lazy CLONED-voice
+        precompute raises ``RuntimeError`` so ``_dispatch_by_streaming_mode``
+        falls through to SENTENCE_STREAM (NFR7 preserved).
+        """
+        self._whisper_service = whisper_service
+        self.logger.info("WhisperSubprocessService injected into QwenTTSService")
+
+    def set_whisper_init_callback(
+        self, callback: Optional[Callable[[], None]]
+    ) -> None:
+        """Story 17.2 — fire-and-forget hook the orchestrator wires so the
+        first cache-miss precompute can request on-demand Whisper init.
+
+        The callback is invoked synchronously from the precompute when
+        ``_whisper_service is None``; the precompute then raises so the
+        dispatch chain falls through to SENTENCE_STREAM. The next generation
+        on the same voice (after init lands) hits the populated cache.
+        """
+        self._whisper_init_callback = callback
+
+    def set_voice_profile_manager(self, voice_profile_manager: Any) -> None:
+        """Story 17.2 AC #3 — orchestrator-injected VoiceProfileManager.
+
+        Wired by ``app.py`` after ``await self._voice_manager.start()``.
+        Used by ``hydrate_voice_clone_prompt_cache()`` to enumerate CLONED
+        voices and pre-load any persisted ``.pt`` files into the in-memory
+        cache. ``generate_voice_clone`` does NOT require this manager — it
+        derives ``ref_audio.resolve()`` from its parameter directly — so a
+        None manager only disables startup hydration (lazy fallback works).
+        """
+        self._voice_profile_manager = voice_profile_manager
+
+    def set_preparing_voice_callback(
+        self, callback: Optional[Callable[[Optional[str]], None]]
+    ) -> None:
+        """Story 17.2 AC #4 — orchestrator-wired UI feedback for first-run
+        precompute. Invoked with a string message on entry (e.g. "Preparing
+        voice for streaming…") and with ``None`` on exit (success or
+        failure). Cache hits do NOT invoke this callback — only misses.
+        """
+        self._preparing_voice_callback = callback
+
+    async def _get_voice_clone_prompt_lock(
+        self, cache_key: Tuple[str, str]
+    ) -> asyncio.Lock:
+        """Lazy-allocate a per-voice asyncio.Lock keyed by ``cache_key``.
+
+        Concurrent same-key calls return the same Lock instance so the
+        precompute serializes per-voice; different keys proceed in parallel.
+        Locks for unreferenced keys are GC'd via WeakValueDictionary, so
+        long-running services don't accumulate stale Lock objects.
+
+        The registry mutation itself is guarded by a single asyncio.Lock
+        (``_voice_clone_prompt_locks_guard``) lazy-initialized here because
+        ``asyncio.Lock`` requires a running event loop. The lock instance
+        is held in a local ``hold`` variable so the WeakValueDictionary's
+        weak reference does not GC it before we return — the caller's
+        ``async with`` then takes the strong reference.
+        """
+        if self._voice_clone_prompt_locks_guard is None:
+            self._voice_clone_prompt_locks_guard = asyncio.Lock()
+        async with self._voice_clone_prompt_locks_guard:
+            existing = self._voice_clone_prompt_locks.get(cache_key)
+            if existing is not None:
+                return existing
+            new_lock = asyncio.Lock()
+            self._voice_clone_prompt_locks[cache_key] = new_lock
+            return new_lock
+
+    async def _ensure_transcription_for_clone_voice(
+        self,
+        voice_profile: Optional[Any],
+        ref_audio: Path,
+    ) -> str:
+        """Story 17.2 AC #2 — resolve a transcription for ``ref_audio``.
+
+        Resolution priority:
+          1. ``voice_profile.transcription`` if non-empty (in-memory).
+          2. ``<ref_audio>.with_suffix('.txt')`` sidecar (mirrors existing
+             auto-detect at voice_profile.py:348-355).
+          3. WhisperSubprocessService.transcribe_file with retry+backoff.
+
+        On Whisper success the result is written to the .txt sidecar AND
+        ``voice_profile.transcription`` is updated in-memory. On exhausted
+        retries the profile is marked FAILED and the helper raises so the
+        dispatch chain falls through to SENTENCE_STREAM (NFR7).
+
+        ``voice_profile`` may be None when only the audio path is known
+        (lock-only call sites); status transitions are skipped in that case
+        but the .txt sidecar is still consulted and (on Whisper success)
+        written.
+        """
+        # Priority 1: in-memory transcription
+        if voice_profile is not None:
+            existing = (voice_profile.transcription or "").strip()
+            if existing:
+                return existing
+
+        # Priority 2: .txt sidecar
+        sidecar = ref_audio.with_suffix(".txt")
+        if sidecar.exists():
+            try:
+                text = sidecar.read_text(encoding="utf-8").strip()
+                if text:
+                    if voice_profile is not None:
+                        voice_profile.transcription = text
+                        # Mark COMPLETED via the canonical helper so the rest
+                        # of the system observes a coherent transcription
+                        # status (avoids leaving FAILED stuck if a previous
+                        # attempt lost — sidecar wins).
+                        voice_profile.set_transcription_result(
+                            text, confidence=1.0, model_name="sidecar"
+                        )
+                    return text
+            except Exception as exc:
+                self.logger.warning(
+                    f"Failed reading transcription sidecar {sidecar}: {exc}"
+                )
+
+        # Priority 3: Whisper. Lazy-fail-safe: if no service, request init
+        # (fire-and-forget) and raise — dispatch chain falls through to
+        # SENTENCE_STREAM (NFR7); subsequent calls (post-init) hit cache.
+        if self._whisper_service is None:
+            if self._whisper_init_callback is not None:
+                try:
+                    self._whisper_init_callback()
+                except Exception as exc:
+                    self.logger.warning(
+                        f"Whisper init callback raised: {exc}"
+                    )
+            raise RuntimeError(
+                "WhisperSubprocessService is not initialized; cannot "
+                "compute transcription for TRUE_STREAM voice clone "
+                "precompute. Falling through to SENTENCE_STREAM."
+            )
+
+        # Status transitions for diagnostics. QUEUED on entry; PROCESSING
+        # before the first await; FAILED on exhausted retries; COMPLETED
+        # on success (via set_transcription_result).
+        from myvoice.models.voice_profile import TranscriptionStatus
+
+        if voice_profile is not None:
+            voice_profile.update_transcription_status(
+                TranscriptionStatus.QUEUED
+            )
+
+        last_error: Optional[BaseException] = None
+        for attempt_index in range(len(self._WHISPER_RETRY_BACKOFFS_SECONDS) + 1):
+            if voice_profile is not None:
+                voice_profile.update_transcription_status(
+                    TranscriptionStatus.PROCESSING
+                )
+            try:
+                self.logger.info(
+                    f"Whisper transcription started for {ref_audio.name} "
+                    f"(attempt {attempt_index + 1})"
+                )
+                result = await self._whisper_service.transcribe_file(ref_audio)
+                text = (result.text or "").strip()
+                if not text:
+                    raise RuntimeError(
+                        "Whisper returned empty transcription"
+                    )
+                # Persist sidecar (UTF-8, no BOM) before updating in-memory
+                # state so a crash mid-update can still recover.
+                try:
+                    sidecar.write_text(text, encoding="utf-8")
+                except Exception as exc:
+                    self.logger.warning(
+                        f"Failed writing transcription sidecar {sidecar}: {exc}"
+                    )
+                if voice_profile is not None:
+                    voice_profile.set_transcription_result(
+                        text,
+                        confidence=getattr(result, "confidence", 0.9),
+                        model_name="whisper-base",
+                    )
+                self.logger.info(
+                    f"Whisper transcription completed for {ref_audio.name}"
+                )
+                return text
+            except Exception as exc:
+                last_error = exc
+                self.logger.warning(
+                    f"Whisper attempt {attempt_index + 1} failed for "
+                    f"{ref_audio.name}: {exc}"
+                )
+                # If a backoff is configured for THIS attempt, sleep and
+                # retry; otherwise drop out to FAILED handling below.
+                if attempt_index < len(self._WHISPER_RETRY_BACKOFFS_SECONDS):
+                    backoff = self._WHISPER_RETRY_BACKOFFS_SECONDS[
+                        attempt_index
+                    ]
+                    await asyncio.sleep(backoff)
+                    continue
+
+        # Retries exhausted.
+        error_str = str(last_error) if last_error else "unknown"
+        if voice_profile is not None:
+            voice_profile.mark_transcription_failed(error_str)
+        raise RuntimeError(
+            f"Whisper transcription failed after retries: {error_str}"
+        )
+
+    def _voice_clone_prompt_persist_paths(
+        self, ref_audio: Path, tier: str
+    ) -> Tuple[Path, Path]:
+        """Return (pt_path, meta_path) for persisting an embedding next to
+        ``ref_audio``. Tier-locked naming: ``<voice>.<tier>.pt`` plus
+        ``<voice>.<tier>.pt.meta.json``. Spaces / parens in stem (e.g.
+        ``Base (Clone)``) are accepted by both Windows and Linux filesystems.
+        """
+        pt_path = ref_audio.with_name(f"{ref_audio.stem}.{tier}.pt")
+        meta_path = ref_audio.with_name(
+            f"{ref_audio.stem}.{tier}.pt.meta.json"
+        )
+        return pt_path, meta_path
+
+    def _voice_clone_prompt_meta_is_valid(
+        self,
+        meta_path: Path,
+        ref_audio: Path,
+        tier: str,
+    ) -> bool:
+        """Return True if ``meta_path`` matches the current ref_audio
+        (mtime + size) AND the current qwen-tts pin AND the current tier.
+        On any mismatch (or unparseable meta), return False — caller deletes
+        both files and treats as miss.
+        """
+        if not meta_path.exists():
+            return False
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            self.logger.warning(
+                f"Voice clone prompt meta unparseable {meta_path}: {exc}"
+            )
+            return False
+        try:
+            stat = ref_audio.stat()
+        except FileNotFoundError:
+            return False
+        if meta.get("tier") != tier:
+            return False
+        if meta.get("qwen_tts_pin") != self._QWEN_TTS_PIN_HASH:
+            return False
+        # mtime is a float; allow exact equality (filesystem timestamps round-
+        # trip exactly on the platforms MyVoice ships to) but tolerate ~1us
+        # of float drift defensively.
+        meta_mtime = meta.get("ref_audio_mtime")
+        if not isinstance(meta_mtime, (int, float)):
+            return False
+        if abs(float(meta_mtime) - stat.st_mtime) > 1e-3:
+            return False
+        if meta.get("ref_audio_size") != stat.st_size:
+            return False
+        return True
+
+    def _delete_voice_clone_prompt_files(
+        self, pt_path: Path, meta_path: Path
+    ) -> None:
+        """Best-effort delete of (pt_path, meta_path) — both ignored if
+        already absent. Logged at DEBUG; failures swallowed (cache miss
+        treats them as ephemeral)."""
+        for path in (pt_path, meta_path):
+            try:
+                if path.exists():
+                    path.unlink()
+                    self.logger.debug(f"Deleted stale cache file: {path}")
+            except Exception as exc:
+                self.logger.warning(
+                    f"Failed deleting stale cache file {path}: {exc}"
+                )
+
+    async def _ensure_voice_clone_prompt_for_voice(
+        self,
+        voice_profile: Optional[Any],
+        ref_audio: Path,
+        transcription: str,
+        tier: str,
+    ) -> Any:
+        """Story 17.2 AC #3 — compute or load a tier-locked voice clone
+        prompt for ``ref_audio`` and return the in-memory tensor.
+
+        Order of operations:
+          1. If a valid persisted ``.pt`` (per meta) exists, load + normalize
+             it and return — no network or compute.
+          2. Otherwise, await ``create_voice_clone_prompt_for_tier``;
+             move tensors to CPU; ``torch.save`` to ``.pt``; write meta JSON;
+             verify by re-loading; on verification failure delete both files
+             and raise.
+
+        Caller (``generate_voice_clone``) holds the per-voice asyncio.Lock,
+        so a concurrent same-voice call sees the cache hit on its turn.
+        """
+        pt_path, meta_path = self._voice_clone_prompt_persist_paths(
+            ref_audio, tier
+        )
+
+        # Fast path: persisted .pt exists with valid meta — load + normalize.
+        if pt_path.exists() and self._voice_clone_prompt_meta_is_valid(
+            meta_path, ref_audio, tier
+        ):
+            try:
+                import torch  # local to keep the cold-start surface unchanged
+                # weights_only=False is required for VoiceClonePromptItem
+                # deserialization in PyTorch 2.6+; mirrors voice_design_
+                # studio_dialog.py:1172 and scripts/validate_embedding_api.py:219.
+                loaded = torch.load(
+                    str(pt_path), map_location="cpu", weights_only=False
+                )
+                normalized = self._normalize_voice_clone_prompt(loaded)
+                self.logger.info(
+                    f"Voice clone prompt cache hit on disk: {pt_path}"
+                )
+                return normalized
+            except Exception as exc:
+                self.logger.warning(
+                    f"Voice clone prompt reload failed for {pt_path}: {exc}; "
+                    "treating as miss"
+                )
+                self._delete_voice_clone_prompt_files(pt_path, meta_path)
+        elif pt_path.exists():
+            # Stale .pt (mtime / size / pin / tier mismatch) — purge + miss.
+            self._delete_voice_clone_prompt_files(pt_path, meta_path)
+
+        # Compute path: call the tier-locked extractor (which loads the Base
+        # model under tier override). The shared sync helper at line 1286
+        # is what tests mock for fast unit coverage.
+        prompt = await self.create_voice_clone_prompt_for_tier(
+            ref_audio=ref_audio,
+            ref_text=transcription,
+            tier=tier,
+        )
+        if prompt is None:
+            raise RuntimeError(
+                "create_voice_clone_prompt_for_tier returned None"
+            )
+
+        # Move tensors to CPU before persistence (mirrors
+        # voice_design_studio_dialog.py:1154-1158).
+        try:
+            if getattr(prompt, "ref_code", None) is not None:
+                prompt.ref_code = prompt.ref_code.cpu()
+            if getattr(prompt, "ref_spk_embedding", None) is not None:
+                prompt.ref_spk_embedding = prompt.ref_spk_embedding.cpu()
+        except Exception as exc:
+            # Tensors may be plain torch.Tensor without .cpu() in mocked
+            # tests; only log and continue — the in-memory cache still
+            # works, only persistence may be skipped.
+            self.logger.warning(
+                f"CPU-move on prompt tensors failed: {exc}"
+            )
+
+        try:
+            stat = ref_audio.stat()
+            meta = {
+                "schema_version": "1.0",
+                "ref_audio_mtime": stat.st_mtime,
+                "ref_audio_size": stat.st_size,
+                "tier": tier,
+                "qwen_tts_pin": self._QWEN_TTS_PIN_HASH,
+            }
+        except FileNotFoundError:
+            # Caller's ref_audio went missing between dispatch entry and
+            # save — surface the underlying error instead of silently
+            # writing an unverifiable cache file.
+            raise
+
+        # Persist + verify. Delete both files on verification failure so a
+        # later attempt re-computes cleanly (no half-written state).
+        try:
+            import torch  # local for the same reason as above
+            torch.save(prompt, str(pt_path))
+            meta_path.write_text(
+                json.dumps(meta), encoding="utf-8"
+            )
+            try:
+                verify = torch.load(
+                    str(pt_path), map_location="cpu", weights_only=False
+                )
+                # Accept either the wrapper-class shape or anything
+                # _normalize_voice_clone_prompt can produce — the
+                # invariant is that ref_spk_embedding is recoverable.
+                verify_norm = self._normalize_voice_clone_prompt(verify)
+                if getattr(verify_norm, "ref_spk_embedding", None) is None:
+                    raise RuntimeError(
+                        "Verification reload produced empty embedding"
+                    )
+            except Exception as verify_exc:
+                self._delete_voice_clone_prompt_files(pt_path, meta_path)
+                raise RuntimeError(
+                    f"Voice clone prompt verification failed: "
+                    f"{verify_exc}"
+                ) from verify_exc
+            self.logger.info(
+                f"Voice clone prompt persisted to {pt_path}"
+            )
+        except Exception:
+            # Re-raise with context already logged; the outer dispatch
+            # chain catches and falls through to SENTENCE_STREAM.
+            raise
+
+        return prompt
+
+    async def hydrate_voice_clone_prompt_cache(self) -> Tuple[int, int]:
+        """Story 17.2 AC #3 — startup hydration of the in-memory cache.
+
+        Iterates CLONED voices in the wired ``_voice_profile_manager``;
+        for each one, attempts to load ``<voice>.<tier>.pt`` for the
+        currently-loaded tier per the same invalidation rules as the lazy
+        path. Hits populate ``_voice_clone_prompts[(resolved_path, tier)]``;
+        misses are silent (lazy precompute will fill them on first use).
+
+        Returns ``(hits, total)`` for caller-side telemetry/logging. Does
+        not raise — bad meta on one voice does not abort the scan.
+
+        Idempotent: re-running it is a no-op for entries already cached
+        (the on-disk fast-path in ``_ensure_voice_clone_prompt_for_voice``
+        is bypassed because the in-memory check at the gate fires first).
+        """
+        if self._voice_profile_manager is None:
+            self.logger.debug(
+                "Voice clone prompt cache hydration skipped: "
+                "no VoiceProfileManager wired"
+            )
+            return (0, 0)
+        try:
+            from myvoice.models.voice_profile import VoiceType
+            profiles = self._voice_profile_manager.get_profiles()
+        except Exception as exc:
+            self.logger.warning(
+                f"Voice clone prompt cache hydration aborted: {exc}"
+            )
+            return (0, 0)
+
+        tier = self._model_registry.quality_tier.value
+        hits = 0
+        total = 0
+        for name, profile in profiles.items():
+            if getattr(profile, "voice_type", None) != VoiceType.CLONED:
+                continue
+            ref_audio = getattr(profile, "file_path", None)
+            if ref_audio is None or not isinstance(ref_audio, Path):
+                continue
+            if not ref_audio.exists():
+                continue
+            total += 1
+            pt_path, meta_path = self._voice_clone_prompt_persist_paths(
+                ref_audio, tier
+            )
+            if not pt_path.exists():
+                continue
+            if not self._voice_clone_prompt_meta_is_valid(
+                meta_path, ref_audio, tier
+            ):
+                # Stale — let lazy path purge & recompute.
+                continue
+            try:
+                import torch
+                loaded = torch.load(
+                    str(pt_path), map_location="cpu", weights_only=False
+                )
+                normalized = self._normalize_voice_clone_prompt(loaded)
+                cache_key = (str(ref_audio.resolve()), tier)
+                self._voice_clone_prompts[cache_key] = normalized
+                hits += 1
+            except Exception as exc:
+                self.logger.warning(
+                    f"Voice clone prompt hydration failed for {name}: "
+                    f"{exc}"
+                )
+        self.logger.info(
+            f"Voice clone prompt cache: hydrated {hits}/{total} CLONED "
+            f"voices for tier {tier} from disk"
+        )
+        return (hits, total)
+
+    def _emit_preparing_voice(self, message: Optional[str]) -> None:
+        """Best-effort preparing-voice indicator update; failures swallow
+        (UI feedback is not on the critical generation path)."""
+        if self._preparing_voice_callback is None:
+            return
+        try:
+            self._preparing_voice_callback(message)
+        except Exception as exc:
+            self.logger.warning(
+                f"preparing_voice callback raised: {exc}"
+            )
+
     async def generate_voice_clone(
         self,
         text: str,
@@ -1092,6 +1633,12 @@ class QwenTTSService(BaseService):
         Generate speech using Base model with voice cloning.
 
         Note: Voice cloning does NOT support emotion control.
+
+        Story 17.2: When the four-condition gate passes (streaming AND
+        TRUE_STREAM resolved AND BASE model AND not x_vector_only_mode),
+        the precompute pipeline lazily produces / hydrates a voice_clone_
+        prompt and sets it on the request BEFORE dispatch. On gate-fail
+        the dispatch is unchanged from Story 16.6 behavior.
 
         Args:
             text: Text to convert to speech
@@ -1115,10 +1662,120 @@ class QwenTTSService(BaseService):
             streaming=streaming,
         )
 
+        resolved_mode = self._resolve_streaming_mode()
+
+        # Story 17.2 AC #1 — four-condition gate. All four must hold;
+        # otherwise skip precompute and let the dispatch chain handle it
+        # (BATCH-force for streaming=False, SENTENCE_STREAM for non-GPU,
+        # x-vector path that doesn't need a prompt at all).
+        gate_pass = (
+            streaming is True
+            and resolved_mode == StreamingMode.TRUE_STREAM
+            and request.model_type == QwenModelType.BASE
+            and request.x_vector_only_mode is False
+        )
+
+        if gate_pass:
+            try:
+                tier = self._model_registry.quality_tier.value
+                cache_key = (str(ref_audio.resolve()), tier)
+            except Exception as exc:
+                # Path resolve failure (extremely rare) — log and skip
+                # precompute; the dispatch chain still handles the
+                # request via fallback.
+                self.logger.warning(
+                    f"Voice clone prompt cache key derivation failed: "
+                    f"{exc}; skipping precompute"
+                )
+                cache_key = None
+
+            if cache_key is not None:
+                # Cache hit — set on request and proceed.
+                cached = self._voice_clone_prompts.get(cache_key)
+                if cached is not None:
+                    request.voice_clone_prompt = cached
+                    self.logger.debug(
+                        f"Voice clone prompt cache hit for {cache_key[0]} "
+                        f"(tier={tier})"
+                    )
+                else:
+                    # Cache miss — serialize per-voice via DCL.
+                    voice_profile = self._lookup_voice_profile(ref_audio)
+                    lock = await self._get_voice_clone_prompt_lock(cache_key)
+                    self._emit_preparing_voice(
+                        "Preparing voice for streaming…"
+                    )
+                    try:
+                        async with lock:
+                            # Re-check inside the critical section
+                            # (double-checked locking).
+                            cached2 = self._voice_clone_prompts.get(cache_key)
+                            if cached2 is None:
+                                self.logger.info(
+                                    "Voice clone prompt cache miss for "
+                                    f"{cache_key[0]} (tier={tier}); "
+                                    "computing"
+                                )
+                                transcription = (
+                                    await self._ensure_transcription_for_clone_voice(
+                                        voice_profile, ref_audio
+                                    )
+                                )
+                                prompt = (
+                                    await self._ensure_voice_clone_prompt_for_voice(
+                                        voice_profile,
+                                        ref_audio,
+                                        transcription,
+                                        tier,
+                                    )
+                                )
+                                self._voice_clone_prompts[cache_key] = prompt
+                                cached2 = prompt
+                            request.voice_clone_prompt = cached2
+                    except Exception as exc:
+                        # Precompute failed; let the dispatch chain catch
+                        # so the SENTENCE_STREAM fallback runs (NFR7).
+                        # Do NOT swallow — this is an exception bubble,
+                        # not a recovery. The indicator is cleared in
+                        # the finally block below.
+                        self.logger.warning(
+                            "Voice clone prompt precompute failed for "
+                            f"{cache_key[0]}: {exc}; falling through "
+                            "to dispatch (NFR7 graceful degradation)"
+                        )
+                        # Return the request as-is (no voice_clone_prompt);
+                        # dispatch chain will fail TRUE_STREAM at the
+                        # voice_clone_prompt-None check and fall back.
+                    finally:
+                        self._emit_preparing_voice(None)
+
         # Story 16.6: route through the three-mode dispatch fork.
         return await self._dispatch_by_streaming_mode(
-            request, self._resolve_streaming_mode()
+            request, resolved_mode
         )
+
+    def _lookup_voice_profile(self, ref_audio: Path) -> Optional[Any]:
+        """Best-effort VoiceProfile lookup by ref_audio path. Returns None
+        when no profile manager is wired or no profile matches — callers
+        gracefully degrade (transcription status updates skipped, but the
+        precompute itself still runs)."""
+        if self._voice_profile_manager is None:
+            return None
+        try:
+            profiles = self._voice_profile_manager.get_profiles()
+        except Exception:
+            return None
+        try:
+            target = str(ref_audio.resolve())
+        except Exception:
+            return None
+        for profile in profiles.values():
+            try:
+                if str(profile.file_path.resolve()) == target:
+                    return profile
+            except Exception:
+                continue
+        return None
 
     async def generate_optimized_voice(
         self,
