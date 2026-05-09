@@ -97,7 +97,7 @@ development_status:
   16-9-nfr1-reconciliation-sentence-stream-latency-investigation: done
   epic-16-retrospective: done
 
-  # Epic 17 — Streaming Default Ramp (Phase ⊥-Ramp — audition-gated follow-up to Epic 16)
+  # Epic 17 — Streaming Default Ramp (Phase ⊥-Ramp + Phase ⊥-Polish)
   # Added 2026-05-08 per Epic 16 retrospective's explicit handoff (epic-16-retro-2026-05-08.md §"Significant Discoveries").
   # Originally a single-story epic (17.1 closes Story 16.7 AC #2's deferred multi-listener perceptual A/B audition).
   # Re-opened 2026-05-08 per Story tooling-2 closure: discovered TRUE_STREAM voice_clone_prompt
@@ -105,7 +105,12 @@ development_status:
   # Story 17.2 precomputes the embedding lazily on first use and persists to <voice>.pt — closes
   # the Phase ⊥-Ramp user-reach gap (Story 17.1 certified TRUE_STREAM; 17.2 makes it actually
   # reach CLONED-voice users at install time).
-  epic-17: done
+  # Re-opened 2026-05-08 (third iteration) per Story 17.2 install-mode smoke: TRUE_STREAM
+  # dispatch reaches users but audio playback fires AFTER generation completes (chunks
+  # accumulate in QwenTTSResponse.audio_data and play as one batch). Story 17.3 wires
+  # progressive chunk playback so audio is audible at first-chunk-emit time. Phase ⊥-Polish.
+  epic-17: in-progress
   17-1-streaming-default-ramp: done
   17-2-cloned-voice-truestream-prompt-precompute: done
+  17-3-progressive-audio-playback-during-true-stream: backlog
   epic-17-retrospective: optional
