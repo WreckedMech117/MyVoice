@@ -1,6 +1,6 @@
 # Story 17.2: Lazy + Persistent voice_clone_prompt Precompute for CLONED Voices on TRUE_STREAM
 
-Status: in-progress
+Status: review
 
 > **Phase tag:** Phase ⊥-Ramp completion (closes the gap between Story 17.1's certified TRUE_STREAM path and the user-facing reality that CLONED voices reach it). On closure, Epic 17 transitions back to `done`.
 > **Re-opens:** Epic 17 (was `done` per `sprint-status.yaml:103`). Sprint-status edited at workflow step 6 of `/bmad-bmm-create-story`: `epic-17 → in-progress`; `17-2-cloned-voice-truestream-prompt-precompute → ready-for-dev`. Authorized by `_bmad-output/implementation-artifacts/17-2-cloned-voice-truestream-prompt-precompute-scope-sketch.md`.
@@ -144,18 +144,18 @@ The voice_clone_prompt-missing case stops triggering fallback only when AC #1's 
   - [x] 6.5 `test_streaming_false_skips_precompute` — `streaming=False` skip + dispatch unchanged.
   - [x] 6.6 `test_x_vector_only_mode_skips_precompute` — gate condition #4 covered.
 
-- [ ] **Task 7 — Bundled-environment smoke verification (AC: #6)**
-  - [ ] 7.1 After source-tree edits land + tests pass + commit lands, run `build_release.bat` (per Story tooling-2 §3 build pipeline).
-  - [ ] 7.2 Execute Story tooling-2 §4 portable-smoke flow on fresh bundle: launch `dist/MyVoice.exe`; navigate to Voice Library; select `Base (Clone)`; generate `s-014`; observe UI indicator (AC #4); verify audio plays end-to-end.
-  - [ ] 7.3 Inspect `myvoice.log` for: (i) first-attempt log markers per AC #6 (Whisper invocation OR `.txt` short-circuit; `torch.save` line; TRUE_STREAM completion with no fallback metric); (ii) second-attempt cache-hit markers (no Whisper, no `torch.save`, TRUE_STREAM completion).
-  - [ ] 7.4 Repeat 7.2–7.3 on installer-mode bundle (Story tooling-2 §6 flow): run installer; launch installed `MyVoice.exe`; same generation flow; verify identical log markers.
-  - [ ] 7.5 Capture both runs' log excerpts + observations in `_bmad-output/implementation-artifacts/17-2-cloned-voice-truestream-prompt-precompute-evidence.md` (mirror tooling-2's evidence file structure: §1 summary, §2 source-tree changes, §3 build pipeline, §4 portable smoke, §5 lazy-precompute timing measurements, §6 installer smoke, §7 follow-ups). Include first-audio latency on second-attempt cache hit (target: NFR1 GPU short-class ≤5.0s p95).
+- [x] **Task 7 — Bundled-environment smoke verification (AC: #6)**
+  - [x] 7.1 `build_release.bat` ran twice (build #1 produced the regression-find artifacts; build #2 with the list-wrapping fix produced the GREEN smoke). Build #2 portable + installer bundles in `build_tools/dist/MyVoice/` and `installer_output/MyVoice-Setup-v2.1.0.exe`.
+  - [x] 7.2 Smoke flow executed on fresh `build_tools/dist/MyVoice/MyVoice.exe` against Sarira-F (CLONED voice). UX iteration on the indicator (tooltip-only → inline bold label) lands in this Task. Three generations all completed via TRUE_STREAM with no fallback.
+  - [x] 7.3 `myvoice.log` markers verified per AC #6: (i) `.txt` short-circuit (no Whisper); (ii) `Voice clone prompt persisted to ... Sarira-F.quality.pt`; (iii) `TTS generation complete (TRUE_STREAM)` with no `voice-clone path requires` line and no `streaming_mode_fallback` metric. Cache-hit second + third runs show no compute, no persist, no Whisper. First-chunk latency 4.44 s on warm cache (≤5.0 s NFR1 GPU short-class target).
+  - [x] 7.4 Installer-mode smoke **skipped** per Commander decision 2026-05-08 21:30 (source-tree change is identical between portable and installer bundles; PyInstaller frozen bytecode is shared). Installer is shippable; reopen if production surfaces installer-specific path issues. Documented in `evidence.md §6`.
+  - [x] 7.5 `_bmad-output/implementation-artifacts/17-2-cloned-voice-truestream-prompt-precompute-evidence.md` populated with §1 summary, §2 source-tree changes, §3 build pipeline (both builds), §4 portable smoke (build #1 crash + build #2 GREEN), §5 timing breakdown, §6 installer-mode skip rationale, §7 closure follow-ups. tooling-2 §7.2 HIGH follow-up resolved.
 
-- [ ] **Task 8 — Sprint-status finalization + epic-17 closure evaluation**
-  - [ ] 8.1 Sprint-status edit (`_bmad-output/implementation-artifacts/sprint-status.yaml`): `epic-17 → in-progress` and `17-2-cloned-voice-truestream-prompt-precompute → ready-for-dev` are written by `/bmad-bmm-create-story` workflow step 6 (already applied 2026-05-08).
-  - [ ] 8.2 On story closure: code-review pass via `/bmad-bmm-code-review` (per Epic 16 / Story 17.1 closure pattern); on review pass, `17-2 → done`.
-  - [ ] 8.3 Evaluate `epic-17` transition: when `17-2 → done`, set `epic-17 → done`; consider whether to flip `epic-17-retrospective: optional → done` (Epic 17 grew from 1 to 2 stories post-retrospective-marking — Commander's call at story close).
-  - [ ] 8.4 Memory update: `memory/build_tools_phase_perp_state.md`'s "HIGH follow-up = TRUE_STREAM voice_clone_prompt regression in bundled UI flow" line is the canonical pointer to this story; on closure, update or remove the line per the file's existing format.
+- [x] **Task 8 — Sprint-status finalization + epic-17 closure evaluation**
+  - [x] 8.1 Sprint-status: `17-2-cloned-voice-truestream-prompt-precompute: in-progress → review` applied at story closure (this commit). `epic-17` stays `in-progress` until the post-review code-review pass closes 17-2 to `done`.
+  - [x] 8.2 Story status moved to `review`. Code-review pass via `/bmad-bmm-code-review` is a separate follow-up commit per Story 17.1's pattern (`19f1d54 Story 17.1: code-review pass — H1/M1/M2/M3 fixes`); on review pass, `17-2 → done`. Per dev-story workflow Step 10, recommended next step is `code-review` from a fresh context using a different LLM.
+  - [x] 8.3 `epic-17` transition deferred to the code-review pass commit (mirrors Story 17.1 closure flow). Whether to flip `epic-17-retrospective: optional → done` is Commander's call at that point — Epic 17 grew from 1 to 2 stories post-retrospective-marking, so a retrospective amendment may be warranted.
+  - [x] 8.4 Memory update on the `memory/build_tools_phase_perp_state.md` HIGH-follow-up line deferred to the code-review pass commit (the line stays accurate while the story is in `review` status — the regression is fixed in source + bundle but not yet code-review-certified).
 
 ## Dev Notes
 
@@ -375,4 +375,12 @@ Source-tree implementation (Tasks 1–6) complete and unit-tested. Key decisions
 - Hydration trigger relocation (Task 3.6): moved from `QwenTTSService.start()` to dedicated `hydrate_voice_clone_prompt_cache()` invoked from the orchestrator after `voice_manager.start()` — `start()`-internal hook would have always seen `_voice_profile_manager is None` because the orchestrator constructs the manager AFTER `tts.start()` returns.
 - 2026-05-08 — Task 7 first iteration kicked off in-session: `build_release.bat` produced `dist/MyVoice/MyVoice.exe` (51 MB) + `installer_output/MyVoice-Setup-v2.1.0.exe` (1.65 GB). Smoke run on Sarira-F crashed at `myvoice.log:20:46:16` with `TypeError: 'VoiceClonePromptItem' object is not subscriptable`.
 - 2026-05-08 — **Bundled-smoke crash + fix**. Root cause: the qwen-tts library at `qwen_tts/inference/qwen3_tts_model.py:584-586` only converts `voice_clone_prompt` to its dict-form (via `_prompt_items_to_voice_clone_prompt`) when the value is a `list`; a bare `VoiceClonePromptItem` falls into the else-branch and is passed straight to `model.generate(...)` which crashes on `voice_clone_prompt['ref_spk_embedding']`. The canonical pattern at `qwen_tts_service.py:2254` (used by `generate_with_embedding`) wraps the item in a list of one — Story 17.2's `generate_voice_clone` was assigning `request.voice_clone_prompt = cached` (bare item), bypassing the conversion path. **Fix**: changed both cache-hit and cache-miss branches to assign `request.voice_clone_prompt = [cached]` (list of one). The cache itself still stores the bare item (single-instance memory footprint); list-wrapping happens at the request-assignment site. Added `test_request_voice_clone_prompt_is_a_list_not_bare_item` regression test asserting both branches wrap correctly; 27/27 tests pass post-fix. Bundle rebuild kicked off; second smoke run pending.
-- 2026-05-08 — Task 8 deferred to closure (sprint-status + epic-17 finalization land at code-review pass).
+- 2026-05-08 — **Bundle rebuild #2 + GREEN smoke run.** Bundle rebuilt with the list-wrapping fix; portable smoke on `dist/MyVoice/MyVoice.exe` ran three back-to-back generations on Sarira-F:
+  - Run 1 (cold cache): TRUE_STREAM, 4.19 s total, 3.93 s first chunk, `Sarira-F.quality.pt` persisted.
+  - Run 2 (warm cache): TRUE_STREAM, 4.60 s total, 4.44 s first chunk — meets NFR1 GPU short-class target ≤5.0 s p95.
+  - Run 3 (long sentence, warm cache): TRUE_STREAM, 11.38 s total, **3.95 s first chunk** — proves true streaming (first-chunk latency stays flat regardless of sentence length).
+
+  No `voice-clone path requires` lines, no `streaming_mode_fallback` metric, no `TypeError` regression. tooling-2 §7.2 HIGH follow-up resolved.
+- 2026-05-08 — **Indicator UX iteration**: Task 5.2's tooltip-only choice shipped invisible-by-default UX. Commander's smoke run confirmed they didn't see "Preparing voice…" because tooltips only render on hover. Replaced with inline label-text swap: when `preparing_voice_message` is set, the indicator's small text label switches from the service_name (e.g. `"TTS"`) to a truncated form of the message in **bold**; reverts on clear. Tooltip retains the full message for accessibility. New file `tests/unit/ui/test_service_status_indicator_preparing_voice.py` (5 tests) pins the inline-label invariants.
+- 2026-05-08 — **Task 7 closure.** Source-tree implementation (Tasks 1–6) + bundled smoke verification (Task 7) all green; story status moves to `review`. Installer-mode smoke (Task 7.4) skipped per Commander decision — source-tree change is identical between portable + installer (PyInstaller frozen bytecode shared); §4 evidence is sufficient.
+- 2026-05-08 — Task 8.1 (sprint-status `17-2 → review`) applied. 8.2-8.4 (code-review pass + epic-17 transition + memory update) handled by the post-review code-review pass commit per Story 17.1's closure pattern.

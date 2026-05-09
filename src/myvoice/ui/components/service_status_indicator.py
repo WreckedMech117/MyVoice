@@ -207,6 +207,30 @@ class ServiceStatusIndicator(QWidget):
         else:
             self._status_label.setProperty("status", "error")
 
+        # Story 17.2 AC #4 — surface the preparing-voice message inline on
+        # the indicator's label (NOT just the tooltip; tooltip-only is too
+        # subtle to notice during the one-shot ~1-3s precompute window).
+        # When set: replace the service_name label with the short message
+        # in bold; on clear: restore service_name. Tooltip keeps the full
+        # message via _update_tooltip().
+        preparing_msg = getattr(
+            status_info, "preparing_voice_message", None
+        )
+        font = self._status_label.font()
+        if preparing_msg:
+            # Short version for the small label (full message stays in
+            # tooltip). Bold so it's visually distinct from steady-state.
+            short_msg = preparing_msg
+            if len(short_msg) > 24:
+                short_msg = short_msg[:23].rstrip() + "…"
+            self._status_label.setText(short_msg)
+            font.setBold(True)
+            self._status_label.setFont(font)
+        else:
+            self._status_label.setText(self.service_name)
+            font.setBold(False)
+            self._status_label.setFont(font)
+
         # Update tooltip
         self._update_tooltip()
 

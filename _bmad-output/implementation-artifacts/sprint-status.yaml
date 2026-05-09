@@ -107,5 +107,5 @@ development_status:
   # reach CLONED-voice users at install time).
   epic-17: in-progress
   17-1-streaming-default-ramp: done
-  17-2-cloned-voice-truestream-prompt-precompute: in-progress
+  17-2-cloned-voice-truestream-prompt-precompute: review
   epic-17-retrospective: optional
