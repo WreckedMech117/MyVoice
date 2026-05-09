@@ -3747,6 +3747,15 @@ class QwenTTSService(BaseService):
         self._generation_state = GenerationState.IDLE
 
         accumulated_chunks: List[np.ndarray] = []
+        # Hard-coded for Qwen3-TTS (the only model that flows through
+        # TRUE_STREAM dispatch today). If a future model variant uses a
+        # different rate, derive from `self._model_registry` and update
+        # both this binding and the `sample_rate=` field in the
+        # `_wrapped_post` AudioChunk emissions below — the consumer
+        # (app.py:_handle_progressive_chunk_async) opens the audio
+        # device with whatever rate the chunk reports, so a mismatch
+        # here would surface as silent corruption (chipmunk/slow audio),
+        # not a crash.
         sample_rate = 24000
         chunk_count_box: List[int] = [0]
 

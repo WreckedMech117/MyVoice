@@ -111,3 +111,43 @@ class TestProgressivePlaybackCancel:
         # No double-stop — no streaming session was open.
         coordinator.stop_streaming_session.assert_not_awaited()
         assert app._progressive_playback_active is False
+
+    def test_cancel_bumps_epoch_for_inflight_chunk_drop(
+        self, app_with_mocked_services
+    ):
+        """Code-review MEDIUM-1 regression: the cancel handler MUST
+        bump ``_progressive_playback_epoch`` (regardless of the active
+        flag's state) so any chunk that the producer scheduled via
+        ``run_coroutine_threadsafe`` before cancel arrives sees its
+        captured epoch as stale under the handler lock and drops itself.
+
+        Bumping unconditionally (even when the flag is False) covers the
+        boundary case where chunk 0 was queued but had not yet executed
+        when cancel arrived — without an epoch bump, that chunk would
+        run post-cancel, see flag=False, open a fresh session, and leak
+        the PyAudio stream because no further chunks (and no terminal)
+        will arrive to close it.
+        """
+        app, tts_service, coordinator = app_with_mocked_services
+        starting_epoch = app._progressive_playback_epoch
+
+        # Case 1: cancel while progressive is active.
+        app._progressive_playback_active = True
+        _drive_cancel(app)
+        assert (
+            app._progressive_playback_epoch == starting_epoch + 1
+        ), "epoch must bump by 1 on cancel-when-active"
+
+        # Reset mocks for case 2.
+        tts_service.cancel_generation.reset_mock()
+        coordinator.stop_all_playback.reset_mock()
+        coordinator.stop_streaming_session.reset_mock()
+
+        # Case 2: cancel while progressive is inactive (boundary case).
+        # Flag is already False after case 1's clear; bump must STILL
+        # fire so a chunk-0 that was queued before cancel drops cleanly.
+        assert app._progressive_playback_active is False
+        _drive_cancel(app)
+        assert (
+            app._progressive_playback_epoch == starting_epoch + 2
+        ), "epoch must bump by 1 on cancel-when-inactive too"

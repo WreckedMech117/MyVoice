@@ -112,5 +112,5 @@ development_status:
   epic-17: in-progress
   17-1-streaming-default-ramp: done
   17-2-cloned-voice-truestream-prompt-precompute: done
-  17-3-progressive-audio-playback-during-true-stream: review
+  17-3-progressive-audio-playback-during-true-stream: done
   epic-17-retrospective: optional

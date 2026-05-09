@@ -60,6 +60,16 @@ def app_with_mocked_coordinator(qapp):
     ``_audio_coordinator``, ``self.loop``, and the slot fields — full
     service initialization is not required. Returns
     ``(app, coordinator_mock)``.
+
+    NOTE on ``start_streaming_session`` mock: production
+    ``AudioCoordinator.start_streaming_session``
+    (audio_coordinator.py:1018-1072) catches all exceptions internally
+    and returns the result dict with None values on failure; the
+    consumer inspects the dict (NOT a raise) to detect failure.
+    The default mock here returns BOTH ids non-None — i.e. the
+    happy-path open. Failure-path tests override
+    ``return_value={"monitor": None, "virtual": None}`` to mirror
+    production reality (per memory/code_review_regression_test_exact_class.md).
     """
     from myvoice.app import MyVoiceApp
 
@@ -176,6 +186,84 @@ class TestProgressivePlaybackConsumer:
         # No further play_audio_chunk on the terminal chunk (zero-length).
         coordinator.play_audio_chunk.assert_not_awaited()
 
+    def test_sentence_stream_final_chunk_with_audio_is_played(
+        self, app_with_mocked_coordinator
+    ):
+        """Code-review HIGH-1 regression: SENTENCE_STREAM emits its last
+        data chunk with ``is_final=True`` AND real ``audio_data``
+        (qwen_tts_service.py:3071-3082) — NOT a separate zero-length
+        synthetic terminal chunk like TRUE_STREAM. The consumer must play
+        that chunk's audio BEFORE closing the session, otherwise the last
+        sentence of every SENTENCE_STREAM utterance is silently dropped.
+
+        Mirrors the EXACT bug class per
+        memory/code_review_regression_test_exact_class.md: a non-empty
+        ``audio_data`` paired with ``is_final=True``, asserted to reach
+        ``play_audio_chunk`` before ``stop_streaming_session``.
+        """
+        app, coordinator = app_with_mocked_coordinator
+        app._progressive_playback_active = True
+        app._progressive_playback_sample_rate = 24000
+
+        # SENTENCE_STREAM-shape final chunk: real audio AND is_final=True.
+        sentence_final = _StubChunk(
+            audio_data=np.array(
+                [0.1, -0.1, 0.2, -0.2], dtype=np.float32
+            ),
+            sample_rate=24000,
+            chunk_index=4,
+            is_final=True,
+            text_segment="last sentence.",
+        )
+        _drive(app, sentence_final)
+
+        coordinator.play_audio_chunk.assert_awaited_once()
+        play_call = coordinator.play_audio_chunk.await_args
+        assert isinstance(play_call.args[0], (bytes, bytearray))
+        # 4 float32 samples → 8 bytes of int16 PCM.
+        assert len(play_call.args[0]) == 8
+        # is_final passed through so the underlying service can drain.
+        assert play_call.kwargs.get("is_final") is True
+        # Session close fires AFTER the audio is written.
+        coordinator.stop_streaming_session.assert_awaited_once()
+
+    def test_sentence_stream_play_then_close_ordering(
+        self, app_with_mocked_coordinator
+    ):
+        """Code-review HIGH-1 follow-up: explicit await-order assertion —
+        ``play_audio_chunk`` MUST be awaited before
+        ``stop_streaming_session`` on a SENTENCE_STREAM final chunk.
+        """
+        app, coordinator = app_with_mocked_coordinator
+        app._progressive_playback_active = True
+        app._progressive_playback_sample_rate = 24000
+
+        order: list[str] = []
+
+        async def record_play(*args, **kwargs):
+            order.append("play")
+            return {"monitor": True, "virtual": True}
+
+        async def record_stop(*args, **kwargs):
+            order.append("stop")
+            return {"monitor": True, "virtual": True}
+
+        coordinator.play_audio_chunk = AsyncMock(side_effect=record_play)
+        coordinator.stop_streaming_session = AsyncMock(side_effect=record_stop)
+
+        sentence_final = _StubChunk(
+            audio_data=np.array([0.3, -0.3], dtype=np.float32),
+            sample_rate=24000,
+            chunk_index=2,
+            is_final=True,
+        )
+        _drive(app, sentence_final)
+
+        assert order == ["play", "stop"], (
+            f"play_audio_chunk must run before stop_streaming_session; "
+            f"got {order}"
+        )
+
 
 class TestProgressivePlaybackSampleRateAndFailure:
     """Story 17.3 AC #3 — sample-rate handshake + open-failure graceful
@@ -184,14 +272,77 @@ class TestProgressivePlaybackSampleRateAndFailure:
     def test_session_open_failure_falls_through_to_batch(
         self, app_with_mocked_coordinator
     ):
-        """When ``start_streaming_session`` raises (PyAudio error, device
-        unavailable), the orchestrator must clear the flag and discard the
-        chunk so the eventual ``_play_generated_audio`` call falls through
-        to the existing batch dispatch path (NFR7-style graceful
-        degradation)."""
+        """Code-review HIGH-2/HIGH-3 regression: production
+        ``AudioCoordinator.start_streaming_session`` (audio_coordinator.py:
+        1018-1072) wraps its body in ``try/except Exception``, swallows
+        the exception, and returns ``{"monitor": None, "virtual": None}``
+        — it never re-raises on PyAudio open failure. The consumer must
+        therefore inspect the returned dict (NOT a try/except) to
+        detect failure; otherwise the flag is set True on a non-existent
+        session and the user hears nothing (progressive skipped + batch
+        skipped).
+
+        Mirrors the EXACT bug class per
+        memory/code_review_regression_test_exact_class.md.
+        """
+        app, coordinator = app_with_mocked_coordinator
+        coordinator.start_streaming_session.return_value = {
+            "monitor": None,
+            "virtual": None,
+        }
+
+        chunk0 = _StubChunk(
+            audio_data=np.array([0.1, 0.2], dtype=np.float32),
+            sample_rate=24000,
+            chunk_index=0,
+        )
+        _drive(app, chunk0)
+
+        # Open was attempted exactly once and returned both-None.
+        assert coordinator.start_streaming_session.await_count == 1
+        # Flag stays False so _play_generated_audio's skip-check is a
+        # no-op and the assembled buffer plays via the batch path.
+        assert app._progressive_playback_active is False
+        # Chunk is discarded — no play_audio_chunk on a session that
+        # failed to open.
+        coordinator.play_audio_chunk.assert_not_awaited()
+        coordinator.stop_streaming_session.assert_not_awaited()
+
+    def test_session_open_partial_success_keeps_progressive_active(
+        self, app_with_mocked_coordinator
+    ):
+        """Defensive boundary: if EITHER service opened (e.g., monitor
+        succeeded but virtual failed), progressive playback proceeds —
+        only the both-None case is treated as total failure."""
+        app, coordinator = app_with_mocked_coordinator
+        coordinator.start_streaming_session.return_value = {
+            "monitor": "m-1",
+            "virtual": None,
+        }
+
+        chunk0 = _StubChunk(
+            audio_data=np.array([0.1], dtype=np.float32),
+            sample_rate=24000,
+            chunk_index=0,
+        )
+        _drive(app, chunk0)
+
+        assert app._progressive_playback_active is True
+        coordinator.play_audio_chunk.assert_awaited_once()
+
+    def test_session_open_exception_falls_through_to_batch(
+        self, app_with_mocked_coordinator
+    ):
+        """Defense-in-depth: even though production never raises (see
+        ``test_session_open_failure_falls_through_to_batch``), the
+        consumer's try/except is still load-bearing if a future refactor
+        of ``AudioCoordinator.start_streaming_session`` removes the inner
+        swallow. Verify that an unexpected raise also leaves the flag
+        False so batch playback runs.
+        """
         app, coordinator = app_with_mocked_coordinator
         coordinator.start_streaming_session.side_effect = RuntimeError(
-            "simulated PyAudio open failure"
+            "hypothetical future refactor: PyAudio open re-raises"
         )
 
         chunk0 = _StubChunk(
@@ -201,13 +352,8 @@ class TestProgressivePlaybackSampleRateAndFailure:
         )
         _drive(app, chunk0)
 
-        # Open was attempted exactly once and raised.
         assert coordinator.start_streaming_session.await_count == 1
-        # Flag stays False so _play_generated_audio's skip-check is a
-        # no-op and the assembled buffer plays via the batch path.
         assert app._progressive_playback_active is False
-        # Chunk is discarded — no play_audio_chunk on a session that
-        # failed to open.
         coordinator.play_audio_chunk.assert_not_awaited()
         coordinator.stop_streaming_session.assert_not_awaited()
 
@@ -230,6 +376,44 @@ class TestProgressivePlaybackSampleRateAndFailure:
             sample_rate=22050, channels=1, sample_width=2
         )
         assert app._progressive_playback_sample_rate == 22050
+
+    def test_session_open_log_includes_session_ids(
+        self, app_with_mocked_coordinator, caplog
+    ):
+        """Code-review MEDIUM-3 regression: AC #3 specifies the log line
+        as ``"Progressive playback session opened: sample_rate=24000Hz,
+        monitor_session=<id>, virtual_session=<id>"`` — the session-id
+        dict from ``start_streaming_session`` must be reflected in the
+        log so postmortem on dual-service failures can identify which
+        side opened.
+        """
+        import logging as _logging
+
+        app, coordinator = app_with_mocked_coordinator
+        coordinator.start_streaming_session.return_value = {
+            "monitor": "monitor-abc",
+            "virtual": "virtual-xyz",
+        }
+
+        chunk0 = _StubChunk(
+            audio_data=np.array([0.1], dtype=np.float32),
+            sample_rate=24000,
+            chunk_index=0,
+        )
+        with caplog.at_level(_logging.INFO, logger=app.logger.name):
+            _drive(app, chunk0)
+
+        opened = [
+            r for r in caplog.records
+            if "Progressive playback session opened" in r.getMessage()
+        ]
+        assert len(opened) == 1, (
+            f"Expected one session-open INFO log; got {len(opened)}"
+        )
+        msg = opened[0].getMessage()
+        assert "sample_rate=24000Hz" in msg
+        assert "monitor_session=monitor-abc" in msg
+        assert "virtual_session=virtual-xyz" in msg
 
 
 def _drive_sequence(app, chunks):
@@ -363,3 +547,233 @@ class TestProgressivePlaybackNFR7Fallback:
         assert coordinator.start_streaming_session.await_count == 1
         assert coordinator.stop_streaming_session.await_count == 1
         assert coordinator.play_audio_chunk.await_count == 4
+
+
+class TestProgressivePlaybackCancelEpoch:
+    """Code-review MEDIUM-1 regression: cancel-vs-chunk race.
+
+    Without the epoch guard, a chunk that the producer queued via
+    ``run_coroutine_threadsafe`` BEFORE the cancel handler ran can land
+    on the loop AFTER the cancel cleared ``_progressive_playback_active``
+    — at which point the handler's ``if not self._progressive_playback_
+    active:`` branch opens a fresh PyAudio session that nothing will
+    ever close (no further chunks, no is_final). The cancel handler
+    bumps ``_progressive_playback_epoch``; the trampoline captures the
+    epoch at schedule time; the handler verifies the captured value
+    matches under the lock and drops stale chunks.
+    """
+
+    def test_chunk_with_stale_epoch_is_dropped(
+        self, app_with_mocked_coordinator
+    ):
+        app, coordinator = app_with_mocked_coordinator
+
+        # Simulate: chunk was scheduled when epoch was 0; cancel ran and
+        # bumped the epoch to 1; the chunk now arrives at the handler.
+        chunk = _StubChunk(
+            audio_data=np.array([0.1, 0.2], dtype=np.float32),
+            sample_rate=24000,
+            chunk_index=0,
+        )
+        app._progressive_playback_epoch = 1
+        # Pass the captured (stale) epoch=0.
+        asyncio.run(
+            app._handle_progressive_chunk_async(chunk, epoch=0)
+        )
+
+        # Stale chunk must be dropped — no session opened, no audio
+        # written, no leak.
+        coordinator.start_streaming_session.assert_not_awaited()
+        coordinator.play_audio_chunk.assert_not_awaited()
+        coordinator.stop_streaming_session.assert_not_awaited()
+        assert app._progressive_playback_active is False
+
+    def test_chunk_with_current_epoch_is_processed(
+        self, app_with_mocked_coordinator
+    ):
+        """Defensive boundary: a chunk whose captured epoch matches the
+        current value MUST process normally — the epoch guard only
+        rejects stale chunks."""
+        app, coordinator = app_with_mocked_coordinator
+        app._progressive_playback_epoch = 5
+
+        chunk = _StubChunk(
+            audio_data=np.array([0.1, 0.2], dtype=np.float32),
+            sample_rate=24000,
+            chunk_index=0,
+        )
+        asyncio.run(
+            app._handle_progressive_chunk_async(chunk, epoch=5)
+        )
+
+        coordinator.start_streaming_session.assert_awaited_once()
+        coordinator.play_audio_chunk.assert_awaited_once()
+        assert app._progressive_playback_active is True
+
+    def test_legacy_none_epoch_skips_check(
+        self, app_with_mocked_coordinator
+    ):
+        """``epoch=None`` is the direct-test calling convention used by
+        the rest of this file; it must skip the epoch check entirely so
+        existing tests keep working without re-plumbing."""
+        app, coordinator = app_with_mocked_coordinator
+        app._progressive_playback_epoch = 99
+
+        chunk = _StubChunk(
+            audio_data=np.array([0.1], dtype=np.float32),
+            sample_rate=24000,
+            chunk_index=0,
+        )
+        asyncio.run(
+            app._handle_progressive_chunk_async(chunk, epoch=None)
+        )
+
+        coordinator.start_streaming_session.assert_awaited_once()
+        coordinator.play_audio_chunk.assert_awaited_once()
+
+
+class TestProgressivePlaybackTrampoline:
+    """Code-review MEDIUM-2 regression: the synchronous trampoline
+    ``_on_audio_chunk_ready`` is the production-only path between the
+    producer thread and the orchestrator's event loop. The other tests
+    in this file ``await`` ``_handle_progressive_chunk_async`` directly,
+    so the trampoline's loop-availability guard, epoch capture, and
+    ``run_coroutine_threadsafe`` scheduling have zero coverage without
+    these tests.
+    """
+
+    def test_trampoline_short_circuits_when_loop_missing(
+        self, app_with_mocked_coordinator
+    ):
+        """If ``self.loop`` is ``None`` (pre-init or post-shutdown), the
+        trampoline must return without raising and without scheduling
+        anything onto a non-existent loop."""
+        app, coordinator = app_with_mocked_coordinator
+        app.loop = None
+
+        chunk = _StubChunk(
+            audio_data=np.array([0.1], dtype=np.float32),
+            sample_rate=24000,
+            chunk_index=0,
+        )
+        # Must not raise.
+        app._on_audio_chunk_ready(chunk)
+        coordinator.start_streaming_session.assert_not_awaited()
+
+    def test_trampoline_short_circuits_when_loop_closed(
+        self, app_with_mocked_coordinator, monkeypatch
+    ):
+        """Closed loop = same handling as missing loop. Avoids the
+        ``run_coroutine_threadsafe(... ,closed_loop)`` raise that would
+        otherwise surface on shutdown."""
+        app, coordinator = app_with_mocked_coordinator
+
+        class _ClosedLoop:
+            def is_closed(self):
+                return True
+
+        app.loop = _ClosedLoop()
+
+        scheduled: list = []
+
+        def fake_rcts(coro, loop):
+            scheduled.append((coro, loop))
+            coro.close()
+            from unittest.mock import MagicMock
+            return MagicMock()
+
+        monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", fake_rcts)
+
+        chunk = _StubChunk(
+            audio_data=np.array([0.1], dtype=np.float32),
+            sample_rate=24000,
+            chunk_index=0,
+        )
+        app._on_audio_chunk_ready(chunk)
+        assert scheduled == [], (
+            f"Trampoline must not schedule on a closed loop; got {scheduled}"
+        )
+
+    def test_trampoline_schedules_with_captured_epoch(
+        self, app_with_mocked_coordinator, monkeypatch
+    ):
+        """The trampoline must call ``run_coroutine_threadsafe`` with the
+        handler coroutine targeted at ``self.loop``, AND the epoch it
+        threads in must be the value at schedule time (so a later cancel
+        bump leaves the in-flight chunk's captured value stale and
+        droppable).
+        """
+        from unittest.mock import MagicMock
+
+        app, coordinator = app_with_mocked_coordinator
+
+        class _RunningLoop:
+            def is_closed(self):
+                return False
+
+        app.loop = _RunningLoop()
+        app._progressive_playback_epoch = 7
+
+        scheduled: list = []
+
+        def fake_rcts(coro, loop):
+            scheduled.append((coro, loop))
+            coro.close()
+            return MagicMock()
+
+        monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", fake_rcts)
+
+        chunk = _StubChunk(
+            audio_data=np.array([0.1], dtype=np.float32),
+            sample_rate=24000,
+            chunk_index=0,
+        )
+        app._on_audio_chunk_ready(chunk)
+
+        assert len(scheduled) == 1
+        scheduled_coro, scheduled_loop = scheduled[0]
+        assert scheduled_loop is app.loop
+        # Coroutine name confirms we scheduled the handler (not e.g. the
+        # trampoline itself).
+        assert (
+            "_handle_progressive_chunk_async" in scheduled_coro.__qualname__
+        )
+
+    def test_trampoline_swallows_scheduling_exception(
+        self, app_with_mocked_coordinator, monkeypatch, caplog
+    ):
+        """A raise inside ``run_coroutine_threadsafe`` (e.g. loop being
+        torn down between the ``is_closed()`` check and the schedule
+        call) must NOT propagate back to the producer thread — the
+        trampoline's outer try/except must log and swallow.
+        """
+        import logging as _logging
+
+        app, coordinator = app_with_mocked_coordinator
+
+        class _RunningLoop:
+            def is_closed(self):
+                return False
+
+        app.loop = _RunningLoop()
+
+        def fake_rcts(coro, loop):
+            coro.close()
+            raise RuntimeError("loop tearing down")
+
+        monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", fake_rcts)
+
+        chunk = _StubChunk(
+            audio_data=np.array([0.1], dtype=np.float32),
+            sample_rate=24000,
+            chunk_index=0,
+        )
+        with caplog.at_level(_logging.ERROR, logger=app.logger.name):
+            # Must not raise.
+            app._on_audio_chunk_ready(chunk)
+
+        assert any(
+            "Failed to schedule progressive-playback chunk handler"
+            in r.getMessage()
+            for r in caplog.records
+        )

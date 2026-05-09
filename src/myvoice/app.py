@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Dict, Optional
 from datetime import datetime
 
+import numpy as np
+
 from PyQt6.QtWidgets import QApplication, QMessageBox
 from PyQt6.QtCore import QMetaObject, QObject, Qt, QTimer, pyqtSlot
 
@@ -187,6 +189,11 @@ class MyVoiceApp(QObject):
         # Lazy-initialized: asyncio.Lock requires a running event loop to
         # construct, so first use creates it inside the handler coro.
         self._progressive_playback_lock: Optional[asyncio.Lock] = None
+        # Cancel-vs-chunk race guard. Incremented by the cancel handler so
+        # any chunk that was queued via run_coroutine_threadsafe before the
+        # cancel sees a stale captured value under the handler lock and
+        # drops itself instead of opening a fresh session post-cancel.
+        self._progressive_playback_epoch: int = 0
 
         # Connect application signals
         self.qt_app.aboutToQuit.connect(self._on_about_to_quit)
@@ -1143,18 +1150,29 @@ class MyVoiceApp(QObject):
                 # chain (Story 16.5's streamer._cancel_event.set() fires
                 # synchronously inside cancel_generation above) so the
                 # producer stops before the consumer.
+                #
+                # Always bump the epoch so any chunk that the producer
+                # already scheduled via run_coroutine_threadsafe before
+                # the cancel-event reached it sees a stale captured value
+                # under the handler lock and drops itself instead of
+                # opening a fresh session post-cancel. Bumping
+                # unconditionally (not just when the flag is True) covers
+                # the boundary case where chunk 0 was queued but had not
+                # yet executed when cancel arrived (flag still False).
+                self._progressive_playback_epoch += 1
                 if self._progressive_playback_active:
                     asyncio.ensure_future(
                         self._audio_coordinator.stop_streaming_session(),
                         loop=loop,
                     )
-                    # Clear the flag immediately so a subsequent generation
-                    # opens a fresh session (chunk 0 sees False, opens).
-                    # Subsequent _play_generated_audio for this cancelled
-                    # generation will see False and fall through to the
-                    # batch path — but the cancelled session has already
-                    # been discarded by cancel_generation, so the assembled
-                    # buffer (if any) is dropped before reaching dispatch.
+                    # Clear the flag so a subsequent generation re-opens
+                    # a fresh session via the chunk-0 callback path.
+                    # cancel_generation cancels the asyncio task →
+                    # CancelledError propagates through _run_async_task's
+                    # on_error chain → _on_audio_playback_error fires;
+                    # _play_generated_audio is NOT invoked for the
+                    # cancelled generation, so the assembled buffer is
+                    # dropped via the CancelledError path.
                     self._progressive_playback_active = False
             else:
                 self.logger.debug("Stop requested but audio coordinator not available")
@@ -2355,45 +2373,74 @@ class MyVoiceApp(QObject):
         ``self.loop`` via ``asyncio.run_coroutine_threadsafe`` so all
         AudioCoordinator calls run on the main event loop and so a slow
         consumer can never block the producer.
+
+        Captures the current ``_progressive_playback_epoch`` at schedule
+        time and threads it through to the handler so a chunk that crosses
+        a cancel boundary (cancel handler increments the epoch) drops
+        itself under the handler lock instead of accidentally opening a
+        fresh session post-cancel.
         """
         try:
             loop = getattr(self, "loop", None)
             if loop is None or loop.is_closed():
                 return
+            captured_epoch = self._progressive_playback_epoch
             asyncio.run_coroutine_threadsafe(
-                self._handle_progressive_chunk_async(chunk), loop
+                self._handle_progressive_chunk_async(chunk, captured_epoch),
+                loop,
             )
         except Exception:
             self.logger.exception(
                 "Failed to schedule progressive-playback chunk handler"
             )
 
-    async def _handle_progressive_chunk_async(self, chunk) -> None:
+    async def _handle_progressive_chunk_async(
+        self, chunk, epoch: Optional[int] = None
+    ) -> None:
         """Story 17.3 — process one progressive-playback ``AudioChunk``.
 
         State machine:
           - chunk 0 (or first chunk after a stale state) opens the audio
             device session via ``start_streaming_session(sample_rate=...)``
-            and sets ``_progressive_playback_active = True``.
+            and inspects the returned ``{"monitor", "virtual"}`` dict; if
+            BOTH services failed to open (real PyAudio error — the
+            coordinator catches the exception internally and returns
+            None values, audio_coordinator.py:1070-1072), the flag stays
+            False so ``_play_generated_audio`` falls through to the batch
+            path (NFR7-style graceful degradation).
           - chunks 1..N convert PCM float32 → int16 bytes and call
-            ``play_audio_chunk(bytes, is_final=False)``.
-          - the synthetic terminal ``AudioChunk(is_final=True)`` (emitted
-            by qwen_tts_service.py:_wrapped_post on finalize) closes the
-            session via ``stop_streaming_session()``. The flag is
-            intentionally NOT cleared here — ``_play_generated_audio``
-            consumes (clears) it inside the dispatch skip-branch so the
-            two paths are unambiguously sequenced on the asyncio loop.
+            ``play_audio_chunk(bytes, is_final=chunk.is_final)``.
+            SENTENCE_STREAM emits its last data chunk with ``is_final=True``
+            AND real audio in ``audio_data`` (qwen_tts_service.py:3071-3082);
+            TRUE_STREAM emits a synthetic terminal chunk with
+            ``audio_data.size == 0`` (qwen_tts_service.py:3929-3951). Both
+            paths are handled by writing ``audio_data`` first when present
+            and then closing the session on ``is_final``.
 
-        Open failure falls through to batch playback (NFR7-style graceful
-        degradation): the flag stays False so the assembled buffer plays
-        via ``_play_generated_audio``'s normal path.
+        The flag is intentionally NOT cleared on ``is_final`` — clearing
+        here would race the dispatch path on the asyncio loop ordering.
+        ``_play_generated_audio`` consumes (clears) it inside the dispatch
+        skip-branch so the two paths are unambiguously sequenced.
+
+        Cancel-vs-chunk race: ``epoch`` is captured at trampoline-schedule
+        time; the cancel handler increments
+        ``self._progressive_playback_epoch`` so any chunk queued before
+        the cancel sees a mismatch under the lock and is dropped — this
+        prevents a stale chunk from opening a fresh session after a
+        cancel. ``epoch=None`` (legacy direct-test callers) skips the
+        check.
         """
-        import numpy as np
-
         if self._progressive_playback_lock is None:
             self._progressive_playback_lock = asyncio.Lock()
 
         async with self._progressive_playback_lock:
+            if (
+                epoch is not None
+                and epoch != self._progressive_playback_epoch
+            ):
+                # Stale chunk — queued before a cancel fired. Drop.
+                return
+
             # Story 17.3 AC #5 — NFR7 fallback continuity: a chunk_index=0
             # while ``_progressive_playback_active`` is already True means
             # a fresh stream is starting on top of a stale session — the
@@ -2421,25 +2468,71 @@ class MyVoiceApp(QObject):
                 if self._audio_coordinator is None:
                     return
                 try:
-                    await self._audio_coordinator.start_streaming_session(
-                        sample_rate=chunk.sample_rate,
-                        channels=1,
-                        sample_width=2,
+                    open_result = (
+                        await self._audio_coordinator.start_streaming_session(
+                            sample_rate=chunk.sample_rate,
+                            channels=1,
+                            sample_width=2,
+                        )
                     )
                 except Exception:
                     self.logger.warning(
-                        "Progressive playback session open failed; "
+                        "Progressive playback session open raised; "
                         "falling back to batch playback",
                         exc_info=True,
                     )
                     self._progressive_playback_active = False
                     return
+
+                # AudioCoordinator.start_streaming_session catches all
+                # exceptions internally (audio_coordinator.py:1070-1072)
+                # and returns the result dict with None values on failure,
+                # so the inspect-the-dict path is the production failure
+                # mode — the except above is defense-in-depth only.
+                monitor_id = (
+                    open_result.get("monitor") if open_result else None
+                )
+                virtual_id = (
+                    open_result.get("virtual") if open_result else None
+                )
+                if monitor_id is None and virtual_id is None:
+                    self.logger.warning(
+                        "Progressive playback session open returned no "
+                        f"active session (monitor={monitor_id}, "
+                        f"virtual={virtual_id}); falling back to batch "
+                        "playback"
+                    )
+                    self._progressive_playback_active = False
+                    return
+
                 self._progressive_playback_active = True
                 self._progressive_playback_sample_rate = chunk.sample_rate
                 self.logger.info(
                     "Progressive playback session opened: "
-                    f"sample_rate={chunk.sample_rate}Hz"
+                    f"sample_rate={chunk.sample_rate}Hz, "
+                    f"monitor_session={monitor_id}, "
+                    f"virtual_session={virtual_id}"
                 )
+
+            # Write audio first when present. Covers SENTENCE_STREAM's
+            # last data chunk (is_final=True with real audio_data) AND
+            # TRUE_STREAM's data chunks (is_final=False). TRUE_STREAM's
+            # synthetic terminal chunk has audio_data.size == 0 so this
+            # branch is a no-op for it — its session close is handled
+            # by the is_final block below.
+            if chunk.audio_data.size > 0:
+                audio_bytes = (
+                    np.clip(chunk.audio_data, -1.0, 1.0) * 32767
+                ).astype(np.int16).tobytes()
+                try:
+                    await self._audio_coordinator.play_audio_chunk(
+                        audio_bytes, is_final=chunk.is_final
+                    )
+                except Exception:
+                    self.logger.warning(
+                        "Progressive playback chunk write failed (non-fatal)",
+                        exc_info=True,
+                    )
 
             if chunk.is_final:
                 try:
@@ -2449,26 +2542,6 @@ class MyVoiceApp(QObject):
                         "Progressive playback session close failed (non-fatal)",
                         exc_info=True,
                     )
-                return
-
-            if chunk.audio_data.size == 0:
-                # Defensive: zero-length non-final chunk shouldn't happen,
-                # but skip silently if it does so play_audio_chunk doesn't
-                # see an empty buffer.
-                return
-
-            audio_bytes = (
-                np.clip(chunk.audio_data, -1.0, 1.0) * 32767
-            ).astype(np.int16).tobytes()
-            try:
-                await self._audio_coordinator.play_audio_chunk(
-                    audio_bytes, is_final=False
-                )
-            except Exception:
-                self.logger.warning(
-                    "Progressive playback chunk write failed (non-fatal)",
-                    exc_info=True,
-                )
 
     def _on_tts_generation_complete(self, response):
         """
