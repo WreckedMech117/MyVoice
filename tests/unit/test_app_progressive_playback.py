@@ -549,6 +549,98 @@ class TestProgressivePlaybackNFR7Fallback:
         assert coordinator.play_audio_chunk.await_count == 4
 
 
+class TestProgressivePlaybackSkipRaceRegression:
+    """Build #11 regression: terminal-chunk handler racing with
+    ``_play_generated_audio``'s skip-branch.
+
+    Repro pattern from `I:/MyVoice/logs/myvoice.log` 11:08 / 11:10 / 11:11
+    entries: gen completes, skip-branch clears the flag, then the
+    TRUE_STREAM synthetic terminal AudioChunk's handler runs, sees
+    ``not self._progressive_playback_active``, and (pre-fix) opened a
+    fresh PyAudio session — which implicitly closed the still-playing
+    session via ``MonitorAudioService.start_streaming_session``'s
+    "close existing" prelude. On Win11 MME this surfaced as audible
+    chunk repeats. Fix: only ``chunk_index == 0`` legitimately opens a
+    session; non-zero chunks arriving with the flag cleared are stale
+    and dropped (with best-effort close on terminal chunks).
+    """
+
+    def test_stale_terminal_chunk_does_not_reopen_session(
+        self, app_with_mocked_coordinator
+    ):
+        """The exact production race: chunk_index > 0, is_final=True,
+        audio_data.size == 0 (TRUE_STREAM synthetic terminal),
+        progressive_playback_active=False (just cleared by
+        _play_generated_audio's skip-branch). MUST NOT call
+        ``start_streaming_session`` (that's the spurious open) and MUST
+        call ``stop_streaming_session`` for cleanup.
+        """
+        app, coordinator = app_with_mocked_coordinator
+        # Simulate the post-skip state: flag cleared by dispatch path.
+        app._progressive_playback_active = False
+
+        terminal = _StubChunk(
+            audio_data=np.zeros(0, dtype=np.float32),
+            sample_rate=24000,
+            chunk_index=2,  # non-zero — would trigger spurious open pre-fix
+            is_final=True,
+        )
+        _drive(app, terminal)
+
+        # The spurious open is the bug: must NOT fire.
+        coordinator.start_streaming_session.assert_not_awaited()
+        # play_audio_chunk must not fire either (audio_data.size == 0).
+        coordinator.play_audio_chunk.assert_not_awaited()
+        # Best-effort close: keep PyAudio resources clean even if
+        # there's nothing to close.
+        coordinator.stop_streaming_session.assert_awaited_once()
+        # Flag stays False — no spurious set-True from a session reopen.
+        assert app._progressive_playback_active is False
+
+    def test_stale_non_terminal_chunk_silent_drop(
+        self, app_with_mocked_coordinator
+    ):
+        """Defensive: a stale non-terminal chunk (chunk_index > 0, is_final=
+        False) arriving with the flag cleared must drop silently — no open,
+        no play, no close (no session to close)."""
+        app, coordinator = app_with_mocked_coordinator
+        app._progressive_playback_active = False
+
+        chunk = _StubChunk(
+            audio_data=np.array([0.1], dtype=np.float32),
+            sample_rate=24000,
+            chunk_index=3,
+            is_final=False,
+        )
+        _drive(app, chunk)
+
+        coordinator.start_streaming_session.assert_not_awaited()
+        coordinator.play_audio_chunk.assert_not_awaited()
+        coordinator.stop_streaming_session.assert_not_awaited()
+        assert app._progressive_playback_active is False
+
+    def test_chunk_zero_still_opens_when_flag_cleared(
+        self, app_with_mocked_coordinator
+    ):
+        """The fix must NOT regress legitimate chunk-0 behavior. When a
+        new generation's chunk 0 fires with flag cleared (the normal
+        post-prior-gen state), the session opens and audio plays."""
+        app, coordinator = app_with_mocked_coordinator
+        app._progressive_playback_active = False
+
+        chunk0 = _StubChunk(
+            audio_data=np.array([0.1, 0.2], dtype=np.float32),
+            sample_rate=24000,
+            chunk_index=0,
+            is_final=False,
+        )
+        _drive(app, chunk0)
+
+        coordinator.start_streaming_session.assert_awaited_once()
+        coordinator.play_audio_chunk.assert_awaited_once()
+        assert app._progressive_playback_active is True
+
+
 class TestProgressivePlaybackCancelEpoch:
     """Code-review MEDIUM-1 regression: cancel-vs-chunk race.
 

@@ -2465,6 +2465,62 @@ class MyVoiceApp(QObject):
                 self._progressive_playback_active = False
 
             if not self._progressive_playback_active:
+                # Build #11 regression: only chunk_index == 0 legitimately
+                # opens a session. A non-zero chunk arriving with the flag
+                # cleared is stale — most commonly TRUE_STREAM's synthetic
+                # terminal AudioChunk racing with ``_play_generated_audio``'s
+                # skip-branch (the trampoline's chunk-handler future is
+                # chained via ``run_coroutine_threadsafe`` from the worker
+                # thread, while ``_play_generated_audio`` is scheduled via
+                # ``ensure_future`` on the main thread; the chained future
+                # ordering means dispatch can run before the terminal
+                # handler). Opening a fresh session for that stale chunk
+                # implicitly closes (via ``MonitorAudioService.start_
+                # streaming_session``'s "close existing" prelude) the
+                # PyAudio stream that may still be playing the user's
+                # audio — observed on Win11 MME as audible chunk repeats
+                # in the 11:08 / 11:10 / 11:11 entries of the bundled-
+                # smoke log. Drop the stale chunk; if it's the terminal,
+                # best-effort close any session that may still be open
+                # (no-op if already closed).
+                if chunk.chunk_index != 0:
+                    if (
+                        chunk.is_final
+                        and chunk.audio_data.size > 0
+                    ):
+                        # SENTENCE_STREAM-shape stale terminal: the last
+                        # chunk carries real audio AND is_final=True, and
+                        # it arrived after the session was closed. Audio
+                        # is lost. SENTENCE_STREAM normally cannot race
+                        # because each chunk's callback is followed by
+                        # ``await asyncio.sleep(0)`` in the producer's
+                        # for-loop — flag this loudly if it ever happens
+                        # so the race becomes visible.
+                        self.logger.warning(
+                            "Stale terminal AudioChunk with non-empty "
+                            f"audio (chunk_index={chunk.chunk_index}); "
+                            "audio dropped because the progressive "
+                            "session was closed before this chunk "
+                            "arrived. If observed in production, the "
+                            "skip-branch <-> chunk-handler race needs "
+                            "lock-serialization."
+                        )
+                    if (
+                        chunk.is_final
+                        and self._audio_coordinator is not None
+                    ):
+                        try:
+                            await (
+                                self._audio_coordinator
+                                .stop_streaming_session()
+                            )
+                        except Exception:
+                            self.logger.warning(
+                                "Stale terminal-chunk session close failed "
+                                "(non-fatal)",
+                                exc_info=True,
+                            )
+                    return
                 if self._audio_coordinator is None:
                     return
                 try:
