@@ -250,7 +250,9 @@ class TestCacheKeyAndSerialization:
             str(ref_audio.resolve()),
             service._model_registry.quality_tier.value,
         )
-        service._voice_clone_prompts[cache_key] = prompt
+        # Cache via _cache_store so the entry carries the mtime/size/txt-mtime
+        # fingerprint required by the H1+H2 review-pass invalidation path.
+        service._cache_store(cache_key, prompt, ref_audio)
 
         with patch.object(
             service,
@@ -313,9 +315,11 @@ class TestCacheKeyAndSerialization:
             str(ref_audio.resolve()),
             service._model_registry.quality_tier.value,
         )
-        # The cache itself stores the bare item (single-instance memory
-        # footprint); list-wrapping happens at the request-assignment site.
-        assert service._voice_clone_prompts[cache_key] is prompt
+        # The cache stores a fingerprint tuple (prompt, mtime, size,
+        # txt_mtime) — the bare prompt is the first element. List-wrapping
+        # happens at the request-assignment site (not at cache-store time).
+        cached_entry = service._voice_clone_prompts[cache_key]
+        assert cached_entry[0] is prompt
 
     @pytest.mark.asyncio
     async def test_concurrent_same_voice_serializes(self, tmp_path, monkeypatch):
@@ -774,7 +778,7 @@ class TestPreparingVoiceIndicator:
             str(ref_audio.resolve()),
             service._model_registry.quality_tier.value,
         )
-        service._voice_clone_prompts[cache_key] = prompt
+        service._cache_store(cache_key, prompt, ref_audio)
 
         emissions: List[Optional[str]] = []
         service.set_preparing_voice_callback(emissions.append)
@@ -892,7 +896,7 @@ class TestNFR7GracefulDegradation:
             str(ref_audio.resolve()),
             service._model_registry.quality_tier.value,
         )
-        service._voice_clone_prompts[cache_key] = prompt
+        service._cache_store(cache_key, prompt, ref_audio)
         with patch.object(
             service,
             "_dispatch_by_streaming_mode",
@@ -934,6 +938,178 @@ class TestNFR7GracefulDegradation:
         assert miss_request.voice_clone_prompt == [prompt2]
 
     @pytest.mark.asyncio
+    async def test_in_memory_cache_invalidates_when_ref_audio_changes(
+        self, tmp_path, monkeypatch
+    ):
+        """Story 17.2 review-pass H1 — in-memory cache hits MUST validate
+        against the current ref_audio mtime/size, not just the path. The
+        original implementation skipped validation on hit, so replacing
+        Sarira-F.wav within a session yielded a stale embedding from the
+        previous wav silently. Bug class: cache hit returning stale prompt
+        after on-disk file mutation.
+        """
+        service = _make_service()
+        monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+        ref_audio = _make_clone_voice_file(tmp_path)
+        prompt = _make_synthetic_prompt()
+        cache_key = (
+            str(ref_audio.resolve()),
+            service._model_registry.quality_tier.value,
+        )
+        service._cache_store(cache_key, prompt, ref_audio)
+
+        # Mutate ref_audio's content + mtime — this is the exact bug class
+        # H1 protects against. Bump mtime explicitly so the change is
+        # observable in stat() (some filesystems coarse-grain mtime).
+        import os
+        ref_audio.write_bytes(ref_audio.read_bytes() + b"\x00\x00")
+        new_time = ref_audio.stat().st_mtime + 5.0
+        os.utime(str(ref_audio), (new_time, new_time))
+
+        # Prepare to recompute on miss. Without H1 the dispatch would
+        # receive the stale [prompt]; with H1 the in-memory entry is
+        # invalidated and the precompute path is invoked.
+        new_prompt = _make_synthetic_prompt()
+        with patch.object(
+            service,
+            "_ensure_transcription_for_clone_voice",
+            new=AsyncMock(return_value="hello"),
+        ), patch.object(
+            service,
+            "_ensure_voice_clone_prompt_for_voice",
+            new=AsyncMock(return_value=new_prompt),
+        ) as mock_compute, patch.object(
+            service,
+            "_dispatch_by_streaming_mode",
+            new=AsyncMock(return_value=QwenTTSResponse(success=True)),
+        ) as mock_dispatch:
+            await service.generate_voice_clone(
+                text="hi", ref_audio=ref_audio, ref_text="hi", streaming=True
+            )
+        mock_compute.assert_awaited_once()
+        request_arg = mock_dispatch.call_args.args[0]
+        # The fresh prompt was used — NOT the stale one.
+        assert request_arg.voice_clone_prompt == [new_prompt]
+
+    @pytest.mark.asyncio
+    async def test_in_memory_cache_invalidates_when_txt_sidecar_changes(
+        self, tmp_path, monkeypatch
+    ):
+        """Story 17.2 review-pass H2 — in-memory cache hits MUST also
+        validate against the .txt sidecar mtime. A user who fixes a Whisper
+        transcription error in Sarira-F.txt should see the cached embedding
+        recomputed (it was generated against the OLD transcription). The
+        original implementation tracked only ref_audio mtime/size, leaving
+        the cached embedding stale forever after a transcription correction.
+        Bug class: cache hit returning prompt computed from outdated .txt.
+        """
+        service = _make_service()
+        monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+        ref_audio = _make_clone_voice_file(tmp_path)
+        prompt = _make_synthetic_prompt()
+        cache_key = (
+            str(ref_audio.resolve()),
+            service._model_registry.quality_tier.value,
+        )
+        # Establish .txt sidecar at cache-store time so the cached entry
+        # records its mtime fingerprint.
+        sidecar = ref_audio.with_suffix(".txt")
+        sidecar.write_text("original transcription", encoding="utf-8")
+        service._cache_store(cache_key, prompt, ref_audio)
+
+        # User edits the sidecar to fix a transcription error.
+        import os
+        new_time = sidecar.stat().st_mtime + 10.0
+        sidecar.write_text("corrected transcription", encoding="utf-8")
+        os.utime(str(sidecar), (new_time, new_time))
+
+        new_prompt = _make_synthetic_prompt()
+        with patch.object(
+            service,
+            "_ensure_transcription_for_clone_voice",
+            new=AsyncMock(return_value="corrected transcription"),
+        ), patch.object(
+            service,
+            "_ensure_voice_clone_prompt_for_voice",
+            new=AsyncMock(return_value=new_prompt),
+        ) as mock_compute, patch.object(
+            service,
+            "_dispatch_by_streaming_mode",
+            new=AsyncMock(return_value=QwenTTSResponse(success=True)),
+        ) as mock_dispatch:
+            await service.generate_voice_clone(
+                text="hi", ref_audio=ref_audio, ref_text="hi", streaming=True
+            )
+        mock_compute.assert_awaited_once()
+        request_arg = mock_dispatch.call_args.args[0]
+        assert request_arg.voice_clone_prompt == [new_prompt]
+
+    @pytest.mark.asyncio
+    async def test_cache_lru_evicts_at_cap(self, tmp_path):
+        """Story 17.2 review-pass M3 — `_voice_clone_prompts` is bounded;
+        adding entries past the cap evicts the least-recently-used. Without
+        this, long-running services with many CLONED voices accumulated
+        unbounded resident embedding tensors.
+        """
+        service = _make_service()
+        # Lower the cap for fast testing — the production cap is 64 and
+        # creating 65 .wav files per test would be slow without value.
+        service._VOICE_CLONE_PROMPT_CACHE_MAX = 3
+        keys: list = []
+        for i in range(5):
+            ref_audio = _make_clone_voice_file(tmp_path, name=f"V{i}")
+            cache_key = (str(ref_audio.resolve()), "quality")
+            keys.append((cache_key, ref_audio))
+            service._cache_store(
+                cache_key, _make_synthetic_prompt(), ref_audio
+            )
+        # The first two entries should have been evicted (LRU); only the
+        # last three remain.
+        assert len(service._voice_clone_prompts) == 3
+        for evicted_key, _ in keys[:2]:
+            assert evicted_key not in service._voice_clone_prompts
+        for kept_key, _ in keys[2:]:
+            assert kept_key in service._voice_clone_prompts
+
+    @pytest.mark.asyncio
+    async def test_cache_lru_promotes_on_hit(self, tmp_path, monkeypatch):
+        """LRU ordering — accessing an entry promotes it past the eviction
+        line. This pins the recency-tracking invariant alongside the cap
+        test above.
+        """
+        service = _make_service()
+        service._VOICE_CLONE_PROMPT_CACHE_MAX = 3
+        ref_a = _make_clone_voice_file(tmp_path, name="VoiceA")
+        ref_b = _make_clone_voice_file(tmp_path, name="VoiceB")
+        ref_c = _make_clone_voice_file(tmp_path, name="VoiceC")
+        ref_d = _make_clone_voice_file(tmp_path, name="VoiceD")
+        for ra in (ref_a, ref_b, ref_c):
+            service._cache_store(
+                (str(ra.resolve()), "quality"),
+                _make_synthetic_prompt(),
+                ra,
+            )
+        # Touch A so it becomes most-recent. Without the move_to_end
+        # promotion in _cache_lookup_validated, A would still be the
+        # oldest entry and would be evicted when D arrives.
+        service._cache_lookup_validated(
+            (str(ref_a.resolve()), "quality"), ref_a
+        )
+        # Now insert D. Cap=3, current size=3 -> oldest evicted = B.
+        service._cache_store(
+            (str(ref_d.resolve()), "quality"),
+            _make_synthetic_prompt(),
+            ref_d,
+        )
+        cache_keys = list(service._voice_clone_prompts.keys())
+        assert (str(ref_a.resolve()), "quality") in cache_keys, (
+            "A was just touched — must remain"
+        )
+        assert (str(ref_b.resolve()), "quality") not in cache_keys, (
+            "B was the LRU after A was promoted — must be evicted"
+        )
+
+    @pytest.mark.asyncio
     async def test_cache_hit_then_oom_falls_back_to_sentence_stream(
         self, tmp_path, monkeypatch
     ):
@@ -947,7 +1123,7 @@ class TestNFR7GracefulDegradation:
             str(ref_audio.resolve()),
             service._model_registry.quality_tier.value,
         )
-        service._voice_clone_prompts[cache_key] = prompt
+        service._cache_store(cache_key, prompt, ref_audio)
 
         sentence_resp = QwenTTSResponse(
             success=True, used_fallback=True

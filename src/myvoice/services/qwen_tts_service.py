@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 import weakref
+from collections import OrderedDict
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Dict, Any, Callable, List, Tuple, AsyncIterator
@@ -629,11 +630,22 @@ class QwenTTSService(BaseService):
         # drop the registration.
         self._latency_aggregator = _FirstChunkLatencyAggregator(self)
 
-        # Voice clone prompt cache (Story 17.2 — wired into generate_voice_clone).
+        # Voice clone prompt cache (Story 17.2 — wired into generate_voice_clone;
+        # Story 17.2 review pass — H1 + H3 fixes).
         # Key: (str(ref_audio.resolve()), tier) where tier ∈ {"quality", "small"}.
         # Tier-locked because the 1.7B/0.6B Qwen3 models produce embeddings with
         # different hidden dimensions; the same .pt cannot serve both.
-        self._voice_clone_prompts: Dict[Tuple[str, str], Any] = {}
+        # Value shape: (prompt, ref_audio_mtime, ref_audio_size, txt_mtime).
+        # The mtime/size triple is re-validated on every cache hit so that
+        # within-session changes to ref_audio (replace .wav) or .txt (fix
+        # transcription) invalidate the in-memory cache without requiring
+        # an app restart. (H1, H2 review-pass fixes.)
+        # Backed by ``OrderedDict`` with LRU eviction at
+        # ``_VOICE_CLONE_PROMPT_CACHE_MAX`` to bound memory growth on long-
+        # running sessions with large voice libraries (M3 review-pass fix).
+        self._voice_clone_prompts: "OrderedDict[Tuple[str, str], Tuple[Any, float, int, Optional[float]]]" = (
+            OrderedDict()
+        )
         # Per-voice asyncio.Lock registry. WeakValueDictionary so locks for
         # deleted/unloaded voices are GC'd; the registry mutation itself is
         # guarded by `_voice_clone_prompt_locks_guard` (lazy-init under
@@ -1125,6 +1137,105 @@ class QwenTTSService(BaseService):
     # Whisper path (whisper_subprocess.py) typically completes in 1-3s
     # cold, so 1s + 3s gives ~5s envelope before declaring FAILED.
     _WHISPER_RETRY_BACKOFFS_SECONDS: Tuple[float, ...] = (1.0, 3.0)
+    # Story 17.2 review-pass M3 — bound the in-memory voice_clone_prompt
+    # cache so long-running sessions with large voice libraries (e.g.
+    # audiobook narration with N character voices) don't accumulate
+    # unbounded resident embedding tensors. 64 entries is comfortably above
+    # the 12 bundled CLONED voices and any realistic small/medium custom
+    # library; LRU eviction kicks in at the cap.
+    _VOICE_CLONE_PROMPT_CACHE_MAX = 64
+
+    @staticmethod
+    def _ref_audio_stat(ref_audio: Path) -> Tuple[float, int]:
+        """Return ``(mtime, size)`` for ``ref_audio``. Raises FileNotFoundError
+        if the file disappeared between caller's exists() check and now.
+        """
+        stat = ref_audio.stat()
+        return (stat.st_mtime, stat.st_size)
+
+    @staticmethod
+    def _txt_sidecar_mtime(ref_audio: Path) -> Optional[float]:
+        """Return mtime of ``ref_audio.with_suffix('.txt')`` if present, else
+        None. Used by AC #3 cache-invalidation to detect user edits of the
+        transcription sidecar that would otherwise leave the cached
+        embedding (computed against the OLD transcription) stale.
+        """
+        sidecar = ref_audio.with_suffix(".txt")
+        try:
+            return sidecar.stat().st_mtime if sidecar.exists() else None
+        except OSError:
+            return None
+
+    def _cache_lookup_validated(
+        self,
+        cache_key: Tuple[str, str],
+        ref_audio: Path,
+    ) -> Optional[Any]:
+        """Story 17.2 review-pass H1 + H2 — in-memory cache hit gated on
+        re-validation of ``ref_audio`` mtime/size AND ``.txt`` sidecar
+        mtime against the cached fingerprint. On mismatch, evict and
+        return None (caller treats as miss; precompute recomputes against
+        the current state).
+
+        Returns the prompt on hit, None on miss-or-stale.
+        Side-effects: marks the entry as recently-used on hit; evicts on
+        stale-detection.
+        """
+        entry = self._voice_clone_prompts.get(cache_key)
+        if entry is None:
+            return None
+        prompt, cached_mtime, cached_size, cached_txt_mtime = entry
+        try:
+            current_mtime, current_size = self._ref_audio_stat(ref_audio)
+        except (OSError, FileNotFoundError):
+            # ref_audio went missing — drop the stale entry.
+            self._voice_clone_prompts.pop(cache_key, None)
+            return None
+        # mtime tolerance matches _voice_clone_prompt_meta_is_valid (1ms).
+        if abs(current_mtime - cached_mtime) > 1e-3 or current_size != cached_size:
+            self._voice_clone_prompts.pop(cache_key, None)
+            self.logger.info(
+                f"Voice clone prompt in-memory cache invalidated for "
+                f"{cache_key[0]}: ref_audio mtime/size changed"
+            )
+            return None
+        # .txt sidecar mtime check (sidecar may appear / disappear / change).
+        current_txt_mtime = self._txt_sidecar_mtime(ref_audio)
+        if current_txt_mtime != cached_txt_mtime:
+            self._voice_clone_prompts.pop(cache_key, None)
+            self.logger.info(
+                f"Voice clone prompt in-memory cache invalidated for "
+                f"{cache_key[0]}: transcription sidecar changed"
+            )
+            return None
+        # Mark as recently-used for LRU eviction order.
+        self._voice_clone_prompts.move_to_end(cache_key)
+        return prompt
+
+    def _cache_store(
+        self,
+        cache_key: Tuple[str, str],
+        prompt: Any,
+        ref_audio: Path,
+    ) -> None:
+        """Store ``prompt`` in the cache with the current mtime/size/txt_mtime
+        fingerprint, evicting the oldest entry when at the LRU cap (M3)."""
+        try:
+            mtime, size = self._ref_audio_stat(ref_audio)
+        except (OSError, FileNotFoundError):
+            # If the file disappeared between compute and store, don't cache —
+            # the next request will recompute against the new state.
+            return
+        txt_mtime = self._txt_sidecar_mtime(ref_audio)
+        self._voice_clone_prompts[cache_key] = (prompt, mtime, size, txt_mtime)
+        self._voice_clone_prompts.move_to_end(cache_key)
+        # LRU eviction at the cap (M3 review-pass fix).
+        while len(self._voice_clone_prompts) > self._VOICE_CLONE_PROMPT_CACHE_MAX:
+            evicted_key, _ = self._voice_clone_prompts.popitem(last=False)
+            self.logger.debug(
+                f"Voice clone prompt cache LRU-evicted {evicted_key[0]} "
+                f"(cache at {self._VOICE_CLONE_PROMPT_CACHE_MAX} cap)"
+            )
 
     def set_whisper_service(self, whisper_service: Any) -> None:
         """Story 17.2 AC #2 — orchestrator-injected WhisperSubprocessService.
@@ -1355,9 +1466,10 @@ class QwenTTSService(BaseService):
         tier: str,
     ) -> bool:
         """Return True if ``meta_path`` matches the current ref_audio
-        (mtime + size) AND the current qwen-tts pin AND the current tier.
-        On any mismatch (or unparseable meta), return False — caller deletes
-        both files and treats as miss.
+        (mtime + size), the current ``.txt`` sidecar mtime (H2 review-pass
+        fix), the current qwen-tts pin, AND the current tier. On any
+        mismatch (or unparseable meta), return False — caller deletes both
+        files and treats as miss.
         """
         if not meta_path.exists():
             return False
@@ -1377,7 +1489,7 @@ class QwenTTSService(BaseService):
         if meta.get("qwen_tts_pin") != self._QWEN_TTS_PIN_HASH:
             return False
         # mtime is a float; allow exact equality (filesystem timestamps round-
-        # trip exactly on the platforms MyVoice ships to) but tolerate ~1us
+        # trip exactly on the platforms MyVoice ships to) but tolerate ~1ms
         # of float drift defensively.
         meta_mtime = meta.get("ref_audio_mtime")
         if not isinstance(meta_mtime, (int, float)):
@@ -1385,6 +1497,26 @@ class QwenTTSService(BaseService):
         if abs(float(meta_mtime) - stat.st_mtime) > 1e-3:
             return False
         if meta.get("ref_audio_size") != stat.st_size:
+            return False
+        # H2 review-pass fix — ``.txt`` sidecar invalidation. The cached
+        # embedding was computed against a specific transcription (whether
+        # from a previous Whisper run, a sidecar at hydration time, or an
+        # in-memory profile.transcription that was persisted). If the user
+        # has since edited the .txt to fix a transcription error, the
+        # cached embedding no longer matches the user's intended input —
+        # invalidate so the next generation recomputes against the
+        # corrected transcription. ``txt_mtime`` may be absent in legacy
+        # meta files (pre-review-pass); treat absent + sidecar-now-present
+        # as a mismatch, absent + sidecar-still-absent as a match.
+        meta_txt_mtime = meta.get("txt_mtime")
+        current_txt_mtime = self._txt_sidecar_mtime(ref_audio)
+        if meta_txt_mtime is None and current_txt_mtime is None:
+            pass  # neither side has a sidecar — match
+        elif (
+            meta_txt_mtime is None
+            or current_txt_mtime is None
+            or abs(float(meta_txt_mtime) - float(current_txt_mtime)) > 1e-3
+        ):
             return False
         return True
 
@@ -1486,10 +1618,18 @@ class QwenTTSService(BaseService):
 
         try:
             stat = ref_audio.stat()
+            # Schema version bumped to 1.1 in the Story 17.2 review pass:
+            # adds ``txt_mtime`` so the persisted cache invalidates when
+            # the user edits the transcription sidecar (H2 review-pass
+            # fix). Older 1.0 meta files lack this field; the validator
+            # in _voice_clone_prompt_meta_is_valid treats absent
+            # txt_mtime as "no sidecar at compute time" and matches only
+            # if the current sidecar is also absent — otherwise stale.
             meta = {
-                "schema_version": "1.0",
+                "schema_version": "1.1",
                 "ref_audio_mtime": stat.st_mtime,
                 "ref_audio_size": stat.st_size,
+                "txt_mtime": self._txt_sidecar_mtime(ref_audio),
                 "tier": tier,
                 "qwen_tts_pin": self._QWEN_TTS_PIN_HASH,
             }
@@ -1595,12 +1735,16 @@ class QwenTTSService(BaseService):
                 )
                 normalized = self._normalize_voice_clone_prompt(loaded)
                 cache_key = (str(ref_audio.resolve()), tier)
-                self._voice_clone_prompts[cache_key] = normalized
+                # Use _cache_store so the in-memory entry carries the
+                # mtime/size/txt-mtime fingerprint and participates in
+                # H1/H2 invalidation + M3 LRU eviction.
+                self._cache_store(cache_key, normalized, ref_audio)
                 hits += 1
             except Exception as exc:
                 self.logger.warning(
                     f"Voice clone prompt hydration failed for {name}: "
-                    f"{exc}"
+                    f"{exc}",
+                    exc_info=True,
                 )
         self.logger.info(
             f"Voice clone prompt cache: hydrated {hits}/{total} CLONED "
@@ -1690,7 +1834,9 @@ class QwenTTSService(BaseService):
                 cache_key = None
 
             if cache_key is not None:
-                # Cache hit — set on request and proceed.
+                # Cache hit (validated against current mtime/size/txt-mtime —
+                # H1 + H2 review-pass fixes prevent stale prompts from being
+                # used after the user replaces ref_audio or fixes the .txt).
                 # IMPORTANT: wrap in a list — the qwen-tts library at
                 # `qwen_tts/inference/qwen3_tts_model.py:584-586` only
                 # converts to its dict-form (`_prompt_items_to_voice_clone_
@@ -1700,7 +1846,7 @@ class QwenTTSService(BaseService):
                 # on `voice_clone_prompt['ref_spk_embedding']`. Mirrors
                 # the canonical pattern at qwen_tts_service.py:2254 used
                 # by `generate_with_embedding`.
-                cached = self._voice_clone_prompts.get(cache_key)
+                cached = self._cache_lookup_validated(cache_key, ref_audio)
                 if cached is not None:
                     request.voice_clone_prompt = [cached]
                     self.logger.debug(
@@ -1718,7 +1864,9 @@ class QwenTTSService(BaseService):
                         async with lock:
                             # Re-check inside the critical section
                             # (double-checked locking).
-                            cached2 = self._voice_clone_prompts.get(cache_key)
+                            cached2 = self._cache_lookup_validated(
+                                cache_key, ref_audio
+                            )
                             if cached2 is None:
                                 self.logger.info(
                                     "Voice clone prompt cache miss for "
@@ -1738,7 +1886,7 @@ class QwenTTSService(BaseService):
                                         tier,
                                     )
                                 )
-                                self._voice_clone_prompts[cache_key] = prompt
+                                self._cache_store(cache_key, prompt, ref_audio)
                                 cached2 = prompt
                             # Same list-wrapping discipline as the cache-
                             # hit branch above.
@@ -1749,10 +1897,15 @@ class QwenTTSService(BaseService):
                         # Do NOT swallow — this is an exception bubble,
                         # not a recovery. The indicator is cleared in
                         # the finally block below.
+                        # M2 review-pass fix: include exc_info=True so
+                        # production logs carry the full traceback;
+                        # debugging mysterious fall-throughs no longer
+                        # requires reproducing locally.
                         self.logger.warning(
                             "Voice clone prompt precompute failed for "
                             f"{cache_key[0]}: {exc}; falling through "
-                            "to dispatch (NFR7 graceful degradation)"
+                            "to dispatch (NFR7 graceful degradation)",
+                            exc_info=True,
                         )
                         # Return the request as-is (no voice_clone_prompt);
                         # dispatch chain will fail TRUE_STREAM at the
@@ -1769,20 +1922,42 @@ class QwenTTSService(BaseService):
         """Best-effort VoiceProfile lookup by ref_audio path. Returns None
         when no profile manager is wired or no profile matches — callers
         gracefully degrade (transcription status updates skipped, but the
-        precompute itself still runs)."""
+        precompute itself still runs).
+
+        Story 17.2 review-pass M1 — avoid an O(N) syscall storm on each
+        cache miss. The orchestrator calls ``generate_voice_clone(ref_audio
+        =active_profile.file_path, ...)`` with the SAME Path object that's
+        stored on the profile, so a string-equality fast-path resolves
+        almost all real call sites without touching the filesystem.
+        Only fall back to the per-profile ``.resolve()`` syscall when the
+        cheap compare misses (e.g. relative-vs-absolute, symlink, or a
+        different Path instance with the same content).
+        """
         if self._voice_profile_manager is None:
             return None
         try:
             profiles = self._voice_profile_manager.get_profiles()
         except Exception:
             return None
+        # Cheap path: compare against the input path string directly. The
+        # typical caller (app.py) hands us active_profile.file_path
+        # verbatim, so this hits without any filesystem syscall.
+        target_str = str(ref_audio)
+        for profile in profiles.values():
+            try:
+                if str(profile.file_path) == target_str:
+                    return profile
+            except Exception:
+                continue
+        # Fallback: resolve target and per-profile paths to handle the
+        # corner cases (relative paths, symlinks, alternate path forms).
         try:
-            target = str(ref_audio.resolve())
+            target_resolved = str(ref_audio.resolve())
         except Exception:
             return None
         for profile in profiles.values():
             try:
-                if str(profile.file_path.resolve()) == target:
+                if str(profile.file_path.resolve()) == target_resolved:
                     return profile
             except Exception:
                 continue

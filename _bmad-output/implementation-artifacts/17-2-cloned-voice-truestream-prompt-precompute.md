@@ -1,6 +1,6 @@
 # Story 17.2: Lazy + Persistent voice_clone_prompt Precompute for CLONED Voices on TRUE_STREAM
 
-Status: review
+Status: done
 
 > **Phase tag:** Phase ⊥-Ramp completion (closes the gap between Story 17.1's certified TRUE_STREAM path and the user-facing reality that CLONED voices reach it). On closure, Epic 17 transitions back to `done`.
 > **Re-opens:** Epic 17 (was `done` per `sprint-status.yaml:103`). Sprint-status edited at workflow step 6 of `/bmad-bmm-create-story`: `epic-17 → in-progress`; `17-2-cloned-voice-truestream-prompt-precompute → ready-for-dev`. Authorized by `_bmad-output/implementation-artifacts/17-2-cloned-voice-truestream-prompt-precompute-scope-sketch.md`.
@@ -153,9 +153,9 @@ The voice_clone_prompt-missing case stops triggering fallback only when AC #1's 
 
 - [x] **Task 8 — Sprint-status finalization + epic-17 closure evaluation**
   - [x] 8.1 Sprint-status: `17-2-cloned-voice-truestream-prompt-precompute: in-progress → review` applied at story closure (this commit). `epic-17` stays `in-progress` until the post-review code-review pass closes 17-2 to `done`.
-  - [x] 8.2 Story status moved to `review`. Code-review pass via `/bmad-bmm-code-review` is a separate follow-up commit per Story 17.1's pattern (`19f1d54 Story 17.1: code-review pass — H1/M1/M2/M3 fixes`); on review pass, `17-2 → done`. Per dev-story workflow Step 10, recommended next step is `code-review` from a fresh context using a different LLM.
-  - [x] 8.3 `epic-17` transition deferred to the code-review pass commit (mirrors Story 17.1 closure flow). Whether to flip `epic-17-retrospective: optional → done` is Commander's call at that point — Epic 17 grew from 1 to 2 stories post-retrospective-marking, so a retrospective amendment may be warranted.
-  - [x] 8.4 Memory update on the `memory/build_tools_phase_perp_state.md` HIGH-follow-up line deferred to the code-review pass commit (the line stays accurate while the story is in `review` status — the regression is fixed in source + bundle but not yet code-review-certified).
+  - [x] 8.2 Code-review pass via `/bmad-bmm-code-review` ran in-session (Commander chose this over deferring to a separate session). Found 2 HIGH + 3 MEDIUM + 2 LOW; auto-fixed all HIGH + MEDIUM with regression tests + traceback re-audit per `memory/code_review_regression_test_exact_class.md`. Story 17-2 → done.
+  - [x] 8.3 `epic-17` flipped to `done` (both 17.1 and 17.2 are done). `epic-17-retrospective` left at `optional` — Epic 17 grew from 1 to 2 stories post-retrospective-marking, but the original retrospective stands; Commander may amend later if desired.
+  - [x] 8.4 Memory pointer at `memory/build_tools_phase_perp_state.md` updated: HIGH "TRUE_STREAM voice_clone_prompt regression" follow-up marked RESOLVED with pointer to this story's evidence file. tooling-2 §7.2 closure complete.
 
 ## Dev Notes
 
@@ -383,4 +383,13 @@ Source-tree implementation (Tasks 1–6) complete and unit-tested. Key decisions
   No `voice-clone path requires` lines, no `streaming_mode_fallback` metric, no `TypeError` regression. tooling-2 §7.2 HIGH follow-up resolved.
 - 2026-05-08 — **Indicator UX iteration**: Task 5.2's tooltip-only choice shipped invisible-by-default UX. Commander's smoke run confirmed they didn't see "Preparing voice…" because tooltips only render on hover. Replaced with inline label-text swap: when `preparing_voice_message` is set, the indicator's small text label switches from the service_name (e.g. `"TTS"`) to a truncated form of the message in **bold**; reverts on clear. Tooltip retains the full message for accessibility. New file `tests/unit/ui/test_service_status_indicator_preparing_voice.py` (5 tests) pins the inline-label invariants.
 - 2026-05-08 — **Task 7 closure.** Source-tree implementation (Tasks 1–6) + bundled smoke verification (Task 7) all green; story status moves to `review`. Installer-mode smoke (Task 7.4) skipped per Commander decision — source-tree change is identical between portable + installer (PyInstaller frozen bytecode shared); §4 evidence is sufficient.
-- 2026-05-08 — Task 8.1 (sprint-status `17-2 → review`) applied. 8.2-8.4 (code-review pass + epic-17 transition + memory update) handled by the post-review code-review pass commit per Story 17.1's closure pattern.
+- 2026-05-08 — Task 8.1 (sprint-status `17-2 → review`) applied.
+- 2026-05-08 — **Code-review pass (`/bmad-bmm-code-review`)** found 2 HIGH + 3 MEDIUM + 2 LOW issues. Auto-fixed all HIGH + MEDIUM (Commander's call):
+  - **H1** — In-memory cache hits skipped mtime/size validation; replacing `voice_files/X.wav` mid-session yielded stale embeddings until app restart. Fix: cache value reshape to `(prompt, mtime, size, txt_mtime)` tuple; new `_cache_lookup_validated` re-stats on every hit and evicts on mismatch. Regression test `test_in_memory_cache_invalidates_when_ref_audio_changes`.
+  - **H2** — `.txt` sidecar mtime missing from cache invalidation; user fixing a Whisper transcription error left the cached embedding stale forever. Fix: track `.txt` mtime in both the in-memory cache fingerprint AND the `.pt.meta.json` (schema bumped to `1.1`); validators now check sidecar mtime. Regression test `test_in_memory_cache_invalidates_when_txt_sidecar_changes`.
+  - **M1** — `_lookup_voice_profile` performed O(N) `.resolve()` syscalls per cache miss. Fix: cheap-string-equality fast path (covers the typical `app.py` call site that hands us `active_profile.file_path` verbatim); the `.resolve()` per-profile fallback only fires when the cheap compare misses.
+  - **M2** — Cache-miss precompute exception logging dropped tracebacks. Fix: `exc_info=True` on the warning at the cache-miss handler + on hydration warnings.
+  - **M3** — `_voice_clone_prompts` had unbounded growth. Fix: backed by `OrderedDict` with LRU eviction at `_VOICE_CLONE_PROMPT_CACHE_MAX = 64`. Regression tests `test_cache_lru_evicts_at_cap` + `test_cache_lru_promotes_on_hit`.
+- LOW issues (L1 logging-format inconsistency, L2 indicator-truncation cosmetic) deferred — captured in the review-findings section above; non-blocking for closure.
+- Re-audit after auto-fixes per `memory/code_review_regression_test_exact_class.md` discipline: no new issues found; 31/31 cache tests pass; 697/697 in the targeted unit suite (services + models + observability + ui-indicator) pass with no regressions.
+- 2026-05-08 — **Story 17.2 → done.** sprint-status: `17-2 → done`, `epic-17 → done`. Memory pointer at `memory/build_tools_phase_perp_state.md` updated to mark the HIGH follow-up RESOLVED. tooling-2 §7.2 closure complete.

@@ -105,7 +105,7 @@ development_status:
   # Story 17.2 precomputes the embedding lazily on first use and persists to <voice>.pt — closes
   # the Phase ⊥-Ramp user-reach gap (Story 17.1 certified TRUE_STREAM; 17.2 makes it actually
   # reach CLONED-voice users at install time).
-  epic-17: in-progress
+  epic-17: done
   17-1-streaming-default-ramp: done
-  17-2-cloned-voice-truestream-prompt-precompute: review
+  17-2-cloned-voice-truestream-prompt-precompute: done
   epic-17-retrospective: optional
