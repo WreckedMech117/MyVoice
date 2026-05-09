@@ -450,6 +450,6 @@ Size Estimates:
 
 Distribution Strategy:
     1. Build with: python build_tools/build_portable.py
-    2. Compress dist/MyVoice/ to MyVoice-Portable-v1.0.zip
+    2. Compress dist/MyVoice/ to MyVoice-Portable-v2.1.0.zip
     3. Users extract and run MyVoice.exe
 """

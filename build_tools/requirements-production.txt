@@ -31,19 +31,24 @@ tiktoken>=0.5.0
 
 
 # =============================================================================
-# Machine Learning (Required - CPU ONLY)
+# Machine Learning (Required - CUDA-Enabled per tooling-2 AC #1)
 # =============================================================================
-# IMPORTANT: Use CPU-only version to save ~1GB of CUDA libraries
+# Production torch variant decided 2026-05-08 — see
+# _bmad-output/implementation-artifacts/tooling-2-correct-course-cpu-vs-cuda.md
+#
+# Production bundle ships CUDA-enabled torch so Story 17.1's certified
+# TRUE_STREAM dispatch path is reachable on GPU hosts at install time
+# without requiring users to swap in a CUDA wheel manually. CPU hosts
+# fall through to SENTENCE_STREAM via streaming_mode.py:54-56's probe
+# (NFR12 protection preserved at runtime).
 torch>=2.0.0; sys_platform == 'win32'
---extra-index-url https://download.pytorch.org/whl/cpu
 
-# Alternative explicit CPU installation:
+# For source-builders who prefer the smaller CPU-only footprint:
 # pip install torch --index-url https://download.pytorch.org/whl/cpu
 
-# Size comparison:
-# - Full PyTorch (CUDA): ~2.5GB
-# - CPU-only PyTorch: ~150-200MB
-# Savings: ~2.3GB
+# Size comparison (production bundle ships the CUDA variant):
+# - Full PyTorch (CUDA): ~2.5GB    <-- production default per tooling-2 AC #1
+# - CPU-only PyTorch: ~150-200MB   <-- source-builder opt-in path
 
 
 # =============================================================================

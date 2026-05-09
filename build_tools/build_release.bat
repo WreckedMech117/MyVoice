@@ -76,6 +76,27 @@ if not exist "installer.iss" (
 echo + Build files found
 echo.
 
+REM ----------------------------------------------------------------------------
+REM Pin verification — qwen-tts must match Story 16.1 / D-12 commit hash
+REM (tooling-2 AC #2). Halts the build at "Pre-Build Checks" on mismatch.
+REM ----------------------------------------------------------------------------
+
+echo [Pin Verification]
+echo.
+"%PYTHON_EXE%" verify_qwen_tts_pin.py
+if %ERRORLEVEL% NEQ 0 (
+    echo.
+    echo ============================================================================
+    echo ERROR: qwen-tts pin verification failed!
+    echo ============================================================================
+    echo.
+    echo See above for the expected/actual hashes and restoration commands.
+    echo.
+    pause
+    exit /b 1
+)
+echo.
+
 REM ============================================================================
 REM Get/Update Version
 REM ============================================================================
@@ -93,6 +114,25 @@ if /i "!INCREMENT_BUILD!"=="y" (
     echo.
 )
 
+REM ----------------------------------------------------------------------------
+REM Sync version constants across files (tooling-2 AC #5). Propagates the
+REM possibly-just-incremented VERSION_MAJOR/MINOR/PATCH/BUILD from
+REM version.py into src/myvoice/__init__.py and installer.iss so the
+REM produced installer's Add/Remove Programs entry, registry Version key,
+REM registry Build key, and OutputBaseFilename all agree with version.py.
+REM Closes the gap noted in Story tooling-2 AC #5.
+REM ----------------------------------------------------------------------------
+echo [Version Sync]
+"%PYTHON_EXE%" version.py update-all
+if %ERRORLEVEL% NEQ 0 (
+    echo.
+    echo ============================================================================
+    echo ERROR: version.py update-all failed!
+    echo ============================================================================
+    echo.
+    pause
+    exit /b 1
+)
 echo.
 
 REM ============================================================================

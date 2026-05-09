@@ -8,6 +8,7 @@
 
 #define MyAppName "MyVoice"
 #define MyAppVersion "2.1.0"
+#define MyAppBuild "10"
 #define MyAppPublisher "MyVoice Development Team"
 #define MyAppURL "https://github.com/myvoice/myvoice"
 #define MyAppExeName "MyVoice.exe"
@@ -153,6 +154,7 @@ Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{#MyAppName}"; Fil
 [Registry]
 ; Register application for proper uninstall
 Root: HKLM; Subkey: "Software\{#MyAppPublisher}\{#MyAppName}"; ValueType: string; ValueName: "Version"; ValueData: "{#MyAppVersion}"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "Software\{#MyAppPublisher}\{#MyAppName}"; ValueType: string; ValueName: "Build"; ValueData: "{#MyAppBuild}"; Flags: uninsdeletekey
 Root: HKLM; Subkey: "Software\{#MyAppPublisher}\{#MyAppName}"; ValueType: string; ValueName: "InstallPath"; ValueData: "{app}"; Flags: uninsdeletekey
 
 ; Add to Windows "App Paths" for command-line access (optional)
