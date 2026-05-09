@@ -1691,9 +1691,18 @@ class QwenTTSService(BaseService):
 
             if cache_key is not None:
                 # Cache hit — set on request and proceed.
+                # IMPORTANT: wrap in a list — the qwen-tts library at
+                # `qwen_tts/inference/qwen3_tts_model.py:584-586` only
+                # converts to its dict-form (`_prompt_items_to_voice_clone_
+                # prompt`) when `voice_clone_prompt` is a `list`; a bare
+                # VoiceClonePromptItem falls into the else branch and is
+                # passed straight to `model.generate(...)` which crashes
+                # on `voice_clone_prompt['ref_spk_embedding']`. Mirrors
+                # the canonical pattern at qwen_tts_service.py:2254 used
+                # by `generate_with_embedding`.
                 cached = self._voice_clone_prompts.get(cache_key)
                 if cached is not None:
-                    request.voice_clone_prompt = cached
+                    request.voice_clone_prompt = [cached]
                     self.logger.debug(
                         f"Voice clone prompt cache hit for {cache_key[0]} "
                         f"(tier={tier})"
@@ -1731,7 +1740,9 @@ class QwenTTSService(BaseService):
                                 )
                                 self._voice_clone_prompts[cache_key] = prompt
                                 cached2 = prompt
-                            request.voice_clone_prompt = cached2
+                            # Same list-wrapping discipline as the cache-
+                            # hit branch above.
+                            request.voice_clone_prompt = [cached2]
                     except Exception as exc:
                         # Precompute failed; let the dispatch chain catch
                         # so the SENTENCE_STREAM fallback runs (NFR7).

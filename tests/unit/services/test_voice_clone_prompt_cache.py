@@ -271,7 +271,12 @@ class TestCacheKeyAndSerialization:
         mock_compute.assert_not_called()
         mock_transcribe.assert_not_called()
         request_arg = mock_dispatch.call_args.args[0]
-        assert request_arg.voice_clone_prompt is prompt
+        # Library contract (qwen_tts/inference/qwen3_tts_model.py:584-586):
+        # voice_clone_prompt MUST be a list[VoiceClonePromptItem] so the
+        # `_prompt_items_to_voice_clone_prompt` conversion path fires; a
+        # bare item falls into the else-branch and crashes downstream at
+        # `voice_clone_prompt['ref_spk_embedding']`.
+        assert request_arg.voice_clone_prompt == [prompt]
 
     @pytest.mark.asyncio
     async def test_cache_miss_computes_once_and_populates_cache(
@@ -301,11 +306,15 @@ class TestCacheKeyAndSerialization:
         mock_transcribe.assert_awaited_once()
         mock_compute.assert_awaited_once()
         request_arg = mock_dispatch.call_args.args[0]
-        assert request_arg.voice_clone_prompt is prompt
+        # See library contract note in TestCacheKeyAndSerialization
+        # ::test_cache_hit_skips_precompute_and_sets_request_prompt.
+        assert request_arg.voice_clone_prompt == [prompt]
         cache_key = (
             str(ref_audio.resolve()),
             service._model_registry.quality_tier.value,
         )
+        # The cache itself stores the bare item (single-instance memory
+        # footprint); list-wrapping happens at the request-assignment site.
         assert service._voice_clone_prompts[cache_key] is prompt
 
     @pytest.mark.asyncio
@@ -852,7 +861,77 @@ class TestNFR7GracefulDegradation:
             await service.generate_voice_clone(
                 text="hi", ref_audio=ref_audio, ref_text="hi", streaming=True
             )
-        assert captured["request"].voice_clone_prompt is prompt
+        # Library contract — list[VoiceClonePromptItem] (see test above).
+        assert captured["request"].voice_clone_prompt == [prompt]
+
+    @pytest.mark.asyncio
+    async def test_request_voice_clone_prompt_is_a_list_not_bare_item(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression for the bundled-smoke crash (Task 7 evidence run
+        2026-05-08): `voice_clone_prompt` MUST reach the dispatch chain
+        as a `list[VoiceClonePromptItem]`. The qwen-tts library at
+        `qwen_tts/inference/qwen3_tts_model.py:584-586` only converts to
+        the model-internal dict-form (`_prompt_items_to_voice_clone_prompt`)
+        when the value is a list; a bare item falls into the else-branch
+        and is passed straight through to `model.generate(...)` which
+        crashes on `voice_clone_prompt['ref_spk_embedding']` (TypeError:
+        'VoiceClonePromptItem' object is not subscriptable).
+
+        Mirrors the canonical pattern at qwen_tts_service.py:2254 used by
+        `generate_with_embedding`. Both the cache-hit and cache-miss
+        branches must wrap.
+        """
+        service = _make_service()
+        monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+        ref_audio = _make_clone_voice_file(tmp_path)
+        prompt = _make_synthetic_prompt()
+
+        # ----- cache-hit branch -----
+        cache_key = (
+            str(ref_audio.resolve()),
+            service._model_registry.quality_tier.value,
+        )
+        service._voice_clone_prompts[cache_key] = prompt
+        with patch.object(
+            service,
+            "_dispatch_by_streaming_mode",
+            new=AsyncMock(return_value=QwenTTSResponse(success=True)),
+        ) as mock_hit:
+            await service.generate_voice_clone(
+                text="hi", ref_audio=ref_audio, ref_text="hi", streaming=True
+            )
+        hit_request = mock_hit.call_args.args[0]
+        assert isinstance(hit_request.voice_clone_prompt, list), (
+            "cache hit: voice_clone_prompt must be a list, not a bare item"
+        )
+        assert hit_request.voice_clone_prompt == [prompt]
+
+        # ----- cache-miss branch -----
+        service._voice_clone_prompts.clear()
+        ref_audio2 = _make_clone_voice_file(tmp_path, name="OtherVoice")
+        prompt2 = _make_synthetic_prompt()
+        with patch.object(
+            service,
+            "_ensure_transcription_for_clone_voice",
+            new=AsyncMock(return_value="hi"),
+        ), patch.object(
+            service,
+            "_ensure_voice_clone_prompt_for_voice",
+            new=AsyncMock(return_value=prompt2),
+        ), patch.object(
+            service,
+            "_dispatch_by_streaming_mode",
+            new=AsyncMock(return_value=QwenTTSResponse(success=True)),
+        ) as mock_miss:
+            await service.generate_voice_clone(
+                text="hi", ref_audio=ref_audio2, ref_text="hi", streaming=True
+            )
+        miss_request = mock_miss.call_args.args[0]
+        assert isinstance(miss_request.voice_clone_prompt, list), (
+            "cache miss: voice_clone_prompt must be a list, not a bare item"
+        )
+        assert miss_request.voice_clone_prompt == [prompt2]
 
     @pytest.mark.asyncio
     async def test_cache_hit_then_oom_falls_back_to_sentence_stream(
