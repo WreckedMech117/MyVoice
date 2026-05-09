@@ -40,6 +40,7 @@ class _StubChunk:
     chunk_index: int
     is_final: bool = False
     text_segment: str = ""
+    session_id: "str | None" = None
 
 
 @pytest.fixture(scope="module")

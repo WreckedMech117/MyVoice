@@ -268,12 +268,22 @@ class AudioChunk:
         chunk_index: Index of this chunk (0-based)
         is_final: Whether this is the last chunk
         text_segment: The text that was synthesized for this chunk
+        session_id: Registry-issued session id for the generation that
+            emitted this chunk; None for legacy callers that bypass the
+            SessionRegistry. Story 18.1 code-review pass M1 added this
+            so the consumer-side instrumentation metrics
+            (``progressive_chunk_playback_arrival_ms`` /
+            ``progressive_chunk_audio_duration_ms``) carry the same
+            session_id the producer-side ``progressive_chunk_emit_ms``
+            does — keeping the Task 1.4 CSV joinable across multiple
+            generations captured in one run.
     """
     audio_data: np.ndarray
     sample_rate: int
     chunk_index: int
     is_final: bool = False
     text_segment: str = ""
+    session_id: Optional[str] = None
 
 
 @dataclass
@@ -3076,6 +3086,7 @@ class QwenTTSService(BaseService):
                         chunk_index=chunk_count - 1,
                         is_final=is_final,
                         text_segment=text_chunk,
+                        session_id=sid,
                     )
 
                     if self._audio_chunk_ready_callback:
@@ -3914,6 +3925,17 @@ class QwenTTSService(BaseService):
                         accumulated_chunks.append(chunk_data)
                         chunk_index = chunk_count_box[0]
                         chunk_count_box[0] += 1
+                        # Story 18.1 Task 1.1: per-chunk emit timestamp
+                        # (wall-clock ms — joinable with the consumer-
+                        # side ``progressive_chunk_playback_arrival_ms``
+                        # by (session_id, chunk_index)). Overhead
+                        # validated ≤ 100 µs/call in evidence file §1.
+                        metrics.record(
+                            "progressive_chunk_emit_ms",
+                            time.time() * 1000.0,
+                            session_id=sid,
+                            chunk_index=chunk_index,
+                        )
                         # Story 17.3: emit progressive-playback callback. Parallels
                         # SENTENCE_STREAM at qwen_tts_service.py:3071-3082. Additive to
                         # the accumulator/counter; never replaces them. Wrapped so a
@@ -3927,6 +3949,7 @@ class QwenTTSService(BaseService):
                                         chunk_index=chunk_index,
                                         is_final=False,
                                         text_segment="",
+                                        session_id=sid,
                                     )
                                 )
                             except Exception:
@@ -3950,6 +3973,7 @@ class QwenTTSService(BaseService):
                                         chunk_index=chunk_count_box[0],
                                         is_final=True,
                                         text_segment="",
+                                        session_id=sid,
                                     )
                                 )
                             except Exception:

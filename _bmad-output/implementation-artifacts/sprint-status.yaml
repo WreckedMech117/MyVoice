@@ -114,3 +114,19 @@ development_status:
   17-2-cloned-voice-truestream-prompt-precompute: done
   17-3-progressive-audio-playback-during-true-stream: done
   epic-17-retrospective: optional
+
+  # Epic 18 — Generation-Speed Optimizations (Phase ⊥-Polish-2)
+  # Added 2026-05-09 — Epic was fully scoped in `epics-optimization-pass.md` (line 228 +
+  # stories at line 1322) but never registered in sprint-status.yaml. Logged retroactively
+  # so create-story / sprint-status workflows pick it up. Phase ⊥-Polish-2 of D-20;
+  # successor to Phase ⊥-Polish (Story 17.3). Independent of Epics 11–15; depends only on
+  # Epic 16 (TRUE_STREAM dispatch path) + Story 17.3 (progressive playback) — both done.
+  # Recommended sequencing: 18.1 + 18.2 in either order or parallel; 18.3 third (settles
+  # precision question); 18.4 last (compiles whatever precision 18.3 selected). 18.3 + 18.4
+  # may amortize a single NFR3 audition if shipped close together.
+  epic-18: in-progress
+  18-1-underrun-gap-mitigation: done
+  18-2-tf32-cudnn-benchmark-enable: backlog
+  18-3-bf16-precision-on-talker-decoder: backlog
+  18-4-torch-compile-decoder-persistent-cache: backlog
+  epic-18-retrospective: optional

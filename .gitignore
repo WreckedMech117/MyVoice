@@ -118,6 +118,15 @@ temp/
 !voice_files/**/*.mp3
 !voice_files/**/*.flac
 
+# Story 17.2 lazy voice_clone_prompt precompute artifacts (per-voice runtime
+# caches at voice_files/<name>.quality.pt + .quality.pt.meta.json). Created
+# on first generation; not source data.
+voice_files/*.quality.pt
+voice_files/*.quality.pt.meta.json
+
+# build_release.bat answer-piping leftover (auto-increment Y/N response).
+build_increment_answer.txt
+
 # ===========================================================================
 # Models (downloadable — not committed; users install separately)
 # Anchored to repo root so tests/unit/models/ is not accidentally ignored.

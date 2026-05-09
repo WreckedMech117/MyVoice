@@ -8,12 +8,13 @@ application lifecycle, initialization, and coordination between services and UI.
 import gc
 import logging
 import sys
+import time  # Story 18.1: progressive-playback consumer-side wall-clock metric
 import uuid
 import asyncio
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 from datetime import datetime
 
 import numpy as np
@@ -23,6 +24,7 @@ from PyQt6.QtCore import QMetaObject, QObject, Qt, QTimer, pyqtSlot
 
 from myvoice.models.ui_state import ServiceStatusInfo, ServiceHealthStatus
 from myvoice.models.service_enums import ServiceStatus, QwenModelType
+from myvoice.observability import metrics  # Story 18.1: progressive-playback instrumentation
 from myvoice.ui.dialogs.save_dialog import SaveAudioDialog  # Story 14.3
 
 
@@ -194,6 +196,32 @@ class MyVoiceApp(QObject):
         # cancel sees a stale captured value under the handler lock and
         # drops itself instead of opening a fresh session post-cancel.
         self._progressive_playback_epoch: int = 0
+
+        # Story 18.1 Task 1.4: env-var-gated CSV capture for the three new
+        # progressive-playback metrics. Disabled by default (None) — engages
+        # only when ``MYVOICE_PROGRESSIVE_PLAYBACK_CSV`` is set, returning a
+        # ``stop`` callable that ``_on_about_to_quit`` invokes for a clean
+        # close. Resolution lives in
+        # ``myvoice.observability.progressive_playback_csv_capture`` so the
+        # subpackage owns the file/listener lifecycle and app.py stays slim.
+        self._progressive_metric_capture_stop: Optional[
+            Callable[[], None]
+        ] = None
+        try:
+            from myvoice.observability.progressive_playback_csv_capture import (
+                maybe_enable_from_env,
+            )
+            from myvoice.utils.portable_paths import get_logs_path
+
+            self._progressive_metric_capture_stop = maybe_enable_from_env(
+                get_logs_path()
+            )
+        except Exception:
+            self.logger.exception(
+                "Story 18.1: progressive-playback CSV capture wiring "
+                "failed (non-fatal; instrumentation metrics still emit "
+                "via myvoice.metrics logger)"
+            )
 
         # Connect application signals
         self.qt_app.aboutToQuit.connect(self._on_about_to_quit)
@@ -654,6 +682,21 @@ class MyVoiceApp(QObject):
     def _on_about_to_quit(self):
         """Handle application quit signal."""
         self.logger.info("Application shutting down")
+
+        # Story 18.1 Task 1.4: flush + close the progressive-playback CSV
+        # capture FIRST (before service cleanup) so the last metric records
+        # land on disk even if a downstream cleanup step raises. The stop
+        # callable is idempotent (see progressive_playback_csv_capture.py)
+        # so a redundant call from a reentry path is safe.
+        if self._progressive_metric_capture_stop is not None:
+            try:
+                self._progressive_metric_capture_stop()
+            except Exception:
+                self.logger.exception(
+                    "Story 18.1: progressive-playback CSV capture stop "
+                    "raised (non-fatal; partial CSV may already be on disk)"
+                )
+            self._progressive_metric_capture_stop = None
 
         try:
             # Clean up services
@@ -2588,6 +2631,30 @@ class MyVoiceApp(QObject):
                     self.logger.warning(
                         "Progressive playback chunk write failed (non-fatal)",
                         exc_info=True,
+                    )
+                # Story 18.1: per-chunk consumer-side metrics (wall-clock
+                # ms — joinable by (session_id, chunk_index) against the
+                # producer-side ``progressive_chunk_emit_ms``). Captured
+                # AFTER play_audio_chunk returns so the arrival value
+                # reflects PyAudio buffer-fill, not chunk arrival.
+                # session_id passed through so the CSV stays joinable
+                # when a single run captures multiple generations
+                # (code-review pass M1).
+                metrics.record(
+                    "progressive_chunk_playback_arrival_ms",
+                    time.time() * 1000.0,
+                    session_id=chunk.session_id,
+                    chunk_index=chunk.chunk_index,
+                    is_final=chunk.is_final,
+                    audio_data_size=int(chunk.audio_data.size),
+                )
+                if chunk.sample_rate > 0:
+                    metrics.record(
+                        "progressive_chunk_audio_duration_ms",
+                        (chunk.audio_data.size / chunk.sample_rate)
+                        * 1000.0,
+                        session_id=chunk.session_id,
+                        chunk_index=chunk.chunk_index,
                     )
 
             if chunk.is_final:
