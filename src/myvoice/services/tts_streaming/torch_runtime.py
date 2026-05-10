@@ -135,8 +135,12 @@ def _all_three_flags_already_true() -> bool:
 def enable_tf32_and_cudnn_benchmark() -> dict:
     """Idempotent: enable TF32 + cuDNN benchmark on Ampere+ CUDA hosts.
 
-    Returns a status dict so the wire-up at `main.py` can log a single
-    line carrying actionable detail without re-probing torch::
+    Returns a status dict primarily for test surface — tests assert on
+    ``engaged`` / ``reason`` / ``device_capability`` to verify the four
+    hardware truth-table branches without scraping log records. The
+    function's own INFO/DEBUG log is the canonical runtime breadcrumb;
+    callers do NOT need to log the dict (doing so would duplicate the
+    breadcrumb the function already emits)::
 
         {
             "engaged": bool,                          # True iff flags now set
@@ -177,10 +181,12 @@ def enable_tf32_and_cudnn_benchmark() -> dict:
     `try / except` per Task 2.1 — the speedup is opt-in and absence is
     the V2 baseline.
     """
-    # Probe first. is_ampere_or_newer() handles the
-    # cuda.is_available() guard; we only need to call
-    # get_device_capability() ourselves for the
-    # tag string + the pre-Ampere reason branch.
+    # NOTE: is_ampere_or_newer() is the canonical pure probe (used by
+    # callers that just want a yes/no), but this function does NOT call
+    # it — we re-implement the cuda.is_available() + get_device_capability()
+    # check inline so the same `capability` tuple feeds both the Ampere+
+    # gate AND the device_capability tag string + pre-Ampere reason
+    # branch without two get_device_capability() round-trips.
     import torch  # lazy: see is_ampere_or_newer rationale
 
     cuda_available = torch.cuda.is_available()

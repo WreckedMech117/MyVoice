@@ -25,8 +25,12 @@ launching the application. Three accepted forms:
 
     MYVOICE_PROGRESSIVE_PLAYBACK_CSV=1
         Write to the default path:
-        ``<logs_dir>/18-1-instrumentation-rtx5090-longform.csv``
-        (matches the story-spec'd path verbatim).
+        ``<logs_dir>/progressive-playback-instrumentation.csv``
+        (story-agnostic filename; the file captures four metrics that
+        span Stories 18.1 + 18.2 and will be reused by 18.3 + 18.4).
+        Story 18.1's canonical baseline at
+        ``_bmad-output/implementation-artifacts/18-1-instrumentation-rtx5090-longform.csv``
+        is preserved separately and is NOT overwritten by ``=1``.
 
     MYVOICE_PROGRESSIVE_PLAYBACK_CSV=/abs/path/to/file.csv
         Write to the given absolute path.
@@ -88,7 +92,7 @@ _CSV_HEADER = (
     "audio_data_size",
 )
 
-_DEFAULT_FILENAME = "18-1-instrumentation-rtx5090-longform.csv"
+_DEFAULT_FILENAME = "progressive-playback-instrumentation.csv"
 
 _logger = logging.getLogger(__name__)
 

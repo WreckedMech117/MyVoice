@@ -341,14 +341,19 @@ def main() -> int:
         # after setup_logging() so the INFO breadcrumb lands in myvoice.log
         # rather than stderr-only, and before setup_application() so the
         # flags are global to the process before any qwen_tts work runs.
-        # Guarded so a partial-install missing the new module cannot abort
-        # startup — the speedup is opt-in and absence is the V2 baseline.
+        # Guarded with the same (ImportError, OSError) discipline the torch
+        # import block above uses (main.py:44-49) — a partial install or a
+        # missing CUDA DLL must not abort startup; the speedup is opt-in and
+        # absence is the V2 baseline. Other exception types from the helper
+        # (e.g., a programming bug in metrics.record validation) are NOT
+        # swallowed here — they surface to main()'s outer handler so a
+        # genuine startup defect cannot hide behind this guard.
         try:
             from myvoice.services.tts_streaming.torch_runtime import (
                 enable_tf32_and_cudnn_benchmark,
             )
             enable_tf32_and_cudnn_benchmark()
-        except Exception as _tf32_err:
+        except (ImportError, OSError) as _tf32_err:
             logger.warning(
                 f"TF32 + cuDNN benchmark enable failed "
                 f"(continuing without speedup): {_tf32_err}"

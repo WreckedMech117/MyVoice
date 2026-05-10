@@ -37,7 +37,7 @@ def tmp_logs_dir(tmp_path: Path) -> Path:
 class TestResolvePath:
     def test_default_path_for_value_1(self, tmp_logs_dir):
         assert _resolve_path("1", tmp_logs_dir) == (
-            tmp_logs_dir / "18-1-instrumentation-rtx5090-longform.csv"
+            tmp_logs_dir / "progressive-playback-instrumentation.csv"
         )
 
     def test_disabled_for_value_0(self, tmp_logs_dir):
@@ -243,7 +243,7 @@ class TestMaybeEnableFromEnv:
         try:
             assert stop is not None
             target = (
-                tmp_logs_dir / "18-1-instrumentation-rtx5090-longform.csv"
+                tmp_logs_dir / "progressive-playback-instrumentation.csv"
             )
             assert target.exists(), (
                 "default-path file was not created when env-var=1"

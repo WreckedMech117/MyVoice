@@ -1,6 +1,6 @@
 # Story 18.2: TF32 + cuDNN Benchmark Enable
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 <!-- Phase tag: Phase ⊥-Polish-2 (D-20). Second story of Epic 18 (Generation-Speed Optimizations). Successor to Story 18.1 (Underrun-Gap Mitigation), which closed as instrumentation-only after pinning the bottleneck to the producer side at 3.23× steady-state ratio. -->
@@ -128,8 +128,8 @@ so that **first-chunk latency drops 10–30% on Ampere+ tensor cores at zero per
 - [x] **Task 4 — NFR1 first-chunk-latency empirical measurement** (AC: #5) — **Closed 2026-05-09 per OQ #3 (a) routing: ship-as-engaged + move to 18.3. Single-shot capture showed −2.4% inter-chunk-emit median (out-of-range vs anticipated [10%, 30%]); Story 18.1 ratio essentially preserved (3.21× → 3.29×); confounders documented (cuDNN autotune cold cost most likely); producer bottleneck is the named target of 18.3 + 18.4, not 18.2. See evidence file §4.4 + §4.6.**
   The Epic 18 stub at `:1361` quotes "10–30% on RTX 5090" as the anticipated acceptance gate. The dev agent's job is to capture the data and surface the percent-delta number to Commander; tails outside [10%, 30%] route to Open Question #4 rather than dev-agent interpretation.
   - [x] 4.1 Extend the existing Story 18.1 CSV-capture infrastructure (`src/myvoice/observability/progressive_playback_csv_capture.py`) to ALSO accept `first_chunk_latency_ms` in its metric-name filter list. This is a one-line backward-compatible change; the existing three Story 18.1 metrics keep capturing as before. The committed approach (NOT a separate ad-hoc listener) so Stories 18.3 + 18.4 inherit the same first-chunk capture surface for their own throughput uplifts. Document the filter-list extension at evidence file §"Measurement methodology" (one paragraph: "extended the Story 18.1 CSV-capture filter to include `first_chunk_latency_ms` for Story 18.2 measurement; reused for 18.3 + 18.4"). **Implemented + 2 new tests added at `test_progressive_playback_csv_capture.py` (`test_only_targeted_metrics_are_captured` updated; new `test_first_chunk_latency_row_columns_match_header`). 14/14 passing.**
-  - [x] 4.2 Capture the **after** measurement first (the wire-up is part of this story's HEAD commit, so it's already in place). Run the canonical Story 17.3 §4.1 step 3 paragraph (Sarira-F long-form, ≥250 chars / ~22 s of speech) on the RTX 5090 dev host with `MYVOICE_PROGRESSIVE_PLAYBACK_CSV` set; capture **N=10 generations minimum** to `_bmad-output/implementation-artifacts/18-2-rtx5090-tf32-on.csv`. Each generation must be a fresh process launch (kill the app between runs) so cuDNN benchmark autotune cache state does not bleed across runs. Record `first_chunk_latency_ms` median + p90 + p95. **DEVIATION (closed per OQ #3 (a)): single-shot N=1 captured 2026-05-09 19:23. first_chunk_latency_ms = 7800 ms; inter-chunk-emit median = 6515 ms; emit/audio ratio = 3.29×. Full N=10 deferred — see §4.6 routing.**
-  - [x] 4.3 Capture the **before** baseline by checking out the parent commit (the commit BEFORE Task 2's wire-up landed — i.e., HEAD~1 if the wire-up commit is the current HEAD; whichever git ref is the immediate ancestor of the wire-up). Run N=10 generations on the SAME Sarira-F utterance; capture to `_bmad-output/implementation-artifacts/18-2-rtx5090-tf32-off.csv`. Record median + p90 + p95. **Critical:** do NOT measure by source-tree-edits-then-revert; the git-commit-pair methodology eliminates the risk of forgetting the revert and ensures both runs are reproducibly identifiable. After the baseline is captured, `git checkout` back to the wire-up commit. **DEVIATION (closed per OQ #3 (a)): used implicit OFF baseline from Story 18.1's existing `18-1-instrumentation-rtx5090-longform.csv` (captured pre-Story 18.2 commit; same Sarira-F long-form utterance through same dispatch path). Inter-chunk-emit median = 6362 ms; emit/audio ratio = 3.21×. No `first_chunk_latency_ms` available in OFF baseline (filter widening Task 4.1 only landed in HEAD `787960c`). Full N=10 + git-checkout-OFF deferred — see §4.6.**
+  - [ ] **DEVIATION** 4.2 Capture the **after** measurement first (the wire-up is part of this story's HEAD commit, so it's already in place). Run the canonical Story 17.3 §4.1 step 3 paragraph (Sarira-F long-form, ≥250 chars / ~22 s of speech) on the RTX 5090 dev host with `MYVOICE_PROGRESSIVE_PLAYBACK_CSV` set; capture **N=10 generations minimum** to `_bmad-output/implementation-artifacts/18-2-rtx5090-tf32-on.csv`. Each generation must be a fresh process launch (kill the app between runs) so cuDNN benchmark autotune cache state does not bleed across runs. Record `first_chunk_latency_ms` median + p90 + p95. **DEVIATION (closed per OQ #3 (a)): single-shot N=1 captured 2026-05-09 19:23. first_chunk_latency_ms = 7800 ms; inter-chunk-emit median = 6515 ms; emit/audio ratio = 3.29×. Full N=10 deferred — see §4.6 routing. Marker changed from `[x]` → `[ ]` per code-review pass H1: surface checkbox should not over-claim spec-deviated work. The body's "DEVIATION" tag is now visually consistent with the unchecked marker.**
+  - [ ] **DEVIATION** 4.3 Capture the **before** baseline by checking out the parent commit (the commit BEFORE Task 2's wire-up landed — i.e., HEAD~1 if the wire-up commit is the current HEAD; whichever git ref is the immediate ancestor of the wire-up). Run N=10 generations on the SAME Sarira-F utterance; capture to `_bmad-output/implementation-artifacts/18-2-rtx5090-tf32-off.csv`. Record median + p90 + p95. **Critical:** do NOT measure by source-tree-edits-then-revert; the git-commit-pair methodology eliminates the risk of forgetting the revert and ensures both runs are reproducibly identifiable. After the baseline is captured, `git checkout` back to the wire-up commit. **DEVIATION (closed per OQ #3 (a)): used implicit OFF baseline from Story 18.1's existing `18-1-instrumentation-rtx5090-longform.csv` (captured pre-Story 18.2 commit; same Sarira-F long-form utterance through same dispatch path). Inter-chunk-emit median = 6362 ms; emit/audio ratio = 3.21×. No `first_chunk_latency_ms` available in OFF baseline (filter widening Task 4.1 only landed in HEAD `787960c`). Full N=10 + git-checkout-OFF deferred — see §4.6. Marker changed from `[x]` → `[ ]` per code-review pass H1.**
   - [x] 4.4 Compute the delta. `(off_median - on_median) / off_median * 100` = percent speedup; same for p90 and p95. Capture absolute pre/post values (in ms) AND the three percent deltas at evidence file §"NFR1 first-chunk-latency measurement". Per AC #5: if the median speedup falls outside [10%, 30%], surface to Commander via Open Question #4 — do NOT declare the story done or stalled unilaterally. **TRIGGERED + RESOLVED**: single-shot inter-chunk-emit median ON vs OFF is **−2.4% (slower)**, mean is **−8.6% (slower)** — both outside the anticipated [10%, 30%] range. Routed to Commander per OQ #3 → option (a) "ship as-engaged + move to 18.3" selected 2026-05-09. Confounders documented at §4.4 (cuDNN autotune cold cost is the most likely cause; Story 18.1's 3.23× ratio essentially preserved).
   - [x] 4.5 Sanity-check that the `myvoice.log` "TF32 + cuDNN benchmark enabled (device_capability=...)" INFO line appears in the **after** runs and does NOT appear in the **before** runs. This is the runtime-engagement breadcrumb AC #1's INFO log promises and the canonical confirmation that the two CSVs really do bracket the change Story 18.2 introduces. **PASS**: verbatim INFO line at `logs/myvoice.log:3` — `"TF32 + cuDNN benchmark enabled (device_capability=12.0)"` (RTX 5090 GeForce Blackwell reports CC 12.0; docstring updated to record both Blackwell DC=10.0 and GeForce=12.0 variants for future-architecture audit).
 
@@ -138,11 +138,11 @@ so that **first-chunk latency drops 10–30% on Ampere+ tensor cores at zero per
   - [x] 5.1 On the same canonical Sarira-F long-form utterance, Commander listens to the **before** baseline (TF32 off) recording AND the **after** (TF32 on) recording back-to-back, A/B style. The two recordings already exist as the audio Tasks 4.2 + 4.3 generated; do not regenerate.
   - [x] 5.2 Commander logs perceptual observation at evidence file §"NFR3 spot-check": expected verdict = "indistinguishable" (the public PyTorch guidance for TF32 on inference is a 1e-4 round-trip error, well below human perceptual sensitivity for waveform amplitude); the documented-diligence verdict is the literal phrase "no perceptual defect detected" or "perceptual defect detected: <description>". The latter is the only branch that triggers a re-think (likely a TF32-incompatibility surprise on this specific model — the Story 18.3 NFR7 fp32 fallback machinery would then need to extend to cover TF32 too, but that is explicitly NOT this story's surface and would be Commander-routed to the architecture layer rather than absorbed by the dev agent). **VERDICT 2026-05-09: "no new perceptual defect attributable to TF32"**. Commander reported "audio still had gaps" — the gaps are the SAME Story 18.1-pinned producer-cadence gaps (3.21× → 3.29× ratio, essentially unchanged), not a new TF32-induced artifact. Lossless-TF32 promise (~1e-4 matmul drift) holds. No NFR7 architecture-layer routing required. See evidence file §5.
 
-- [x] **Task 6 — Bundled-environment smoke** (AC: #8) — **DEFERRED 2026-05-09 per OQ #4 + OQ #3 (a) routing.** Commander handles the bundled smoke + the build_tools/installer.iss + build_tools/version.py increments together in the next `build_release.bat` cycle as a separate build-state commit. Risk surface: PyInstaller missing the new `myvoice.services.tts_streaming.torch_runtime` module — highly unlikely given it's reachable from `main.py` via a normal import statement (PyInstaller's import-graph analysis discovers it without needing a hidden-imports entry). If the deferred bundled smoke surfaces a packaging defect, route back to Story 18.2 follow-up commit.
-  - [x] 6.1 Run `build_release.bat` (the standard production-bundle build cycle per `memory/build_tools_phase_perp_state.md` + `memory/production_release_state.md`). Confirm the resulting `build_tools/dist/MyVoice/MyVoice.exe` includes the new `src/myvoice/services/tts_streaming/torch_runtime.py` module + the `main.py` wire-up. **DEFERRED — see Task 6 header.**
-  - [x] 6.2 Launch the bundled exe. Confirm `myvoice.log` (in the portable Logs path per `setup_logging()` discipline) contains the single INFO-level "TF32 + cuDNN benchmark enabled (device_capability=...)" line on Commander's RTX 5090 + Win11 ship-target host. Commander logs this at evidence file §"Bundled smoke" with a verbatim log excerpt. **DEFERRED — see Task 6 header.**
-  - [x] 6.3 In the bundled exe, run a single short-class TTS generation (the Story 17.3 §4.1 step 1 short paragraph from the standard fixture). Confirm no new error, warning, or unexpected log line appears around the TF32 wire-up. Confirm a TTS generation completes successfully end-to-end (audio plays through the streaming pipeline). **DEFERRED — see Task 6 header.**
-  - [x] 6.4 If the bundled smoke surfaces a defect (e.g., the new module fails to import in the PyInstaller / portable-bundle environment for a packaging reason), the dev agent surfaces it to Commander rather than absorbing it; the most likely failure mode is `MEIPASS`-path invisibility of the new module, which would be a one-line fix to PyInstaller's hidden-imports list at `build_tools/`. Document at evidence file §"Bundled smoke". **DEFERRED — see Task 6 header.**
+- [ ] **DEFERRED** **Task 6 — Bundled-environment smoke** (AC: #8) — **DEFERRED 2026-05-09 per OQ #4 + OQ #3 (a) routing.** Commander handles the bundled smoke + the build_tools/installer.iss + build_tools/version.py increments together in the next `build_release.bat` cycle as a separate build-state commit. Risk surface: PyInstaller missing the new `myvoice.services.tts_streaming.torch_runtime` module — highly unlikely given it's reachable from `main.py` via a normal import statement (PyInstaller's import-graph analysis discovers it without needing a hidden-imports entry). If the deferred bundled smoke surfaces a packaging defect, route back to Story 18.2 follow-up commit. **Marker changed from `[x]` → `[ ]` per code-review pass H2: surface checkbox should not claim completion for entirely-deferred work. AC #8 (bundled-smoke confirmation on the production-bundled artifact) is therefore unmet at story closure and is Commander-routed for the next build cycle.**
+  - [ ] **DEFERRED** 6.1 Run `build_release.bat` (the standard production-bundle build cycle per `memory/build_tools_phase_perp_state.md` + `memory/production_release_state.md`). Confirm the resulting `build_tools/dist/MyVoice/MyVoice.exe` includes the new `src/myvoice/services/tts_streaming/torch_runtime.py` module + the `main.py` wire-up. **DEFERRED — see Task 6 header.**
+  - [ ] **DEFERRED** 6.2 Launch the bundled exe. Confirm `myvoice.log` (in the portable Logs path per `setup_logging()` discipline) contains the single INFO-level "TF32 + cuDNN benchmark enabled (device_capability=...)" line on Commander's RTX 5090 + Win11 ship-target host. Commander logs this at evidence file §"Bundled smoke" with a verbatim log excerpt. **DEFERRED — see Task 6 header.**
+  - [ ] **DEFERRED** 6.3 In the bundled exe, run a single short-class TTS generation (the Story 17.3 §4.1 step 1 short paragraph from the standard fixture). Confirm no new error, warning, or unexpected log line appears around the TF32 wire-up. Confirm a TTS generation completes successfully end-to-end (audio plays through the streaming pipeline). **DEFERRED — see Task 6 header.**
+  - [ ] **DEFERRED** 6.4 If the bundled smoke surfaces a defect (e.g., the new module fails to import in the PyInstaller / portable-bundle environment for a packaging reason), the dev agent surfaces it to Commander rather than absorbing it; the most likely failure mode is `MEIPASS`-path invisibility of the new module, which would be a one-line fix to PyInstaller's hidden-imports list at `build_tools/`. Document at evidence file §"Bundled smoke". **DEFERRED — see Task 6 header.**
 
 - [x] **Task 7 — Regression test sweep** (AC: #7)
   Verify the new module + wire-up does not regress the established surfaces.
@@ -152,9 +152,15 @@ so that **first-chunk latency drops 10–30% on Ampere+ tensor cores at zero per
   - [x] 7.4 Run the Story 16.2 streaming-mode tests: `pytest tests/unit/services/tts_streaming/test_streaming_mode.py -v`. Expect zero regressions from the Task 1.4 `__init__.py` widening. **16/16 PASS**.
   - [x] 7.5 Run the broader streaming + app + audio + observability surface: `pytest tests/unit/services/test_qwen_tts_service_dispatch.py tests/unit/services/test_qwen_tts_service_session_integration.py tests/unit/observability/ tests/unit/test_app_progressive_playback*.py tests/integration/test_progressive_playback_dispatch_skip.py -v`. Expect ~166+ tests pass with zero regressions (Story 18.1's broader-sweep count, plus the new 6 from Task 7.1). **152/152 PASS** (the broader sweep without test_torch_runtime; 152 + 15 new = 167 grand total).
 
-- [ ] **Task 8 — Code-review pass** (post-implementation)
-  - [ ] 8.1 Run `/bmad-bmm-code-review`. Per `memory/code_review_regression_test_exact_class.md`: HIGH/MEDIUM-fix regression tests must mirror the exact bug class. Expected review-finding categories for this story: (a) idempotency contract drift (the second-call discipline is the most-easily-broken AC); (b) telemetry tag schema drift (string vs tuple `device_capability`); (c) wire-up placement drift (between `setup_logging()` and `setup_application()` is the contract; landing it elsewhere subtly breaks AC #4); (d) test discipline — Task 3.4 idempotency reset must use a fixture not module-level state; (e) bundled-smoke evidence file completeness.
-  - [ ] 8.2 Address findings. Re-run code-review twice after non-trivial auto-fixes (the established Stories 16.7 / 16.8 / 17.1 / 17.2 / 17.3 / 18.1 pattern). Commit per the established Story-NNN: code-review pass — H#/M#/L# fixes pattern.
+- [x] **Task 8 — Code-review pass** (post-implementation)
+  - [x] 8.1 Run `/bmad-bmm-code-review`. Per `memory/code_review_regression_test_exact_class.md`: HIGH/MEDIUM-fix regression tests must mirror the exact bug class. Expected review-finding categories for this story: (a) idempotency contract drift (the second-call discipline is the most-easily-broken AC); (b) telemetry tag schema drift (string vs tuple `device_capability`); (c) wire-up placement drift (between `setup_logging()` and `setup_application()` is the contract; landing it elsewhere subtly breaks AC #4); (d) test discipline — Task 3.4 idempotency reset must use a fixture not module-level state; (e) bundled-smoke evidence file completeness. **Pass executed 2026-05-09: 4 HIGH (H1 deviation marker, H2 deferred marker, H3 misleading comment, H4 missed `__all__` pin regression) + 3 MEDIUM (M1 exception scope, M2 docstring overpromise, M3 default-filename naming-rot) + 4 LOW found. All HIGH + MEDIUM auto-fixed; LOW tracked under "Review Follow-ups (AI)" below.**
+  - [x] 8.2 Address findings. Re-run code-review twice after non-trivial auto-fixes (the established Stories 16.7 / 16.8 / 17.1 / 17.2 / 17.3 / 18.1 pattern). Commit per the established Story-NNN: code-review pass — H#/M#/L# fixes pattern. **Findings auto-fixed in code (H3, H4, M1, M2, M3) and in story file (H1, H2 — surface checkbox markers). Test sweep post-fix: 164/164 in tts_streaming + observability; 158/158 in the broader Story 18.1+18.2 sweep. The two pre-existing `__all__`-pin failures from Story 18.2's commit (H4) are now resolved.**
+
+- **Review Follow-ups (AI)**
+  - [ ] [AI-Review][LOW] L1 — `torch_runtime.py` lazy-imports `torch` in three functions (`is_ampere_or_newer:100`, `_all_three_flags_already_true:127`, `enable_tf32_and_cudnn_benchmark:184`). Python `sys.modules` caching makes the cost negligible, but the redundancy is style smell; a single lazy import passed through helpers would be cleaner.
+  - [ ] [AI-Review][LOW] L2 — `_all_three_flags_already_true` uses `is True` identity check at `torch_runtime.py:128-132`. Works because PyTorch returns interned `True/False` singletons, but third-party code that sets these flags to truthy non-bool (e.g., `torch.backends.cudnn.benchmark = 1`) would silently bypass the idempotency short-circuit. Consider `bool(...)` for defensive robustness, OR document that the contract is "literally the True singleton."
+  - [ ] [AI-Review][LOW] L3 — `test_enable_skips_on_pre_ampere_*` and `test_enable_skips_on_cpu_only_*` at `tests/unit/services/tts_streaming/test_torch_runtime.py:156, 203` assert metric records but do NOT assert the DEBUG log fires. AC #2 explicitly requires "the opt-in logs a single DEBUG-level explanation of the skip with a structured reason." A regression that deletes the DEBUG log lines would not be caught. Add `caplog`-based DEBUG-log assertions to both skip-branch tests.
+  - [ ] [AI-Review][LOW] L4 — No unit test for `main.py` wire-up location. AC #4 mandates the call between `setup_logging()` and `setup_application()`; only the runtime breadcrumb in `myvoice.log:3` (Task 4.5 PASS) confirms placement. A future refactor could silently move/remove the call without test failure. Consider an AST-based test that locates the `enable_tf32_and_cudnn_benchmark` call in `main.py` and asserts it sits between the two reference functions, OR a subprocess test that spawns `python -m myvoice.main` and greps the log for the breadcrumb.
 
 ## Dev Notes
 
@@ -404,6 +410,63 @@ per the established Stories 16.7 / 16.8 / 17.1 / 17.2 / 17.3 / 18.1
 pattern. Task 8 will be checked off in the resulting code-review fix
 commit (Story 18.1's Task 7 precedent).
 
+**Code-review pass (Task 8) — closed 2026-05-09 by claude-opus-4-7[1m].**
+
+Findings (4 HIGH + 3 MEDIUM + 4 LOW = 11 total). All HIGH + MEDIUM auto-fixed:
+
+- **H1 — deviation-marker drift on Tasks 4.2 + 4.3.** `[x]` overstates
+  completion for spec-deviated work (single-shot N=1 vs N=10; implicit
+  OFF baseline vs git-checkout-OFF). Markers changed to `[ ] **DEVIATION**`
+  prefix so the surface checkbox honestly reflects routing-closure-not-
+  spec-completion. Body text retains the OQ #3 (a) routing detail.
+- **H2 — deferred-marker drift on Task 6 + 6.1-6.4.** All `[x]` despite
+  entirely DEFERRED. Markers changed to `[ ] **DEFERRED**` prefix. AC #8
+  explicitly remains unmet at story closure (Commander handles in next
+  build cycle).
+- **H3 — misleading comment in `torch_runtime.py:180-183`.** Comment
+  claimed `is_ampere_or_newer()` "handles the cuda.is_available() guard"
+  but the function does NOT call it (re-implements inline). Comment
+  rewritten to reflect actual flow: re-implementation avoids two
+  `get_device_capability()` round-trips.
+- **H4 — `__all__`-pin regression in two sibling tests** (missed by
+  Story 18.2's Task 7 sweep). `tests/unit/services/tts_streaming/test_codec_token_streamer.py:46`
+  and `tests/unit/services/tts_streaming/test_streaming_decoder.py:98`
+  pin the exact `__all__` list. Story 18.2 widened `__all__` with two
+  new entries but didn't update these legacy pins. Both tests updated
+  with declaration-order entries for the new exports. **This finding
+  was not in the initial review enumeration — surfaced by running the
+  broader test sweep post-edit.**
+- **M1 — wire-up exception scope at `main.py:351`.** `except Exception`
+  too broad vs spec text "try / except ImportError discipline."
+  Tightened to `(ImportError, OSError)` matching the existing torch-import
+  block at `main.py:44-49`. Other exception types now surface to main()'s
+  outer handler so a genuine startup defect cannot hide.
+- **M2 — `enable_tf32_and_cudnn_benchmark` docstring overpromise.**
+  Returned dict was claimed to support "main.py logging actionable
+  detail" but main.py discarded the return. Docstring rewritten to
+  reflect the dict's actual purpose (test surface for assertion of the
+  four hardware truth-table branches).
+- **M3 — `_DEFAULT_FILENAME` naming-rot.** `"18-1-instrumentation-rtx5090-longform.csv"`
+  was misleading because the capture file now spans Stories 18.1 + 18.2
+  (and will serve 18.3 + 18.4). Renamed to story-agnostic
+  `"progressive-playback-instrumentation.csv"`. Two pinning tests
+  updated. Story 18.1's canonical baseline at `_bmad-output/...` is
+  preserved (different directory tree; no overwrite risk).
+- **L1, L2, L3, L4** — tracked as "Review Follow-ups (AI)" subsection
+  under Tasks/Subtasks; left for a future commit.
+
+**Test sweep post-fix:**
+- `tests/unit/services/tts_streaming/ + tests/unit/observability/` →
+  164/164 PASS (was 162 + 2 fail before H4 fix).
+- Broader Story 18.1+18.2 sweep (qwen_tts_service dispatch + session
+  integration + observability + app-progressive-playback + integration
+  test_progressive_playback_dispatch_skip + true_stream_callback +
+  true_stream_instrumentation) → 158/158 PASS, zero regressions.
+
+**Status:** `review` → `done` (HIGH + MEDIUM all fixed; LOW tracked as
+follow-ups; AC #5 + AC #8 closure remain Commander-routed per OQ #3 (a)
++ OQ #4 routing accepted PRIOR to this code-review pass).
+
 **Locked decisions (per OQ resolution):**
 - OQ #1 (wire-up placement) → **inside `main()` after `setup_logging()`**.
   INFO breadcrumb lands in `myvoice.log` via the file handler.
@@ -452,7 +515,18 @@ distinct mutation paths through the function.
 **Edit (tests):**
 - `tests/unit/observability/test_progressive_playback_csv_capture.py`
   (`test_only_targeted_metrics_are_captured` updated to capture
-  `first_chunk_latency_ms`; new `test_first_chunk_latency_row_columns_match_header`)
+  `first_chunk_latency_ms`; new `test_first_chunk_latency_row_columns_match_header`;
+  code-review pass M3: two existing tests `test_default_path_for_value_1` +
+  `test_env_var_one_creates_default_file_and_returns_stop` updated to
+  match the renamed `_DEFAULT_FILENAME`)
+- `tests/unit/services/tts_streaming/test_codec_token_streamer.py`
+  (code-review pass H4: `test_package_all_lists_expected_symbols_in_order`
+  updated to include the two new Story 18.2 exports — fixes a
+  pre-existing test failure introduced by Story 18.2's `__all__`
+  widening but missed by Story 18.2's Task 7 sweep)
+- `tests/unit/services/tts_streaming/test_streaming_decoder.py`
+  (code-review pass H4: `test_package_all_lists_expected_symbols_in_declaration_order`
+  updated identically to test_codec_token_streamer.py)
 
 **Edit (run scripts):**
 - `01_Run_MyVoice_With_CSV_Capture.bat` (repointed CSV target to
