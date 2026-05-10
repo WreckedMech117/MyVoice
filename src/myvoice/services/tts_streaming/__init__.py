@@ -20,6 +20,10 @@ from myvoice.services.tts_streaming.codec_token_streamer import (
 from myvoice.services.tts_streaming.streaming_decoder import (
     StreamingDecoderWorker,
 )
+from myvoice.services.tts_streaming.torch_runtime import (
+    enable_tf32_and_cudnn_benchmark,
+    is_ampere_or_newer,
+)
 
 __all__ = [
     "StreamingMode",
@@ -28,4 +32,6 @@ __all__ = [
     "CodecTokenStreamer",
     "END_OF_STREAM",
     "StreamingDecoderWorker",
+    "enable_tf32_and_cudnn_benchmark",
+    "is_ampere_or_newer",
 ]

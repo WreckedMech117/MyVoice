@@ -6,6 +6,12 @@ Engages a single ``metrics.add_listener`` callback that filters for:
   * ``progressive_chunk_emit_ms``                 (producer / qwen_tts_service.py)
   * ``progressive_chunk_playback_arrival_ms``     (consumer / app.py)
   * ``progressive_chunk_audio_duration_ms``       (consumer / app.py)
+  * ``first_chunk_latency_ms``                    (producer / qwen_tts_service.py)
+    — added by Story 18.2 Task 4.1 so the same env-var-gated capture
+    surface drives the NFR1 first-chunk-latency before/after measurement
+    for Stories 18.2 + 18.3 + 18.4. The chunk-specific tag columns
+    (chunk_index / is_final / audio_data_size) are blank for these rows;
+    downstream analysis distinguishes by ``metric_name``.
 
 and writes one row per record to a CSV file. Every other metric in the
 stream is ignored — the file stays focused on the Story 18.1 ratio
@@ -67,6 +73,9 @@ _CAPTURED_METRIC_NAMES = frozenset(
         "progressive_chunk_emit_ms",
         "progressive_chunk_playback_arrival_ms",
         "progressive_chunk_audio_duration_ms",
+        # Story 18.2 Task 4.1: first-chunk-latency capture for the
+        # NFR1 before/after measurement. Reused by Stories 18.3 + 18.4.
+        "first_chunk_latency_ms",
     }
 )
 

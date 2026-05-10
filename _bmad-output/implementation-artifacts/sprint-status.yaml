@@ -126,7 +126,7 @@ development_status:
   # may amortize a single NFR3 audition if shipped close together.
   epic-18: in-progress
   18-1-underrun-gap-mitigation: done
-  18-2-tf32-cudnn-benchmark-enable: backlog
+  18-2-tf32-cudnn-benchmark-enable: in-progress
   18-3-bf16-precision-on-talker-decoder: backlog
   18-4-torch-compile-decoder-persistent-cache: backlog
   epic-18-retrospective: optional

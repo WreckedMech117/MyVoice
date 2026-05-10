@@ -85,9 +85,17 @@ class TestEnableCsvCapture:
                 session_id="s",
                 chunk_index=0,
             )
+            # Story 18.2 Task 4.1: first_chunk_latency_ms is now captured
+            # alongside the three Story 18.1 chunk metrics so the same
+            # env-var-gated CSV drives the NFR1 before/after measurement.
+            metrics.record(
+                "first_chunk_latency_ms",
+                4500.0,
+                session_id="s",
+                model_type="quality",
+            )
             # Off-target metrics must NOT land in the CSV — they would
             # clutter the Task 1.4 ratio analysis with unrelated rows.
-            metrics.record("first_chunk_latency_ms", 4500.0, session_id="s")
             metrics.record("queue_depth", 3)
             metrics.record(
                 "progressive_chunk_audio_duration_ms",
@@ -105,14 +113,47 @@ class TestEnableCsvCapture:
             stop()
 
         rows = list(csv.reader(path.open("r", encoding="utf-8")))
-        # Header + 3 captured rows (first_chunk_latency_ms / queue_depth filtered out).
-        assert len(rows) == 1 + 3, f"unexpected rows: {rows}"
+        # Header + 4 captured rows (queue_depth filtered out).
+        assert len(rows) == 1 + 4, f"unexpected rows: {rows}"
         captured_names = {r[0] for r in rows[1:]}
         assert captured_names == {
             "progressive_chunk_emit_ms",
             "progressive_chunk_audio_duration_ms",
             "progressive_chunk_playback_arrival_ms",
+            "first_chunk_latency_ms",
         }
+
+    def test_first_chunk_latency_row_columns_match_header(self, tmp_logs_dir):
+        """Story 18.2 Task 4.1: first_chunk_latency_ms rows have empty
+        chunk_index / is_final / audio_data_size columns (the metric
+        carries different tags — model_type / hardware — which are not
+        in the CSV header). Downstream analysis distinguishes by
+        ``metric_name``; the row layout stays uniform across all four
+        captured metrics."""
+        path = tmp_logs_dir / "out.csv"
+        stop = enable_csv_capture(path)
+        try:
+            metrics.record(
+                "first_chunk_latency_ms",
+                3940.0,
+                session_id="sess-xyz",
+                model_type="quality",
+                hardware="cuda",
+            )
+        finally:
+            stop()
+
+        rows = list(csv.reader(path.open("r", encoding="utf-8")))[1:]
+        assert len(rows) == 1
+        first_chunk_row = rows[0]
+        assert first_chunk_row == [
+            "first_chunk_latency_ms",
+            "3940.0",
+            "sess-xyz",
+            "",  # chunk_index — N/A for first_chunk_latency_ms
+            "",  # is_final — N/A
+            "",  # audio_data_size — N/A
+        ]
 
     def test_row_columns_match_header_for_all_three_metrics(self, tmp_logs_dir):
         path = tmp_logs_dir / "out.csv"

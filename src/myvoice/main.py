@@ -335,6 +335,25 @@ def main() -> int:
         logger = logging.getLogger(__name__)
         logger.info("Starting MyVoice V2 application with qasync event loop")
 
+        # Story 18.2: enable lossless TF32 + cuDNN benchmark autotune on
+        # Ampere+ CUDA hosts (no-op on CPU / pre-Ampere). The probe and the
+        # conditional logic live inside the helper; main.py just calls. Placed
+        # after setup_logging() so the INFO breadcrumb lands in myvoice.log
+        # rather than stderr-only, and before setup_application() so the
+        # flags are global to the process before any qwen_tts work runs.
+        # Guarded so a partial-install missing the new module cannot abort
+        # startup — the speedup is opt-in and absence is the V2 baseline.
+        try:
+            from myvoice.services.tts_streaming.torch_runtime import (
+                enable_tf32_and_cudnn_benchmark,
+            )
+            enable_tf32_and_cudnn_benchmark()
+        except Exception as _tf32_err:
+            logger.warning(
+                f"TF32 + cuDNN benchmark enable failed "
+                f"(continuing without speedup): {_tf32_err}"
+            )
+
         # Story 7.6: Install global exception handler early to catch all unhandled exceptions
         exception_handler = get_exception_handler()
         exception_handler.install()
