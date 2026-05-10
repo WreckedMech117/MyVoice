@@ -63,14 +63,20 @@ _logger = logging.getLogger(__name__)
 _METRIC_NAME = "tf32_cudnn_benchmark_enabled"
 
 # Compute-capability major mapping (informational; the test is `major >= 8`):
-#   Pascal  = 6.x   (GTX 10xx)        — pre-Ampere, no TF32 tensor cores
-#   Volta   = 7.0   (Tesla V100)      — pre-Ampere, no TF32 tensor cores
-#   Turing  = 7.5   (RTX 20xx)        — pre-Ampere, no TF32 tensor cores
-#   Ampere  = 8.0/8.6/8.9 (RTX 30xx/40xx + A100) — Ampere+ TF32 OK
-#   Hopper  = 9.0   (H100)            — Ampere+ TF32 OK
-#   Blackwell = 10.0 (RTX 50xx, B100) — Ampere+ TF32 OK
+#   Pascal       = 6.x   (GTX 10xx)        — pre-Ampere, no TF32 tensor cores
+#   Volta        = 7.0   (Tesla V100)      — pre-Ampere, no TF32 tensor cores
+#   Turing       = 7.5   (RTX 20xx)        — pre-Ampere, no TF32 tensor cores
+#   Ampere       = 8.0/8.6/8.9 (A100, RTX 30xx, RTX 40xx) — TF32 OK
+#   Hopper       = 9.0   (H100)            — TF32 OK
+#   Blackwell DC = 10.0  (B100/B200)       — TF32 OK
+#   Blackwell GF = 12.0  (RTX 50xx)        — TF32 OK (verified on RTX 5090
+#                                            during Story 18.2 Task 4.5
+#                                            smoke run 2026-05-09)
 # The `>= 8` major check is forward-compatible: any future architecture
-# with major >= 8 satisfies it without code change.
+# with major >= 8 satisfies it without code change. Note that NVIDIA's
+# major-version assignment is not always strictly chronological — the
+# RTX 50xx GeForce variant of Blackwell reports 12.0 even though the
+# datacenter B100/B200 Blackwell reports 10.0; both engage TF32 correctly.
 _AMPERE_CAPABILITY_MAJOR = 8
 
 

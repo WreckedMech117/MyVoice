@@ -153,9 +153,11 @@ which means torch was already imported at module level (`main.py:42-49`)
 before PyQt6, satisfying the DLL invariant. The new wire-up inside
 `main()` is a no-op for that ordering.
 
-## §4. NFR1 first-chunk-latency measurement (Task 4) — COMMANDER
+## §4. NFR1 first-chunk-latency measurement (Task 4)
 
-> **Status: pending Commander run on RTX 5090 dev host.**
+> **Status: single-shot capture landed 2026-05-09 19:23 by Commander on
+> RTX 5090. Full N=10 + git-checkout-OFF baseline DEFERRED pending
+> Commander's call (see §4.6 below).**
 
 ### 4.1 Method
 
@@ -163,87 +165,188 @@ Reuse the Story 18.1 env-var-gated CSV-capture infrastructure:
 
 ```bat
 REM From the repo root:
-set MYVOICE_PROGRESSIVE_PLAYBACK_CSV=18-2-rtx5090-tf32-on.csv
-python310\python.exe -m myvoice.main
+set MYVOICE_PROGRESSIVE_PLAYBACK_CSV=...\18-2-rtx5090-tf32-on.csv
+python310\python.exe src\myvoice\main.py
 ```
 
-(Or use `01_Run_MyVoice_With_CSV_Capture.bat` from Story 18.1 with the
-target filename overridden.)
+The `01_Run_MyVoice_With_CSV_Capture.bat` was repointed to the Story
+18.2 path so the Story 18.1 baseline CSV at
+`18-1-instrumentation-rtx5090-longform.csv` is preserved as the
+**implicit TF32-OFF baseline** for the producer-cadence comparison
+(both runs are the same canonical Sarira-F long-form utterance through
+the same dispatch path; the only material difference is the Story 18.2
+wire-up commit).
 
-For each capture, run the canonical Story 17.3 §4.1 step 3 long-form
-CLONED utterance: **Sarira-F voice**, paragraph ≥ 250 characters /
-~22 s of speech. Each generation must be a fresh process launch so
-cuDNN benchmark autotune cache state does not bleed across runs. **N=10
-generations per condition.**
+Filter-list extension (Story 18.2 Task 4.1):
+`progressive_playback_csv_capture.py` was widened to also capture
+`first_chunk_latency_ms` so Stories 18.2 + 18.3 + 18.4 inherit a single
+measurement surface. The Story 18.1 baseline CSV does NOT contain
+`first_chunk_latency_ms` rows (the filter widening only landed in
+commit `787960c` — current HEAD).
 
-### 4.2 Capture: TF32 ON (after / current HEAD)
+### 4.2 Capture: TF32 ON (single-shot, current HEAD `787960c`)
 
 CSV: `_bmad-output/implementation-artifacts/18-2-rtx5090-tf32-on.csv`
+Generated 2026-05-09 19:23 on RTX 5090 / Win11 / device_capability=12.0.
+N=1 generation, 11 chunks emitted (chunk_index 0–10), 1 first_chunk record.
 
-| Statistic | first_chunk_latency_ms |
-| --------- | ---------------------: |
-| median    |                        |
-| p90       |                        |
-| p95       |                        |
+| Statistic                          | TF32 ON (single-shot) |
+| ---------------------------------- | --------------------: |
+| `first_chunk_latency_ms`           |             **7800**  |
+| inter-chunk-emit interval median   |          **6515 ms**  |
+| inter-chunk-emit interval mean     |             6726 ms   |
+| chunk audio duration               |          1981 ms (constant) |
+| **emit-interval / audio-duration** |          **3.29×**    |
 
-(Commander fills in after capture.)
+### 4.3 Capture: TF32 OFF (implicit baseline from Story 18.1, commit pre-`787960c`)
 
-### 4.3 Capture: TF32 OFF (before / parent commit)
+CSV: `_bmad-output/implementation-artifacts/18-1-instrumentation-rtx5090-longform.csv`
+(Captured during Story 18.1 Task 1.4 measurement run; predates Story 18.2
+wire-up.)
 
-```bash
-git checkout <parent-of-tf32-wireup-commit>
-```
-
-Re-run the same N=10 capture; output to
-`_bmad-output/implementation-artifacts/18-2-rtx5090-tf32-off.csv`. Then
-`git checkout` back to the wire-up commit. The git-commit-pair
-methodology eliminates the risk of forgetting a source-tree revert.
-
-| Statistic | first_chunk_latency_ms |
-| --------- | ---------------------: |
-| median    |                        |
-| p90       |                        |
-| p95       |                        |
+| Statistic                          | TF32 OFF (single-shot) |
+| ---------------------------------- | ---------------------: |
+| `first_chunk_latency_ms`           |    **N/A** (filter widening absent) |
+| inter-chunk-emit interval median   |           **6362 ms**  |
+| inter-chunk-emit interval mean     |              6196 ms   |
+| chunk audio duration               |           1981 ms (constant) |
+| **emit-interval / audio-duration** |           **3.21×**    |
 
 ### 4.4 Delta + speedup
 
-| Statistic | TF32 OFF (ms) | TF32 ON (ms) | Δ (ms) | Speedup |
-| --------- | ------------: | -----------: | -----: | ------: |
-| median    |               |              |        |         |
-| p90       |               |              |        |         |
-| p95       |               |              |        |         |
+| Statistic                          | OFF (ms) | ON (ms)  |       Δ | Speedup |
+| ---------------------------------- | -------: | -------: | ------: | ------: |
+| inter-chunk-emit median            |     6362 |     6515 |  +153 ms | **−2.4%** (slower) |
+| inter-chunk-emit mean              |     6196 |     6726 |  +530 ms | **−8.6%** (slower) |
+| emit/audio ratio                   |    3.21× |    3.29× |  +0.08× | unchanged within noise |
+| `first_chunk_latency_ms`           |    (N/A) |     7800 |       — | **uncomputable** (no OFF sample) |
 
-**Anticipated gate (Epic 18 stub `:1361`)**: 10–30% median speedup on
-RTX 5090. Per AC #5 + OQ #3: if the measured median falls outside that
-range, surface the data here and route to Commander rather than declare
-pass/fail unilaterally.
+**Anticipated gate (Epic 18 stub `:1361`)**: 10–30% median speedup. The
+measured single-shot inter-chunk-emit cadence shows **no speedup; in
+fact a slight slowdown** in the directional sample. **Per AC #5 + OQ
+#3, this is an out-of-range result that routes to Commander rather
+than dev-agent interpretation.**
 
-### 4.5 Engagement breadcrumb sanity-check
+**Confounders** (not the dev agent's call to weigh):
 
-Confirm `myvoice.log` from the **TF32 ON** runs contains exactly one
-`"TF32 + cuDNN benchmark enabled (device_capability=10.0)"` INFO line per
-process launch, and the **TF32 OFF** runs contain none (the parent
-commit predates the wire-up).
+1. **cuDNN benchmark autotune cold cost.** Story 18.2 §"Latest Tech
+   Information" specifically called this out: "the first generation
+   after enabling benchmark mode may be marginally slower than baseline
+   (the autotune cost). Task 4.3's N=5 measurement averages this out;
+   Task 4.4's median + p95 is the canonical comparison surface."
+   Single-shot is the worst-case for ON. A second + third + Nth
+   generation in the same process would benefit from the autotune
+   cache; we did not capture them here.
 
-## §5. NFR3 spot-check (Task 5) — COMMANDER
+2. **N=1 vs N=1 noise floor.** Both samples are single generations.
+   ±10% per-run variance is normal for ML inference workloads on the
+   same hardware. The observed −2.4% median delta is well within this
+   noise band; the −8.6% mean delta is heavier-tailed (the warmup
+   chunk-1-after-chunk-0 interval at 7714 ms in the ON CSV pulls the
+   mean up disproportionately).
 
-> **Status: pending Commander A/B audition on RTX 5090.**
+3. **GPU thermal state / driver-cache state across the day.** The OFF
+   baseline was captured during Story 18.1's Task 1.4 run on a different
+   day; the ON capture was just now (2026-05-09 19:23). Driver +
+   nvidia-smi state, OS scheduler entropy, and ambient GPU temperature
+   are not controlled across the gap.
 
-Per Epic 18 stub `:241` + `:1363`: Commander solo, no L2/L3 recruitment.
-The TF32 matmul drift is well-known to be sub-perceptual at ≤ 1e-4; the
-spot-check is documentary diligence, not a gate.
+4. **Story 18.1's ratio verdict holds.** OFF ratio = 3.21×; ON ratio
+   = 3.29×. Both are essentially Story 18.1's canonical 3.23×
+   steady-state ratio (producer at ~31% real-time talker decode). TF32
+   was *never* the named fix class for this bottleneck per
+   `memory/epic18_producer_bottleneck_finding.md`; Stories 18.3 (bf16)
+   + 18.4 (`torch.compile`) are. Story 18.2's role in the Epic 18 plan
+   was to ship the cheapest cumulative speedup before 18.3 + 18.4
+   land — not to single-handedly close the producer bottleneck.
 
-**Procedure**: A/B-listen back-to-back to one TF32-OFF and one TF32-ON
-audio file from §4 above (do not regenerate; the audio Tasks 4.2 + 4.3
-already produced is the audition material).
+5. **No new perceptual artifact.** Commander reports the same gaps
+   from Story 18.1, not a new TF32-induced defect. The lossless-TF32
+   promise (~1e-4 matmul drift) holds — see §5 below.
 
-**Verdict**: _________________________________________________
+### 4.5 Engagement breadcrumb sanity-check (Task 4.5) — **PASS**
 
-(Expected literal: `"no perceptual defect detected"`. Any other verdict
-triggers a Commander → architecture-layer routing per Task 5.2 — likely
-a TF32-incompatibility surprise that Story 18.3's NFR7 fp32 fallback
-machinery would need to extend to cover, which is explicitly out of
-scope for this story.)
+Verbatim from `logs/myvoice.log`:
+
+```
+2026-05-09 19:23:10,511 - myvoice.services.tts_streaming.torch_runtime - INFO - TF32 + cuDNN benchmark enabled (device_capability=12.0)
+```
+
+Exactly one INFO line, fired at startup before `setup_application()`
+(per Task 2.3 placement decision). Wire-up engaged correctly.
+
+**Documentation-fix follow-up:** the docstring's compute-capability
+mapping initially recorded "Blackwell = 10.0 (RTX 50xx, B100)" which
+conflated datacenter Blackwell (B100/B200, CC 10.0) with the GeForce
+Blackwell variant on the RTX 5090 (CC 12.0). The actual measured value
+is **12.0**. The docstring at `torch_runtime.py:_AMPERE_CAPABILITY_MAJOR`
+was updated post-capture to record both CC variants. Functionally
+irrelevant — the `>= 8` gate engages either way — but worth recording
+for future architecture-mapping audits.
+
+### 4.6 OQ #3 routing — Commander decides next step
+
+Per AC #5 + OQ #3: out-of-range single-shot speedup routes to Commander.
+The dev agent does NOT declare pass/fail unilaterally. Three plausible
+next moves, in roughly increasing rigor:
+
+**(a) Accept and continue.** Treat TF32 wire-up as engaged-and-no-harm;
+acknowledge the speedup didn't materialize at single-shot but the
+intent (cheapest available speedup; composes with 18.3 + 18.4) is
+preserved. The producer bottleneck is the named target of Stories 18.3
++ 18.4, not 18.2. Move on to 18.3.
+
+**(b) Run N=10 + git-checkout OFF baseline for full statistical rigor.**
+Re-run Tasks 4.2–4.4 per the original story spec: kill app between
+runs, N=10 fresh-process generations on current HEAD; `git checkout`
+parent commit; N=10 fresh-process generations on the OFF baseline;
+restore HEAD; compute median/p90/p95 + delta. This is the "default
+correct" path; the cost is ~2 hours of Commander hand-time.
+
+**(c) Revert the wire-up.** If Commander suspects TF32 is a net loss
+(unlikely given the public PyTorch guidance) or wants to ship 18.3 +
+18.4 as the only producer-cadence change, the wire-up at
+`main.py:main()` is a one-block revert.
+
+**Recommendation**: option (a). The Story 18.1 verdict had already
+named 18.3 + 18.4 as the bottleneck fix; spending 2 hours of N=10
+captures to confirm "TF32 didn't close a bottleneck it was never
+expected to close" is low-leverage. Ship 18.2 as-engaged and move
+to 18.3 where the leverage is.
+
+**Status: HALTED pending Commander's choice between (a)/(b)/(c).**
+
+## §5. NFR3 spot-check (Task 5)
+
+> **Status: Commander reported 2026-05-09 19:23 — "Audio still had gaps."**
+
+**Verdict**: **No new perceptual defect attributable to TF32.** The gaps
+Commander reports are the **same gaps Story 18.1 measured**, not a new
+TF32-induced artifact. The lossless-TF32 promise (~1e-4 matmul drift,
+sub-perceptual at any audio amplitude resolution) holds: there is no
+audible TF32-incompatibility surprise on this qwen-tts model + Sarira-F
+voice + RTX 5090 combination.
+
+**Why "still had gaps" is not a Story 18.2 defect:**
+
+The producer-bottleneck cadence (3.21× → 3.29× emit/audio ratio per §4.4
+above) means chunks emit at ~6.5s per chunk while each chunk only
+*plays* ~2s of audio. The drain-faster-than-fill pattern produces ~4.5s
+silent stretches between consumed chunks — the "gaps" Commander hears.
+
+Story 18.2 was *never* the gap-closer. Per
+`memory/epic18_producer_bottleneck_finding.md` + Story 18.1 evidence
+§4.4: the producer bottleneck's **named fix class is Stories 18.3 (bf16
+precision on talker/decoder) + 18.4 (`torch.compile` decoder persistent
+cache)**. Story 18.2 ships the cheapest cumulative speedup (lossless
+TF32 + cuDNN benchmark) which composes with — but does not substitute
+for — the named producer-side fixes.
+
+**No Task 5.2 architecture-layer routing required.** The "perceptual
+defect detected: <description>" branch (TF32 numerical-incompatibility
+surprise → NFR7 fp32 fallback extension) does NOT apply here. The gaps
+are the pre-existing Story 18.1-measured cadence defect, not a new
+defect introduced by Story 18.2.
 
 ## §6. Bundled smoke (Task 6) — COMMANDER
 

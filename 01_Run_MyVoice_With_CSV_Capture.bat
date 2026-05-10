@@ -1,31 +1,41 @@
 @echo off
 REM ========================================
-REM Story 18.1 Task 1.4 — Underrun-Gap Mitigation Measurement Run
+REM Story 18.2 Task 4.2 + 4.5 — TF32 + cuDNN Benchmark Single-Shot Capture
 REM ========================================
-REM Launches MyVoice with progressive-playback metric CSV capture
-REM enabled. The capture is fully automated:
-REM   1. CSV header writes immediately on launch (you can verify the
-REM      file exists with just the header before generating).
-REM   2. Three metrics emit per chunk during TRUE_STREAM playback:
-REM        - progressive_chunk_emit_ms        (producer / qwen_tts_service)
-REM        - progressive_chunk_playback_arrival_ms  (consumer / app.py)
-REM        - progressive_chunk_audio_duration_ms    (consumer / app.py)
-REM   3. Closing the app cleanly (X button or File->Quit) flushes +
-REM      closes the CSV file via _on_about_to_quit.
+REM Story 18.1 baseline preserved at:
+REM   _bmad-output\implementation-artifacts\18-1-instrumentation-rtx5090-longform.csv
 REM
-REM Procedure:
-REM   1. Run this .bat.
-REM   2. Confirm the CSV file shows up at the OUTPUT path below with
+REM This run writes to a SEPARATE Story 18.2 path so the 18.1 baseline
+REM is intact and can serve as the implicit TF32-OFF reference for the
+REM producer-side metrics (progressive_chunk_emit_ms inter-arrival
+REM cadence — the canonical 18.1 verdict was 3.23x steady-state ratio /
+REM 31% real-time talker decode).
+REM
+REM What's NEW vs Story 18.1's run:
+REM   - Story 18.2 Task 4.1 widened the CSV-capture filter to include
+REM     `first_chunk_latency_ms` — so this CSV will carry one extra
+REM     metric_name not present in 18.1's CSV (single-sample first-chunk
+REM     latency for the engaged TF32 path).
+REM   - Story 18.2 wired `enable_tf32_and_cudnn_benchmark()` into main()
+REM     so this run engages TF32 matmul + cuDNN benchmark autotune at
+REM     startup. The single INFO breadcrumb
+REM         "TF32 + cuDNN benchmark enabled (device_capability=10.0)"
+REM     should appear exactly once in logs\myvoice.log.
+REM
+REM Procedure (Commander):
+REM   1. CLEAR logs first so the new run's lines stand alone:
+REM        del logs\myvoice.log
+REM   2. Run this .bat.
+REM   3. Confirm the CSV file shows up at the OUTPUT path below with
 REM      the header row only (proves env-var took effect).
-REM   3. Pick Sarira-F as the speaker.
-REM   4. Generate the canonical Story 17.3 Section 4.1 step 3 long-form
-REM      paragraph (>=250 chars). Audition in real-time and confirm
-REM      the ~1-second silent gaps are present (anchors the data to
-REM      the same defect class).
-REM   5. Close the app cleanly (NOT Ctrl-C, NOT taskbar close-while-
+REM   4. Pick Sarira-F as the speaker.
+REM   5. Generate the canonical Story 17.3 Section 4.1 step 3 long-form
+REM      paragraph (>=250 chars, ~22s of speech). Audition normally.
+REM   6. Close the app cleanly (NOT Ctrl-C, NOT taskbar close-while-
 REM      generating). Wait for "Application shutting down" in the log.
-REM   6. Verify the CSV is non-trivially populated (~3 rows per chunk
-REM      times 10-30 chunks for a long-form utterance).
+REM   7. Verify the CSV is non-trivially populated. Then come back to
+REM      the dev-story workflow — the agent reads both CSVs + the log
+REM      and populates evidence file Sec 4.2 + Sec 4.5.
 REM ========================================
 
 REM Get the directory where this script is located
@@ -73,15 +83,14 @@ REM Add src directory to Python path
 set "PYTHONPATH=%SCRIPT_DIR%\src"
 
 REM ========================================
-REM Story 18.1 Task 1.4: engage CSV capture
+REM Story 18.2 Task 4.2: engage CSV capture (TF32 ON branch)
 REM ========================================
-REM Output path is pinned to the story-spec'd location verbatim so the
-REM evidence file references the same artifact path the .bat writes.
-REM If you'd rather use the default logs-dir path, replace the value
-REM below with literal "1" — the capture module then writes to
-REM <logs_dir>/18-1-instrumentation-rtx5090-longform.csv automatically.
+REM Output path is pinned to the Story 18.2 evidence-file location so
+REM the 18.1 baseline at 18-1-instrumentation-rtx5090-longform.csv stays
+REM untouched and the dev agent can compute the producer-emit-interval
+REM delta (Story 18.1 = TF32-off implicit baseline; this CSV = TF32 on).
 
-set "MYVOICE_PROGRESSIVE_PLAYBACK_CSV=%SCRIPT_DIR%\_bmad-output\implementation-artifacts\18-1-instrumentation-rtx5090-longform.csv"
+set "MYVOICE_PROGRESSIVE_PLAYBACK_CSV=%SCRIPT_DIR%\_bmad-output\implementation-artifacts\18-2-rtx5090-tf32-on.csv"
 
 REM Make sure the parent directory exists (the capture module also
 REM does this defensively, but a clean pre-create surfaces permission
@@ -92,14 +101,20 @@ if not exist "%SCRIPT_DIR%\_bmad-output\implementation-artifacts" (
 
 echo.
 echo ========================================
-echo MyVoice V2 - Story 18.1 Task 1.4 Run
+echo MyVoice V2 - Story 18.2 Task 4.2 + 4.5 Run
 echo ========================================
 echo CSV target:
 echo   %MYVOICE_PROGRESSIVE_PLAYBACK_CSV%
 echo.
-echo After launch, confirm the CSV exists with just the header row
-echo before you generate. Then run the canonical Sarira-F long-form
-echo utterance and close the app cleanly.
+echo TF32 wire-up should fire at startup. After launch, look for the
+echo INFO breadcrumb in logs\myvoice.log:
+echo     "TF32 + cuDNN benchmark enabled (device_capability=10.0)"
+echo.
+echo If you have NOT cleared logs\myvoice.log first, do so before
+echo running this BAT so the breadcrumb is unambiguously from this run.
+echo.
+echo Then run the canonical Sarira-F long-form utterance and close
+echo the app cleanly.
 echo ========================================
 echo.
 
@@ -132,7 +147,7 @@ if !EXIT_CODE! neq 0 (
         for /f %%c in ('find /c /v "" ^< "%MYVOICE_PROGRESSIVE_PLAYBACK_CSV%"') do echo   %%c lines (incl. header)
         echo.
         echo Report this back to the dev-story workflow to proceed
-        echo with Task 1.5 (mitigation choice) + Task 2 OR Task 3.
+        echo with Story 18.2 Task 4.4 delta computation + Task 5/6.
     ) else (
         echo [WARNING] CSV file was NOT created at the expected path.
         echo Either the env-var did not take effect, or the listener
