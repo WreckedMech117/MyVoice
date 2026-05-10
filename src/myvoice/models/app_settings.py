@@ -107,6 +107,13 @@ class AppSettings:
     # (hand-edit settings.json or set programmatically for testing).
     streaming_mode_override: Optional[str] = None
 
+    # Story 18.3 — TTS precision override. "auto" (default) = bf16 on Ampere+ /
+    # fp32 elsewhere; "bf16" = force bf16 (engages on CPU too if user opts in);
+    # "fp32" = force fp32 (NFR7 fallback if bf16 audition flags any utterance
+    # class). UI-less for now (hand-edit settings.json); mirrors the
+    # streaming_mode_override pattern. See epics-optimization-pass.md:1377.
+    tts_precision: str = "auto"
+
     # Advanced settings
     advanced_settings: Dict[str, Any] = field(default_factory=dict)
 
@@ -388,6 +395,26 @@ class AppSettings:
                     ))
                     self.streaming_mode_override = None
 
+            # Validate TTS precision (Story 18.3 / D-9 / NFR7). Allowed values:
+            # "auto" (default; bf16 on Ampere+ CUDA, fp32 elsewhere), "bf16"
+            # (user-explicit force), "fp32" (NFR7 fallback). Mirrors the
+            # streaming_mode_override warn-and-fallback pattern: bad data
+            # surfaces a WARNING ValidationIssue and resets to "auto" so the
+            # runtime still resolves cleanly via the hardware probe.
+            valid_tts_precisions = ["auto", "bf16", "fp32"]
+            if self.tts_precision not in valid_tts_precisions:
+                warnings.append(ValidationIssue(
+                    field="tts_precision",
+                    message=(
+                        f"Unknown TTS precision '{self.tts_precision}', "
+                        f"defaulting to 'auto'. Allowed values: "
+                        f"{', '.join(valid_tts_precisions)}."
+                    ),
+                    code="UNKNOWN_TTS_PRECISION",
+                    severity=ValidationStatus.WARNING
+                ))
+                self.tts_precision = "auto"
+
             # Validate TTS service URL
             if not self.tts_service_url or not self.tts_service_url.strip():
                 issues.append(ValidationIssue(
@@ -525,6 +552,7 @@ class AppSettings:
                 "clear_comms_file_path": self.clear_comms_file_path,
                 "clear_comms_queue_mode": self.clear_comms_queue_mode,
                 "streaming_mode_override": self.streaming_mode_override,
+                "tts_precision": self.tts_precision,
                 "advanced_settings": self.advanced_settings.copy(),
                 "training_enabled": self.training_enabled,
                 "training_workspace_directory": self.training_workspace_directory,
@@ -591,6 +619,7 @@ class AppSettings:
                 clear_comms_file_path=data.get("clear_comms_file_path"),
                 clear_comms_queue_mode=data.get("clear_comms_queue_mode", False),
                 streaming_mode_override=data.get("streaming_mode_override"),
+                tts_precision=data.get("tts_precision", "auto"),
                 advanced_settings=data.get("advanced_settings", {}),
                 training_enabled=data.get("training_enabled", True),
                 training_workspace_directory=data.get("training_workspace_directory", "training_workspace"),
@@ -707,6 +736,7 @@ class AppSettings:
             "clear_comms_source_kind", "clear_comms_file_path",
             "clear_comms_queue_mode",
             "streaming_mode_override",
+            "tts_precision",
             "advanced_settings",
             "training_enabled", "training_workspace_directory",
             "custom_emotion_text", "custom_emotion_presets"

@@ -445,6 +445,7 @@ class MyVoiceApp(QObject):
             self._tts_service = QwenTTSService(
                 quality_tier=quality_tier,
                 session_registry=self._session_registry,  # Story 11.4
+                app_settings=self._app_settings,  # Story 18.3 — flow tts_precision into ModelRegistry resolver
             )
             self.register_service("tts", self._tts_service)
 
@@ -2553,9 +2554,13 @@ class MyVoiceApp(QObject):
                         and self._audio_coordinator is not None
                     ):
                         try:
+                            # wait_for_drain=True — even on the stale-terminal
+                            # branch the buffer should drain so any audio that
+                            # got through plays out (Story 17.3 finalization-
+                            # drain follow-up).
                             await (
                                 self._audio_coordinator
-                                .stop_streaming_session()
+                                .stop_streaming_session(wait_for_drain=True)
                             )
                         except Exception:
                             self.logger.warning(
@@ -2659,7 +2664,13 @@ class MyVoiceApp(QObject):
 
             if chunk.is_final:
                 try:
-                    await self._audio_coordinator.stop_streaming_session()
+                    # wait_for_drain=True so the tail of the last chunk plays
+                    # out cleanly before the PyAudio stream is closed
+                    # (Story 17.3 finalization-drain follow-up; race surfaced
+                    # by Story 18.3 dtype audit).
+                    await self._audio_coordinator.stop_streaming_session(
+                        wait_for_drain=True
+                    )
                 except Exception:
                     self.logger.warning(
                         "Progressive playback session close failed (non-fatal)",

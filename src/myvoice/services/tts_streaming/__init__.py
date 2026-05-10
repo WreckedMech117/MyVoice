@@ -23,6 +23,7 @@ from myvoice.services.tts_streaming.streaming_decoder import (
 from myvoice.services.tts_streaming.torch_runtime import (
     enable_tf32_and_cudnn_benchmark,
     is_ampere_or_newer,
+    resolve_tts_precision,
 )
 
 __all__ = [
@@ -34,4 +35,5 @@ __all__ = [
     "StreamingDecoderWorker",
     "enable_tf32_and_cudnn_benchmark",
     "is_ampere_or_newer",
+    "resolve_tts_precision",
 ]

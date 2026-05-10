@@ -33,6 +33,7 @@ from myvoice.observability import metrics
 from myvoice.services.tts_streaming import (
     enable_tf32_and_cudnn_benchmark,
     is_ampere_or_newer,
+    resolve_tts_precision,
 )
 
 
@@ -415,3 +416,145 @@ def test_enable_completes_when_a_metrics_listener_raises(
     assert any(
         "metrics listener raised" in r.message for r in caplog.records
     ), "Expected metrics module to log the listener exception at WARNING"
+
+
+# --------------------------------------------------------------------------- #
+# Story 18.3 — resolve_tts_precision branch tests
+# --------------------------------------------------------------------------- #
+#
+# Six branches per the story's AC #8:
+#   1. override == "fp32" → torch.float32 (regardless of hardware)
+#   2. override == "bf16" → torch.bfloat16 (regardless of hardware)
+#   3. override == "auto" + Ampere+ (cap-major shapes 8.9 / 10.0 / 9.0 / 12.0)
+#      → torch.bfloat16
+#   4. override == "auto" + pre-Ampere (Turing 7.5) → torch.float32
+#   5. override == "auto" + cuda-unavailable → torch.float32
+#   6. override is None → behaves identically to override == "auto"
+#
+# Side-effect-free contract: tests assert no metric records, no log records,
+# no torch.backends.* mutation. Mirrors Story 16.2's effective_streaming_mode
+# pure-decision test discipline.
+
+
+def test_resolve_tts_precision_fp32_override_returns_float32_regardless_of_hardware(
+    monkeypatch, _snapshot_and_restore_torch_backends
+):
+    """User-explicit fp32 override engages on Ampere+ too (NFR7 fallback)."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (12, 0))
+    assert resolve_tts_precision("fp32") is torch.float32
+
+
+def test_resolve_tts_precision_fp32_override_returns_float32_on_cpu(
+    monkeypatch, _snapshot_and_restore_torch_backends
+):
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+    assert resolve_tts_precision("fp32") is torch.float32
+
+
+def test_resolve_tts_precision_bf16_override_returns_bfloat16_regardless_of_hardware(
+    monkeypatch, _snapshot_and_restore_torch_backends
+):
+    """User-explicit bf16 override engages on CPU / pre-Ampere too — the
+    user has explicitly opted in to the slowdown."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+    assert resolve_tts_precision("bf16") is torch.bfloat16
+
+
+def test_resolve_tts_precision_bf16_override_returns_bfloat16_on_pre_ampere(
+    monkeypatch, _snapshot_and_restore_torch_backends
+):
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (7, 5))
+    assert resolve_tts_precision("bf16") is torch.bfloat16
+
+
+@pytest.mark.parametrize("capability", [(8, 9), (10, 0), (9, 0), (12, 0)])
+def test_resolve_tts_precision_auto_returns_bfloat16_on_ampere_plus(
+    monkeypatch, _snapshot_and_restore_torch_backends, capability
+):
+    """Mirrors Story 18.2's parametrization: 8.9 (RTX 40xx), 10.0 (Blackwell DC),
+    9.0 (Hopper), 12.0 (Blackwell GeForce / RTX 5090)."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: capability)
+    assert resolve_tts_precision("auto") is torch.bfloat16
+
+
+def test_resolve_tts_precision_auto_returns_float32_on_pre_ampere(
+    monkeypatch, _snapshot_and_restore_torch_backends
+):
+    """D-9 / NFR12: pre-Ampere CUDA hosts (Turing 7.5) return fp32 under
+    "auto" — closing the latent V2 default that applied bf16 unconditionally."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (7, 5))
+    assert resolve_tts_precision("auto") is torch.float32
+
+
+def test_resolve_tts_precision_auto_returns_float32_on_cpu_only(
+    monkeypatch, _snapshot_and_restore_torch_backends
+):
+    """NFR12: CPU-only hosts return fp32 under "auto"."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+    assert resolve_tts_precision("auto") is torch.float32
+
+
+def test_resolve_tts_precision_none_behaves_identically_to_auto_on_ampere(
+    monkeypatch, _snapshot_and_restore_torch_backends
+):
+    """The None case must mirror "auto" — both delegate to the hardware probe."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (8, 9))
+    assert resolve_tts_precision(None) is torch.bfloat16
+    assert resolve_tts_precision(None) is resolve_tts_precision("auto")
+
+
+def test_resolve_tts_precision_none_behaves_identically_to_auto_on_cpu(
+    monkeypatch, _snapshot_and_restore_torch_backends
+):
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+    assert resolve_tts_precision(None) is torch.float32
+    assert resolve_tts_precision(None) is resolve_tts_precision("auto")
+
+
+def test_resolve_tts_precision_does_not_emit_metrics(
+    monkeypatch, _snapshot_and_restore_torch_backends, metric_records
+):
+    """Side-effect-free contract: the resolver does NOT emit any metric.
+    The side-effect of the chosen dtype landing on the model is at the
+    call site in ModelRegistry.__init__ (which owns the
+    ``tts_precision_resolved`` metric); the resolver is pure decision."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (8, 9))
+
+    resolve_tts_precision("auto")
+    resolve_tts_precision("fp32")
+    resolve_tts_precision("bf16")
+    resolve_tts_precision(None)
+
+    # No `tts_precision_resolved` records — that metric is owned by the
+    # call site, not the resolver.
+    assert not [r for r in metric_records if r.name == "tts_precision_resolved"], (
+        "resolve_tts_precision must be side-effect-free — no metric emission"
+    )
+
+
+def test_resolve_tts_precision_does_not_mutate_torch_backends_flags(
+    monkeypatch, _snapshot_and_restore_torch_backends
+):
+    """The resolver does NOT touch ``torch.backends.*`` flags. Story 18.2's
+    enable function owns the TF32 + cuDNN benchmark side effects; the
+    Story 18.3 resolver is purely a dtype decision."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (8, 9))
+    # Pre-set flags to known-False values; resolver must not flip them.
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    torch.backends.cudnn.benchmark = False
+
+    resolve_tts_precision("auto")
+    resolve_tts_precision("bf16")
+    resolve_tts_precision("fp32")
+
+    assert torch.backends.cuda.matmul.allow_tf32 is False
+    assert torch.backends.cudnn.allow_tf32 is False
+    assert torch.backends.cudnn.benchmark is False

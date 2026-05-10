@@ -1,7 +1,13 @@
-"""TF32 + cuDNN benchmark autotune enable for Ampere+ CUDA hosts.
+"""TF32 + cuDNN benchmark autotune enable + TTS precision resolver for Ampere+ CUDA hosts.
 
 Story 18.2 — Phase ⊥-Polish-2 of D-20 (architecture-optimization-pass.md).
 Successor to Story 18.1 (instrumentation-only producer-bottleneck pin).
+Story 18.3 extends this module with ``resolve_tts_precision`` — a sibling
+pure-decision function that mirrors the same Ampere+ probe gate
+(``is_ampere_or_newer()``) for the precision dimension. See
+``epics-optimization-pass.md`` lines 1370–1386 (Story 18.3 stub) and the
+mirror-pattern guidance in the Story 18.3 file's "Source tree components
+to touch" section.
 
 Architecture references:
   - D-9 (architecture-optimization-pass.md:257) — hardware-aware default
@@ -37,6 +43,9 @@ Public surface (Task 1.4 widens `tts_streaming/__init__.py`):
   - is_ampere_or_newer() -> bool: pure hardware probe.
   - enable_tf32_and_cudnn_benchmark() -> dict: idempotent enable + log
     + telemetry; returns status dict.
+  - resolve_tts_precision(override) -> torch.dtype: pure-decision
+    precision resolver (Story 18.3); side-effect-free; user override
+    wins; "auto"/None defers to ``is_ampere_or_newer()``.
 
 Telemetry breadcrumb (the metric Stories 18.3 + 18.4 baseline against):
   - Engaged: metrics.record("tf32_cudnn_benchmark_enabled", 1.0,
@@ -264,3 +273,65 @@ def enable_tf32_and_cudnn_benchmark() -> dict:
         "reason": None,
         "device_capability": capability,
     }
+
+
+# --------------------------------------------------------------------------- #
+# Story 18.3 — TTS precision resolver
+# --------------------------------------------------------------------------- #
+
+
+def resolve_tts_precision(override: Optional[str]) -> "torch.dtype":  # type: ignore[name-defined]  # noqa: F821
+    """Pure-decision: resolve the TTS model's torch dtype from a settings override.
+
+    Story 18.3 — adds explicit hardware-aware precision engagement on the
+    qwen-tts talker + decoder. Mirrors Story 16.2's
+    ``effective_streaming_mode`` and Story 18.2's ``is_ampere_or_newer``
+    pure-decision discipline: no logging, no metric emission, no flag
+    mutation. The side-effect of the chosen dtype landing on the model
+    is at the call site in ``ModelRegistry.__init__`` (which also owns
+    the INFO log + the telemetry metric).
+
+    Precedence rule:
+
+      * ``override == "fp32"`` → ``torch.float32`` unconditionally
+        (NFR7 fallback path; engages even on Ampere+ when the user has
+        observed a perceptual defect in bf16 mode).
+      * ``override == "bf16"`` → ``torch.bfloat16`` unconditionally
+        (advanced-user opt-in; engages even on CPU / pre-Ampere despite
+        the slowdown — the user has explicitly opted in).
+      * ``override == "auto"`` or ``override is None`` → defers to the
+        hardware probe: ``torch.bfloat16`` on Ampere+ CUDA hosts (where
+        bf16 tensor cores accelerate matmul) and ``torch.float32``
+        elsewhere (CPU, pre-Ampere CUDA — closes the latent D-9 / NFR12
+        violation in the V2 ``dtype="bfloat16"`` default that applied
+        unconditionally).
+
+    Side-effect discipline: this function does NOT log, does NOT emit a
+    telemetry metric, and does NOT mutate any ``torch.backends.*`` flag.
+    Stories 16.2 + 18.2 established the pattern — pure decision functions
+    in ``tts_streaming/`` are easier to reason about and test, and the
+    decision's runtime visibility is concentrated in one place at the
+    call site (``ModelRegistry.__init__`` owns the INFO log line +
+    ``tts_precision_resolved`` metric for this resolver).
+
+    Args:
+        override: One of ``"auto"``, ``"bf16"``, ``"fp32"``, or ``None``.
+            Unknown values are NOT remapped here — the AppSettings
+            validator at ``app_settings.py``'s ``__post_init__`` is the
+            input-validation layer (warn-and-fallback to ``"auto"``).
+            By the time this resolver runs, the value should already be
+            one of the three valid strings or ``None``.
+
+    Returns:
+        ``torch.dtype``: The resolved dtype for ``Qwen3TTSModel.from_pretrained(..., torch_dtype=...)``.
+    """
+    import torch  # lazy: same rationale as is_ampere_or_newer
+
+    if override == "fp32":
+        return torch.float32
+    if override == "bf16":
+        return torch.bfloat16
+    # override == "auto" OR override is None → defer to hardware probe.
+    if is_ampere_or_newer():
+        return torch.bfloat16
+    return torch.float32

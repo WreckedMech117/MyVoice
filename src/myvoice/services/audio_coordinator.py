@@ -209,6 +209,32 @@ class AudioCoordinator(BaseService):
         self._mic_mixing_enabled = False
         self._tts_sample_rate: Optional[int] = None  # Tracked during streaming
 
+        # Story 17.3 finalization-drain follow-up — track total bytes written
+        # and the first-chunk-write timestamp so stop_streaming_session can
+        # wait for the PyAudio output buffer to drain before tearing down the
+        # underlying stream. Without this, an `is_final` chunk that arrives
+        # while the buffer still has un-played audio causes the tail of the
+        # last chunk to be cut off (Story 18.3 surfaced this — bf16 + TF32 +
+        # cuDNN engagements made the producer fast enough that the consumer
+        # was still draining when finalization fired).
+        #
+        # Story 18.3 M6 follow-up — also track the LAST-chunk write timestamp
+        # and bytes. The original math (expected_total - elapsed) goes
+        # NEGATIVE on producer-bottleneck workloads (producer 1.62× realtime
+        # → elapsed 1.62× expected; remaining always negative; drain skipped).
+        # The cut-off-at-end Commander surfaced in the Story 18.3 Task 10
+        # bundled smoke is the symptom: PyAudio's device-level buffer (200–
+        # 500ms on Windows shared mode) gets truncated by stop_stream() when
+        # the math says "no drain needed." The corrected math computes drain
+        # from the LAST chunk's playback (last_chunk_duration -
+        # time_since_last_write) + safety, so the buffer always drains.
+        self._stream_first_write_ts: Optional[float] = None
+        self._stream_total_bytes: int = 0
+        self._stream_last_write_ts: Optional[float] = None
+        self._stream_last_chunk_bytes: int = 0
+        self._stream_sample_width: int = 2  # int16 (set authoritatively in start_streaming_session)
+        self._stream_channels: int = 1      # mono (set authoritatively in start_streaming_session)
+
         # Mic monitor state (for "Monitor Mic to Speakers" feature)
         self._mic_monitor_running = False
         self._mic_monitor_task: Optional[asyncio.Task] = None
@@ -1045,6 +1071,14 @@ class AudioCoordinator(BaseService):
             # Track TTS sample rate for mic resampling
             self._tts_sample_rate = sample_rate
 
+            # Reset drain-tracking counters for the new session.
+            self._stream_first_write_ts = None
+            self._stream_total_bytes = 0
+            self._stream_last_write_ts = None
+            self._stream_last_chunk_bytes = 0
+            self._stream_sample_width = sample_width
+            self._stream_channels = channels
+
             # Start streaming on monitor service
             if self.monitor_service and await self._is_monitor_service_healthy():
                 monitor_session = await self.monitor_service.start_streaming_session(
@@ -1095,6 +1129,25 @@ class AudioCoordinator(BaseService):
         result = {"monitor": False, "virtual": False, "mic_mixed": False}
 
         try:
+            # Story 17.3 finalization-drain follow-up — record the first-write
+            # timestamp + accumulate total bytes streamed so stop_streaming_session
+            # can wait for the PyAudio output buffer to drain on `is_final`.
+            # Latency-sensitive: do this BEFORE the dispatch so the timestamp
+            # records the moment the producer started filling the output buffer,
+            # not the moment after the (blocking) write completed.
+            if audio_data:
+                now_ts = time.monotonic()
+                if self._stream_first_write_ts is None:
+                    self._stream_first_write_ts = now_ts
+                # Story 18.3 M6 — also stamp the LAST-write timestamp + last
+                # chunk bytes so the drain math can compute when THIS chunk
+                # finishes playing (the producer-bottleneck case where
+                # elapsed >> expected_total leaves the last-chunk audio still
+                # in PyAudio's buffer when stop is called).
+                self._stream_last_write_ts = now_ts
+                self._stream_last_chunk_bytes = len(audio_data)
+            self._stream_total_bytes += len(audio_data)
+
             # Play TTS on monitor service (unaffected by mic mixing)
             if self.monitor_service and self.monitor_service.is_streaming_active():
                 result["monitor"] = await self.monitor_service.play_audio_chunk(
@@ -1231,9 +1284,52 @@ class AudioCoordinator(BaseService):
         except Exception:
             return False
 
-    async def stop_streaming_session(self) -> Dict[str, bool]:
+    # Story 17.3 finalization-drain follow-up — drain-wait constants.
+    # Safety buffer covers PyAudio's internal output latency. Windows driver
+    # latency varies widely:
+    #   * WASAPI exclusive: ~10ms
+    #   * WASAPI shared:    ~80-150ms
+    #   * WDM-KS:           ~50ms
+    #   * DirectSound:      200-500ms
+    # 500ms covers all common Windows backends without being absurdly long.
+    # Bumped from 150ms (Story 17.3 follow-up landed) to 500ms (Story 18.3
+    # M2 follow-up — Commander reported hit-or-miss cut-off-at-end during
+    # the NFR1 measurement runs; 150ms was borderline for WASAPI shared and
+    # insufficient for DirectSound). Max cap is a hard timeout so a math
+    # drift cannot hang the close path indefinitely — 15s is comfortably
+    # longer than any single TTS utterance.
+    _DRAIN_SAFETY_BUFFER_S = 0.5
+    _MAX_DRAIN_WAIT_S = 15.0
+
+    async def stop_streaming_session(
+        self,
+        *,
+        wait_for_drain: bool = False,
+    ) -> Dict[str, bool]:
         """
         Stop streaming sessions on both services.
+
+        Args:
+            wait_for_drain: When True, wait for the PyAudio output buffer to
+                drain before tearing down the underlying stream. Use this on
+                the ``is_final`` finalization path so the tail of the last
+                chunk plays out cleanly. Cancel / restart paths must keep the
+                default False so user-cancel stays prompt — the legacy
+                immediate-teardown behavior. Story 18.3 M6 — drain wait is
+                computed from the LAST chunk's playback
+                (``last_chunk_duration - time_since_last_write``), NOT the
+                full-stream-elapsed math the M2 follow-up used. On
+                producer-bottleneck workloads (producer ≥ 1.5× realtime),
+                the full-stream math goes negative because elapsed
+                outpaces expected_total; the corrected math always waits
+                for at least the LAST chunk's residual playback plus the
+                safety buffer, regardless of producer speed. A safety
+                buffer (``_DRAIN_SAFETY_BUFFER_S`` — currently 500ms; bumped
+                from 150ms in the Story 18.3 M2 follow-up to cover Windows
+                DirectSound's worst-case 200–500ms internal latency) is
+                added for PyAudio internal latency, and the wait is capped
+                at ``_MAX_DRAIN_WAIT_S`` (15s) so a math drift cannot hang
+                the close path.
 
         Returns:
             Dict with stop status: {"monitor": bool, "virtual": bool}
@@ -1241,8 +1337,62 @@ class AudioCoordinator(BaseService):
         result = {"monitor": False, "virtual": False}
 
         try:
-            # Clear TTS sample rate tracking
+            # Story 17.3 finalization-drain follow-up — wait for the output
+            # buffer to drain before tearing down. The producer can outpace
+            # PyAudio's playback (notably with bf16 + TF32 + cuDNN engaged
+            # post Story 18.2 + 18.3); without this, the last chunk's tail is
+            # cut off when the stream is closed mid-playback.
+            #
+            # Story 18.3 M6 — corrected drain math. The original formula
+            # (expected_total - elapsed) goes negative on producer-bottleneck
+            # workloads and skipped the drain entirely (Commander's bundled
+            # smoke surfaced this — last ~500–800ms of audio truncated). The
+            # corrected math computes drain from the LAST chunk's playback
+            # state (last_chunk_duration - time_since_last_write), so the
+            # PyAudio device-level buffer always gets at least the safety
+            # buffer of grace on top of any unplayed audio in the last
+            # chunk. The `if remaining > 0` gate is dropped — safety always
+            # fires when wait_for_drain is True.
+            if (
+                wait_for_drain
+                and self._stream_last_write_ts is not None
+                and self._tts_sample_rate
+                and self._stream_last_chunk_bytes > 0
+            ):
+                bytes_per_second = (
+                    self._tts_sample_rate
+                    * max(self._stream_channels, 1)
+                    * max(self._stream_sample_width, 1)
+                )
+                if bytes_per_second > 0:
+                    last_chunk_duration_s = (
+                        self._stream_last_chunk_bytes / bytes_per_second
+                    )
+                    time_since_last_write = (
+                        time.monotonic() - self._stream_last_write_ts
+                    )
+                    last_chunk_remaining = max(
+                        0.0, last_chunk_duration_s - time_since_last_write
+                    )
+                    drain_wait = min(
+                        last_chunk_remaining + self._DRAIN_SAFETY_BUFFER_S,
+                        self._MAX_DRAIN_WAIT_S,
+                    )
+                    self.logger.debug(
+                        "Draining output buffer before close: "
+                        "last_chunk_duration=%.3fs time_since_last_write=%.3fs "
+                        "last_chunk_remaining=%.3fs waiting=%.3fs",
+                        last_chunk_duration_s, time_since_last_write,
+                        last_chunk_remaining, drain_wait,
+                    )
+                    await asyncio.sleep(drain_wait)
+
+            # Reset drain-tracking counters and TTS sample rate.
             self._tts_sample_rate = None
+            self._stream_first_write_ts = None
+            self._stream_total_bytes = 0
+            self._stream_last_write_ts = None
+            self._stream_last_chunk_bytes = 0
 
             # Stop monitor streaming
             if self.monitor_service:

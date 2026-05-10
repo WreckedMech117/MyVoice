@@ -267,3 +267,293 @@ class TestCancelPlaybackInitializationOrder:
         coord = AudioCoordinator()
         result = await coord.cancel_playback("anything")
         assert result is False
+
+
+# --------------------------------------------------------------------------- #
+# Story 17.3 finalization-drain follow-up — TestStopStreamingSessionDrain
+# --------------------------------------------------------------------------- #
+#
+# Background: app.py:_handle_progressive_chunk_async called
+# stop_streaming_session() immediately on `is_final` without awaiting the
+# PyAudio output buffer drain. With the bf16 + TF32 + cuDNN engagements all
+# firing post-Story-18.3, the producer outpaces the consumer; the buffer
+# still holds the tail of the last chunk when the close fires → audible
+# cut-off-at-end. Surfaced 2026-05-10 by Commander during the Story 18.3
+# Task 1 dtype-audit run.
+#
+# Fix: stop_streaming_session(wait_for_drain: bool = False). When True, the
+# coordinator computes (total_bytes_written / bytes_per_second) - elapsed,
+# adds a small safety buffer for PyAudio internal latency, caps at
+# _MAX_DRAIN_WAIT_S, and asyncio.sleeps for that duration before tearing
+# down. Cancel paths keep the default False (immediate teardown).
+#
+# These tests pin the contract:
+#   1. Default (wait_for_drain=False) preserves legacy immediate-teardown.
+#   2. wait_for_drain=True with un-drained audio waits ~remaining seconds.
+#   3. wait_for_drain=True with already-drained audio does NOT wait.
+#   4. The drain wait is capped at _MAX_DRAIN_WAIT_S (math drift safety).
+#   5. Both leaf services receive their stop call regardless of the path.
+
+import time as _time
+
+import pytest as _pytest
+
+
+def _coord_with_drain_services():
+    """AudioCoordinator wired with services that mock both stop_streaming_session
+    and play_audio_chunk (the heavier mock_monitor / mock_virtual fixtures
+    above only stub stop_all_playback)."""
+    coord = AudioCoordinator()
+    coord._is_initialized = True
+
+    monitor = MagicMock(spec=MonitorAudioService)
+    monitor.stop_streaming_session = AsyncMock(return_value=True)
+    monitor.is_streaming_active = MagicMock(return_value=True)
+    monitor.play_audio_chunk = AsyncMock(return_value=True)
+    coord.monitor_service = monitor
+
+    virtual = MagicMock(spec=VirtualMicrophoneService)
+    virtual.stop_streaming_session = AsyncMock(return_value=True)
+    virtual.is_streaming_active = MagicMock(return_value=True)
+    virtual.play_audio_chunk = AsyncMock(return_value=True)
+    coord.virtual_service = virtual
+
+    return coord, monitor, virtual
+
+
+@_pytest.mark.asyncio
+class TestStopStreamingSessionDrain:
+    """Story 17.3 finalization-drain follow-up — wait_for_drain contract."""
+
+    async def test_default_no_wait_preserves_legacy_immediate_teardown(self):
+        """wait_for_drain=False (default) MUST NOT introduce any drain wait,
+        even when total_bytes_written is large. This preserves the cancel
+        path's immediate-teardown contract (Story 16.5 cancel-chain)."""
+        coord, monitor, virtual = _coord_with_drain_services()
+        await coord.start_streaming_session(sample_rate=24000, channels=1, sample_width=2)
+        # Pretend we wrote 9 seconds of audio (24000 * 2 * 9 = 432000 bytes).
+        coord._stream_first_write_ts = _time.monotonic()
+        coord._stream_total_bytes = 432000
+
+        t0 = _time.monotonic()
+        await coord.stop_streaming_session()  # default wait_for_drain=False
+        elapsed = _time.monotonic() - t0
+
+        # Default path: no drain wait → completes promptly.
+        assert elapsed < 0.5, (
+            f"Default stop_streaming_session() must NOT introduce a drain "
+            f"wait (would break cancel paths); elapsed={elapsed:.3f}s"
+        )
+        monitor.stop_streaming_session.assert_awaited_once()
+        virtual.stop_streaming_session.assert_awaited_once()
+
+    async def test_wait_for_drain_true_waits_remaining_audio_duration(self):
+        """wait_for_drain=True with un-played audio MUST sleep approximately
+        (last_chunk_duration - time_since_last_write) + safety_buffer before
+        tearing down.
+
+        Story 18.3 M6 — math reads the LAST-chunk trackers, not the FIRST.
+        Expected wait is computed from the live ``_DRAIN_SAFETY_BUFFER_S``
+        constant rather than hard-coded — when the constant moves (M2
+        already bumped it 0.15→0.5; future Windows-backend support may
+        bump again), this test still pins the contract instead of
+        breaking on a value change."""
+        coord, monitor, virtual = _coord_with_drain_services()
+        await coord.start_streaming_session(sample_rate=24000, channels=1, sample_width=2)
+        # Pretend the LAST chunk was 0.4s of audio (24000 * 2 * 0.4 = 19200
+        # bytes), written 0.1s ago. last_chunk_remaining = 0.4 - 0.1 = 0.3s.
+        coord._stream_first_write_ts = _time.monotonic() - 0.1
+        coord._stream_total_bytes = 19200
+        coord._stream_last_write_ts = _time.monotonic() - 0.1
+        coord._stream_last_chunk_bytes = 19200
+        remaining_s = 0.3
+        safety_s = AudioCoordinator._DRAIN_SAFETY_BUFFER_S
+        expected_wait = remaining_s + safety_s
+
+        t0 = _time.monotonic()
+        await coord.stop_streaming_session(wait_for_drain=True)
+        elapsed = _time.monotonic() - t0
+
+        # Generous tolerance for asyncio scheduling jitter on Windows CI:
+        # lower bound = expected - 200ms; upper bound = expected + 400ms.
+        assert (expected_wait - 0.2) <= elapsed <= (expected_wait + 0.4), (
+            f"Expected drain wait ~{expected_wait:.3f}s "
+            f"(last_chunk_remaining {remaining_s}s + safety {safety_s}s); "
+            f"got elapsed={elapsed:.3f}s"
+        )
+        monitor.stop_streaming_session.assert_awaited_once()
+        virtual.stop_streaming_session.assert_awaited_once()
+
+    async def test_wait_for_drain_true_with_already_drained_last_chunk_still_waits_safety(
+        self
+    ):
+        """Story 18.3 M6 — even when the LAST chunk has fully drained
+        (time_since_last_write > last_chunk_duration), the safety buffer
+        STILL fires because PyAudio's device-level buffer (200–500ms on
+        Windows shared mode) holds residual audio. This is the M6 fix:
+        the previous ``if remaining > 0`` gate caused the cut-off-at-end
+        Commander surfaced in the bundled smoke."""
+        coord, _monitor, _virtual = _coord_with_drain_services()
+        await coord.start_streaming_session(sample_rate=24000, channels=1, sample_width=2)
+        # Last chunk written 5s ago (way past any chunk's playback duration).
+        coord._stream_first_write_ts = _time.monotonic() - 5.0
+        coord._stream_total_bytes = 19200
+        coord._stream_last_write_ts = _time.monotonic() - 5.0
+        coord._stream_last_chunk_bytes = 19200
+        safety_s = AudioCoordinator._DRAIN_SAFETY_BUFFER_S
+
+        t0 = _time.monotonic()
+        await coord.stop_streaming_session(wait_for_drain=True)
+        elapsed = _time.monotonic() - t0
+
+        # Last-chunk remaining = 0; total wait = safety only.
+        assert (safety_s - 0.1) <= elapsed <= (safety_s + 0.3), (
+            f"Already-drained last chunk must STILL wait safety buffer "
+            f"(~{safety_s:.3f}s); got elapsed={elapsed:.3f}s"
+        )
+
+    async def test_wait_for_drain_caps_at_max_drain_wait(self):
+        """Math-drift safety: a wildly-overestimated last-chunk duration is
+        capped at _MAX_DRAIN_WAIT_S to prevent the close path from hanging.
+
+        We patch _MAX_DRAIN_WAIT_S down to a small test value, then claim a
+        huge last-chunk-bytes that would imply a >100s wait. The actual
+        wait must be the patched cap, not the math.
+        """
+        coord, _monitor, _virtual = _coord_with_drain_services()
+        await coord.start_streaming_session(sample_rate=24000, channels=1, sample_width=2)
+        # Pretend the last chunk was 200s of audio: 24000 * 2 * 200 = 9_600_000 bytes.
+        coord._stream_first_write_ts = _time.monotonic()
+        coord._stream_total_bytes = 9_600_000
+        coord._stream_last_write_ts = _time.monotonic()
+        coord._stream_last_chunk_bytes = 9_600_000
+
+        # Patch the cap on the class attribute.
+        original_cap = AudioCoordinator._MAX_DRAIN_WAIT_S
+        AudioCoordinator._MAX_DRAIN_WAIT_S = 0.3
+        try:
+            t0 = _time.monotonic()
+            await coord.stop_streaming_session(wait_for_drain=True)
+            elapsed = _time.monotonic() - t0
+        finally:
+            AudioCoordinator._MAX_DRAIN_WAIT_S = original_cap
+
+        assert 0.25 <= elapsed <= 0.7, (
+            f"Drain wait must be capped at _MAX_DRAIN_WAIT_S (=0.3s); "
+            f"got elapsed={elapsed:.3f}s"
+        )
+
+    async def test_wait_for_drain_with_no_writes_does_not_wait(self):
+        """If no chunks were ever written (last_chunk_bytes == 0), there
+        is nothing to drain. Early-out without sleeping."""
+        coord, _monitor, _virtual = _coord_with_drain_services()
+        await coord.start_streaming_session(sample_rate=24000, channels=1, sample_width=2)
+        # No play_audio_chunk calls → last_write_ts is None, last_chunk_bytes is 0.
+        assert coord._stream_last_write_ts is None
+        assert coord._stream_last_chunk_bytes == 0
+
+        t0 = _time.monotonic()
+        await coord.stop_streaming_session(wait_for_drain=True)
+        elapsed = _time.monotonic() - t0
+
+        assert elapsed < 0.2
+
+    async def test_play_audio_chunk_records_drain_trackers(self):
+        """play_audio_chunk MUST stamp BOTH _stream_first_write_ts (once)
+        and _stream_last_write_ts + _stream_last_chunk_bytes (per write),
+        and accumulate _stream_total_bytes. The first/last split is the
+        Story 18.3 M6 fix — drain math reads the last-chunk trackers."""
+        coord, _monitor, _virtual = _coord_with_drain_services()
+        await coord.start_streaming_session(sample_rate=24000, channels=1, sample_width=2)
+        assert coord._stream_first_write_ts is None
+        assert coord._stream_last_write_ts is None
+        assert coord._stream_last_chunk_bytes == 0
+        assert coord._stream_total_bytes == 0
+
+        await coord.play_audio_chunk(b"\x00" * 1000, is_final=False)
+        first_ts = coord._stream_first_write_ts
+        last_ts_after_chunk1 = coord._stream_last_write_ts
+        assert first_ts is not None
+        assert last_ts_after_chunk1 is not None
+        assert coord._stream_total_bytes == 1000
+        assert coord._stream_last_chunk_bytes == 1000
+
+        await coord.play_audio_chunk(b"\x00" * 2500, is_final=True)
+        # First-write timestamp must NOT be reset on subsequent writes.
+        assert coord._stream_first_write_ts == first_ts
+        # Last-write timestamp MUST advance to chunk 2's write time.
+        assert coord._stream_last_write_ts >= last_ts_after_chunk1
+        assert coord._stream_total_bytes == 3500
+        # Last-chunk bytes MUST reflect chunk 2's size only (not cumulative).
+        assert coord._stream_last_chunk_bytes == 2500
+
+    async def test_stop_resets_drain_trackers_for_next_session(self):
+        """After stop_streaming_session, the trackers must be cleared so the
+        next session starts from zero."""
+        coord, _monitor, _virtual = _coord_with_drain_services()
+        await coord.start_streaming_session(sample_rate=24000, channels=1, sample_width=2)
+        coord._stream_first_write_ts = _time.monotonic()
+        coord._stream_total_bytes = 1000
+        coord._stream_last_write_ts = _time.monotonic()
+        coord._stream_last_chunk_bytes = 1000
+
+        await coord.stop_streaming_session()  # any path
+
+        assert coord._stream_first_write_ts is None
+        assert coord._stream_total_bytes == 0
+        assert coord._stream_last_write_ts is None
+        assert coord._stream_last_chunk_bytes == 0
+        assert coord._tts_sample_rate is None
+
+    async def test_M6_producer_bottleneck_workload_still_drains_last_chunk(self):
+        """Story 18.3 M6 regression — exact bug class.
+
+        The bug class: producer is slower than realtime (≥1.5×), so
+        ``elapsed`` (wall-clock since first write) outpaces
+        ``expected_total_seconds`` (cumulative audio duration). The
+        original M2 math computed ``remaining = expected_total - elapsed``,
+        which goes NEGATIVE, then guarded ``if remaining > 0`` and
+        skipped the drain entirely. PyAudio's device-level buffer
+        (200–500ms on Windows shared mode) gets truncated by
+        stop_stream(), cutting off the last ~500–800ms of audio.
+
+        Empirical reproduction (Commander's Story 18.3 Task 10 bundled
+        smoke): producer ratio 1.62 for bf16 on RTX 5090, last 4 words
+        of the canonical Sarira-F paragraph cut every time, regardless
+        of last-chunk size.
+
+        The M6 fix reads the LAST chunk's trackers + drops the gate,
+        always waiting at least the safety buffer. Per
+        ``memory/code_review_regression_test_exact_class.md``: the
+        regression test must mirror THIS exact bug class.
+        """
+        coord, _monitor, _virtual = _coord_with_drain_services()
+        await coord.start_streaming_session(sample_rate=24000, channels=1, sample_width=2)
+        # Simulate producer-bottleneck: 10 chunks × 1.98s audio each = 19.8s.
+        # Producer 1.62× realtime → elapsed ≈ 32s when last chunk arrives.
+        # Last chunk written 0.05s ago (just before the synthetic terminal).
+        chunk_bytes = int(24000 * 2 * 1.98)  # 1.98s of int16 mono
+        coord._stream_first_write_ts = _time.monotonic() - 32.0
+        coord._stream_total_bytes = chunk_bytes * 10
+        coord._stream_last_write_ts = _time.monotonic() - 0.05
+        coord._stream_last_chunk_bytes = chunk_bytes
+        safety_s = AudioCoordinator._DRAIN_SAFETY_BUFFER_S
+
+        # Original buggy math: remaining = 19.8 - 32 = -12.2 → drain SKIPPED.
+        # Corrected math: last_chunk_remaining = 1.98 - 0.05 ≈ 1.93s; drain
+        # waits 1.93 + safety. With safety=0.5, expected ≈ 2.43s.
+        expected_min = 1.93  # last_chunk_remaining alone, no safety
+        expected_max = 1.98 + safety_s + 0.5  # generous upper bound
+
+        t0 = _time.monotonic()
+        await coord.stop_streaming_session(wait_for_drain=True)
+        elapsed = _time.monotonic() - t0
+
+        assert expected_min <= elapsed <= expected_max, (
+            f"Story 18.3 M6 regression: producer-bottleneck workload must "
+            f"STILL drain the last chunk's residual playback. "
+            f"Expected drain wait in [{expected_min:.3f}s, {expected_max:.3f}s]; "
+            f"got elapsed={elapsed:.3f}s. If elapsed < 1s, the M2 math gate "
+            f"({{if remaining > 0}}) has regressed and the cut-off-at-end is "
+            f"back."
+        )

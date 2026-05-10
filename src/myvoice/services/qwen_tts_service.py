@@ -578,13 +578,19 @@ class QwenTTSService(BaseService):
         # generation is in flight or when no registry is wired.
         self._current_session_id: Optional[str] = None
 
-        # Model registry for lazy loading
+        # Model registry for lazy loading. Story 18.3 — pass app_settings so
+        # ModelRegistry can route ``tts_precision`` through the precedence
+        # resolver (resolve_tts_precision honors the Ampere+ probe gate).
+        # The legacy ``dtype`` string is preserved as the fallback when
+        # ``app_settings`` is None or its ``tts_precision`` is None
+        # (backwards-compatible with tests / non-AppSettings call sites).
         self._model_registry = ModelRegistry(
             device=device,
             dtype=dtype,
             models_path=models_path,
             progress_callback=self._on_model_progress,
-            quality_tier=quality_tier
+            quality_tier=quality_tier,
+            app_settings=self._app_settings,
         )
 
         # Configuration

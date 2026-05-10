@@ -800,7 +800,7 @@ qwen_tts_service                streaming_decoder              session_registry
 | NFR | Covered by |
 |---|---|
 | NFR1 First audio <2s | GPU: meets via TRUE_STREAM (~1.5–1.8s estimated). CPU: meets via inherited SENTENCE_STREAM (per FR2 row). **Empirical measurement gate at Phase ⊥ POC.** *(Story 16.9 reconciled 2026-05-08 — empirical contradiction; per-class targets adopted. See follow-up note below.)* |
-| NFR3 No audio stuttering | D-8 chunk + overlap-add with seam-quality A/B testing before flipping streaming default; sentence-stream/batch unchanged from V2 *(Story 17.1 audition cleared 2026-05-08 — see follow-up note below.)* |
+| NFR3 No audio stuttering | D-8 chunk + overlap-add with seam-quality A/B testing before flipping streaming default; sentence-stream/batch unchanged from V2 *(Story 17.1 audition cleared 2026-05-08 — see follow-up note below.)* *(Story 18.3 bf16 audition DEFERRED 2026-05-10 pending Story 18.4 producer-bottleneck close — measured no speedup over Story 18.2 fp32+TF32 baseline; revisit post-18.4. See follow-up note below.)* |
 | NFR4 UI <200ms | D-2 Qt-thread ownership of registry; mutation work bounded to state transitions, not waveform I/O |
 | NFR6 No crashes | D-12 import-attribute test + P-1 state-bound method validity (no silent no-ops) + P-7 clean cancellation (no half-state CUDA) |
 | NFR7 Graceful degradation | D-9 + the three-mode dispatch in `qwen_tts_service.py` (BATCH ← SENTENCE_STREAM ← TRUE_STREAM fallback chain) |
@@ -898,6 +898,66 @@ Source artifacts (✓ = git-tracked; ○ = working file under gitignored `_bmad-
 - ○ `_bmad-output/implementation-artifacts/16-8-perceptual-fixtures/` (10 paired WAVs from Story 16.8 regeneration; truth-table `_perlistener_truthtable.json` with L1/L2/L3 randomizations). **Not in git** (binary fixture under gitignored `_bmad-output/`); the verdict's truth-table join was performed against this file, but a fresh clone cannot reproduce the audition without it. Story 17.1 forbids fixture regeneration (would invalidate prior audit data); the canonical fixture state is held only on Commander's filesystem. **Reproducibility implication (M1):** future maintainers re-validating this verdict need either the original fixture or a fresh full audit cycle (regenerate fixture → re-audit at N≥3 → recompute verdict).
 - ○ `_bmad-output/implementation-artifacts/16-8-perceptual-fixtures/LISTENING-INSTRUCTIONS.md` (canonical protocol; not in git for the same reason; byte-identical to the 16-7 directory's copy).
 - ✓ `_bmad-output/implementation-artifacts/17-1-streaming-default-ramp.md` (story document; Change Log #8 contains the verbatim verdict-computation tables; Change Log #10 documents the code-review pass).
+
+#### Story 18.3 Follow-up Note (bf16 Precision Audition — DEFERRED, 2026-05-10)
+
+Story 18.3 (Epic 18 / Phase ⊥-Polish-2 third story — bf16 Precision on Talker + Decoder) executed Tasks 1 (dtype audit) + 7 (NFR1 first-chunk-latency measurement) on the RTX 5090 dev host (Blackwell GeForce, capability 12.0). Tasks 8 (≥3-listener perceptual A/B audition) and 9-as-PASS-amendment were **deferred** per Open Question #3 routing — the empirical NFR1 measurement did not deliver the 30–50% speedup anticipated at `epics-optimization-pass.md:1381`, and Commander selected option (b) "defer to future investigation post-Story-18.4" per OQ #3's three-option framing.
+
+**Audit findings — bf16 IS engaged end-to-end (Task 1 confirmed via env-var-gated `_instrument_dtype_audit` in `model_registry.py`):**
+
+- `model.model.talker.dtype = torch.bfloat16` ✓
+- `model.model.speech_tokenizer.model` (the inner `Qwen3TTSTokenizerV2Model` — qwen-tts wrapper's `nn.Module` for codec decoding) — every sampled parameter is `torch.bfloat16` ✓ (surprising — Story 18.3 Dev Notes' central audit hypothesis was that vocoders typically stay in fp32 for numerical stability; qwen-tts 0.0.4 actually loads the codec in bf16 too)
+- Talker forward-hook capture: every tensor kwarg + output tensor is `torch.bfloat16` ✓ (no autocast/upcast erasing the bf16 compute gain)
+
+**NFR1 measurement — bf16 vs fp32 (cold-start; N=10 fresh-process launches per branch; one Sarira-F long-form Sarira-F utterance per launch):**
+
+| Statistic | bf16 (auto) | fp32 (override) | delta (ms) | delta (%) |
+|---|---|---|---|---|
+| median first-chunk-latency | 5029 ms | 4846 ms | -183 | **-3.77%** (bf16 slightly slower) |
+| p90 | 5657 ms | 5409 ms | -247 | -4.57% |
+| p95 | 5705 ms | 5634 ms | -70 | -1.25% |
+
+Producer steady-state ratio (Story 18.1 §4.4 methodology — mean inter-chunk-emit interval ÷ mean chunk audio duration):
+
+| Branch | mean interval | mean duration | ratio | vs Story 18.1 baseline (3.23×) |
+|---|---|---|---|---|
+| bf16 | 3213 ms | 1981 ms | **1.62** | -50% (good) |
+| fp32+TF32 | 2782 ms | 1981 ms | **1.40** | -57% (better) |
+
+**Diagnosis:** the [30%, 50%] anticipated gate at `:1381` was an estimate based on bf16's tensor-core advantage at training-style batch shapes. On the V2 inference workload — autoregressive single-token talker forwards with kernel-launch overhead + KV-cache management dominating — the matmul-throughput advantage does not materialize. Story 18.2's TF32 + cuDNN benchmark engagement (3.23 → 1.40 producer ratio) had already collected the bulk of the producer-bottleneck win on this architecture; bf16's residual headroom over fp32-with-TF32-engaged is small or slightly negative. Per-launch variance is large (±1500 ms in some pairs); even if a 5–10% real effect existed, N=10 lacks the statistical power to distinguish it from noise.
+
+**Architectural decision: ship Story 18.3 source-tree work + setting + audit infrastructure; defer the bf16-as-default decision to post-Story-18.4 retrospective.** Specifically:
+
+- ✓ `AppSettings.tts_precision` field with `auto`/`bf16`/`fp32` validation lands as designed (NFR7 fp32 fallback path is ready for any user who hits a future perceptual issue).
+- ✓ `resolve_tts_precision(override)` resolver in `tts_streaming.torch_runtime` lands as designed.
+- ✓ `ModelRegistry.__init__` precedence rule + telemetry (`tts_precision_resolved` metric) + INFO log breadcrumb (`precision_source='...'`) land as designed.
+- ✓ `tts_precision="auto"` continues to resolve to `bfloat16` on Ampere+ — the engaged-but-no-measured-speedup path. This is the **conservative ship-as-engaged choice**; Commander can flip to fp32-default in a future story if the post-18.4 retrospective shows bf16 still doesn't pay.
+- **Deferred:** Task 8 ≥3-listener perceptual A/B audition. The audition is a load-bearing perceptual gate for a default that doesn't pay for itself on perf — recruiting listeners at this point would burn the listener-recruitment budget on a decision the data can't yet justify. Re-running the same `03_*.bat` + `04_*.bat` harness post-Story-18.4 (with `torch.compile`'s CUDA graphs / kernel-launch-overhead collapse) will give a cleaner answer; if bf16 starts helping there, the audition fires at that point.
+
+**NFR3 status (re-clearance not in this story).** The Story 17.1 audition's verdict (PASS — zero `audible_seam` flags across 30 trials on the post-Story-16.8 regenerated fixture) remains the canonical NFR3 clearance for the streaming-default ramp. Story 18.3 does NOT re-clear NFR3; the audition is deferred. The bf16 path is engaged in production today (V2 default; reaches users via the new resolver path post-Story-18.3), so any user-reported perceptual defect on bf16 surfaces immediately and Commander has the `tts_precision="fp32"` setting as the NFR7 escape hatch — that is the perceptual safety net while the audition is deferred.
+
+**Methodology composition (per Story 18.3 AC #10).** The fp32 branch in this A/B is **fp32-with-TF32-engaged**, not strict-fp32. Story 18.2's TF32 + cuDNN benchmark autotune engages at startup on every Ampere+ host regardless of precision; the bf16-vs-fp32 comparison here is therefore bf16 vs (fp32 + TF32 + cuDNN benchmark). Strict-fp32 (TF32 disabled) is out of scope per AC #10 — Story 18.2 closed it as null on the producer-bottleneck workload and Story 18.3 does not re-litigate.
+
+**Methodology limitations (mirrored from Story 17.1's Phase ⊥-Ramp pattern).** Three structural limitations apply to Story 18.3's NFR1 measurement and inform the deferred audition's reproducibility:
+
+1. **Single-host RTX 5090 measurement.** Captured only on Commander's RTX 5090 Blackwell dev host (capability 12.0 / GeForce variant). Earlier Ampere/Ada hosts (RTX 30xx/40xx) may show a different bf16-vs-fp32-with-TF32 profile — Blackwell's TF32 tensor cores are unusually capable. The architecture amendment's data should not be cited as "bf16 doesn't help on Ampere+" generally; only as "bf16 doesn't help on Blackwell GeForce 12.0 in our V2 inference workload."
+2. **Cold-start variance.** Per-launch first-chunk-latency varies by ±1500 ms across N=10 fresh-process pairs (model load + first-token kernel JIT + cuDNN benchmark autotune cache warmup all live in the cold-start window). N=10 lacks the statistical power to distinguish a 5–10% real effect from this noise floor. A future re-measurement with N=30 or with a warmup-discount methodology would tighten the confidence interval.
+3. **Audition not run.** Per OQ #3 option (b), the listener audition (Task 8) was deferred. The architecture amendment lands without an NFR3 re-clearance for the bf16 path specifically — the Story 17.1 NFR3 clearance covers the streaming-mode A/B (TRUE_STREAM vs SENTENCE_STREAM) but not the precision-tier A/B (bf16 vs fp32). Future maintainers re-validating bf16 for a future qwen-tts pin bump or for a Story 18.4 re-measurement need to run the audition fresh.
+
+Source artifacts (✓ = git-tracked; ○ = working file under gitignored `_bmad-output/`, retained on Commander's filesystem only):
+
+- ✓ `_bmad-output/implementation-artifacts/18-3-bf16-precision-on-talker-decoder.md` (story document with Tasks 1–11 closure state and Change Log entries).
+- ✓ `_bmad-output/implementation-artifacts/18-3-bf16-precision-on-talker-decoder-evidence.md` (evidence file with full §"Pre-implementation audit" + §"End-to-end dtype audit" + §"Streaming pipeline dtype audit" + §"NFR1 first-chunk-latency measurement" captures + §"Side observation — finalization race surfaced by bf16 engagement (FIXED in-story)").
+- ✓ `_bmad-output/implementation-artifacts/18-3-set-precision.py` (settings.json mutation helper for the NFR1 measurement bats).
+- ✓ `_bmad-output/implementation-artifacts/18-3-aggregate-nfr1.py` (N=10 aggregator + steady-state ratio analysis + auto-OQ-#3 detection).
+- ✓ `_bmad-output/implementation-artifacts/18-3-l1-audition-helper.py` (audition helper — adapted from 17-1; **kept on disk for the deferred audition**; not exercised in this story's closure).
+- ✓ `02_Story_18.3_DType_Audit.bat` + `03_Story_18.3_NFR1_BF16.bat` + `04_Story_18.3_NFR1_FP32.bat` (Commander-routed harness at repo root).
+- ✓ `_bmad-output/implementation-artifacts/18-3-rtx5090-bf16.csv` (consolidated N=10 cold-start first_chunk_latency_ms; force-added).
+- ✓ `_bmad-output/implementation-artifacts/18-3-rtx5090-fp32.csv` (consolidated N=10 cold-start first_chunk_latency_ms; force-added).
+- ○ `_bmad-output/implementation-artifacts/18-3-rtx5090-bf16-run<NN>.csv` (10 per-run CSVs; force-add at Commander's discretion).
+- ○ `_bmad-output/implementation-artifacts/18-3-rtx5090-fp32-run<NN>.csv` (10 per-run CSVs).
+- ○ `_bmad-output/implementation-artifacts/18-3-perceptual-fixtures/` — **not produced** (audition deferred). The directory will be created if/when the audition is re-attempted post-Story-18.4.
+- ○ `_bmad-output/implementation-artifacts/18-3-bf16-precision-audition.csv` — **not produced** (audition deferred).
 
 ### Implementation Readiness Validation — with surfaced gaps
 

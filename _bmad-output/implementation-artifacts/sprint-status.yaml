@@ -127,6 +127,6 @@ development_status:
   epic-18: in-progress
   18-1-underrun-gap-mitigation: done
   18-2-tf32-cudnn-benchmark-enable: done
-  18-3-bf16-precision-on-talker-decoder: backlog
+  18-3-bf16-precision-on-talker-decoder: done
   18-4-torch-compile-decoder-persistent-cache: backlog
   epic-18-retrospective: optional
