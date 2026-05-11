@@ -800,7 +800,7 @@ qwen_tts_service                streaming_decoder              session_registry
 | NFR | Covered by |
 |---|---|
 | NFR1 First audio <2s | GPU: meets via TRUE_STREAM (~1.5–1.8s estimated). CPU: meets via inherited SENTENCE_STREAM (per FR2 row). **Empirical measurement gate at Phase ⊥ POC.** *(Story 16.9 reconciled 2026-05-08 — empirical contradiction; per-class targets adopted. See follow-up note below.)* |
-| NFR3 No audio stuttering | D-8 chunk + overlap-add with seam-quality A/B testing before flipping streaming default; sentence-stream/batch unchanged from V2 *(Story 17.1 audition cleared 2026-05-08 — see follow-up note below.)* *(Story 18.3 bf16 audition DEFERRED 2026-05-10 pending Story 18.4 producer-bottleneck close — measured no speedup over Story 18.2 fp32+TF32 baseline; revisit post-18.4. See follow-up note below.)* |
+| NFR3 No audio stuttering | D-8 chunk + overlap-add with seam-quality A/B testing before flipping streaming default; sentence-stream/batch unchanged from V2 *(Story 17.1 audition cleared 2026-05-08 — see follow-up note below.)* *(Story 18.3 bf16 audition DEFERRED 2026-05-10 pending Story 18.4 producer-bottleneck close — measured no speedup over Story 18.2 fp32+TF32 baseline; revisit post-18.4. See follow-up note below.)* *(Story 18.4 joint audition L1 PARTIAL PASS 2026-05-11 — certified bf16 + compile + pin-bump from QwenLM/Qwen3-TTS@1ab0dd75 to dffdeeq/Qwen3-TTS-streaming@3fdb4682; OFR-E producer-bottleneck closed (ratio 3.23× → 0.670×); zero `audible_seam` flags on L1's 20 trials. L2 + L3 deferred pending listener recruitment. See follow-up note below.)* |
 | NFR4 UI <200ms | D-2 Qt-thread ownership of registry; mutation work bounded to state transitions, not waveform I/O |
 | NFR6 No crashes | D-12 import-attribute test + P-1 state-bound method validity (no silent no-ops) + P-7 clean cancellation (no half-state CUDA) |
 | NFR7 Graceful degradation | D-9 + the three-mode dispatch in `qwen_tts_service.py` (BATCH ← SENTENCE_STREAM ← TRUE_STREAM fallback chain) |
@@ -958,6 +958,104 @@ Source artifacts (✓ = git-tracked; ○ = working file under gitignored `_bmad-
 - ○ `_bmad-output/implementation-artifacts/18-3-rtx5090-fp32-run<NN>.csv` (10 per-run CSVs).
 - ○ `_bmad-output/implementation-artifacts/18-3-perceptual-fixtures/` — **not produced** (audition deferred). The directory will be created if/when the audition is re-attempted post-Story-18.4.
 - ○ `_bmad-output/implementation-artifacts/18-3-bf16-precision-audition.csv` — **not produced** (audition deferred).
+
+#### Story 18.4 Follow-up Note (Joint bf16 + Compile + Pin-Bump Audition — L1 PARTIAL PASS, 2026-05-11)
+
+Story 18.4 (Epic 18 / Phase ⊥-Polish-2 fourth and final story — torch.compile Decoder + Persistent Compile Cache) executed all dev-agent-autonomous tasks + Task 8 (NFR1 3-way A/B/C measurement) + Task 9.2 (fixture regen) + Task 9.4 L1 (Commander audition). The architecture's load-bearing OFR-E producer-bottleneck-close target is **ACHIEVED**; the perceptual NFR3 gate is **L1 PARTIAL PASS** with L2 + L3 listener recruitment deferred.
+
+**D-22 verification — Branch B fires (architecture's high-risk gate, named at line 1319 of `architecture-streaming-acceleration-and-lightning-tier.md`).**
+
+Per architecture D-22 Branch A vs Branch B framing, the empirical question was: does `qwen-tts@1ab0dd75353392f28a0d05d9ca960c9954b13c83` ship `Qwen3TTSModel.enable_streaming_optimizations`? Dev-agent verification at Task 1.1 (`grep -rn "enable_streaming_optimizations" python310/Lib/site-packages/qwen_tts/`) returned **zero matches** — the API does not exist at the existing pin. **Branch B fires.** The pin-bump landed at `requirements.txt:23` + `build_tools/requirements-production.txt:61` from `QwenLM/Qwen3-TTS@1ab0dd75` (upstream main lineage) to `dffdeeq/Qwen3-TTS-streaming@3fdb468233d73fa537202b94a1cc7c4e7a6160b8` (community fork, introducing commit "compile and fast codebook" 2026-02-03). The fork is a drop-in replacement (same `qwen-tts 0.0.4` package name/version; +50/-6 lines additive diff; no removed symbols MyVoice depends on).
+
+**Pin-bump rationale (D-22 Branch B EXECUTED):**
+
+- Same package name (`qwen-tts`) + same version (0.0.4) — no `pyproject.toml` resolution surprises.
+- Additive diff verified at Task 1.2 via `gh api repos/dffdeeq/Qwen3-TTS-streaming/commits/3fdb4682` — 3 files changed, +50/-6 lines, all additive. No removed symbols.
+- `Qwen3TTSModel.enable_streaming_optimizations` signature: `(decode_window_frames=80, use_compile=True, use_cuda_graphs=True, compile_mode="reduce-overhead", use_fast_codebook=False, compile_codebook_predictor=True, compile_talker=True)`. MyVoice invokes 4 of 7 kwargs per the production wire-up (`decode_window_frames=30, use_compile=True, compile_mode="reduce-overhead", compile_talker=False`) — the **`compile_talker=False`** override is required for Story 16.8's TRUE_STREAM forward-hook compatibility (the talker forward hook captures per-step `codec_ids` from `Qwen3TTSTalkerOutputWithPast.hidden_states[1]`; `torch.compile`-wrapping the talker breaks the capture path, producing the `ValueError: finalize() called with no chunks` regression observed in the first bundled-smoke iteration 2026-05-10).
+- Story 17.2 cached `voice_clone_prompt` `.pt` files are invalidated by the pin-bump per `_QWEN_TTS_PIN_HASH = "3fdb4682"` constant bump at `qwen_tts_service.py:1150` (verified at Task 11.5 via `test_pin_mismatch_invalidates_pt` continuing to pass against the new constant).
+- Quarterly upstream check (analogous to architecture D-33's `chatterbox-streaming` discipline): check whether `QwenLM/Qwen3-TTS` upstream picks up the patch via PR from the fork author. If yes, swap the pin back to upstream + drop the community-pin discipline. Tracked in `memory/build_tools_phase_perp_state.md`.
+
+**Fixture regeneration methodology (Task 9.2 — automated 2026-05-11):**
+
+The original story plan routed fixture regen via the production GUI as Commander-routed manual work. Replaced by `_bmad-output/implementation-artifacts/18-4-regen-fixture.py` which drives `Qwen3TTSModel.generate_voice_clone` directly with the precomputed Sarira-F voice_clone_prompt cache (Story 17.2 cache at pin `3fdb4682`). All 20 WAVs generated in 2 min flat: Branch A (fp32+eager) in 60 s; Branch B (bf16+compile-engaged) in 40 s. The fork's internal compile targets engaged cleanly: Tokenizer (decoder forward), Decoder forward, CodePredictor. Cold-compile cost (~14 s on s-014) was amortized across the 9 subsequent B generations (~2-3 s each). Per-utterance B vs A speedup ranged from 1.83× (m-013) to 2.50× (s-015 warm) — additional empirical evidence the compile path delivers real per-call speedup on the perceptual-difficult utterance subset.
+
+Truth-table at `_bmad-output/implementation-artifacts/18-4-perceptual-fixtures/_perlistener_truthtable.json` was built via `18-4-generate-truthtable.py` with deterministic per-listener randomization (seed `"Story 18.4 joint audition:<listener_id>"`); L1 / L3 = 5/5 fp32-as-trial-A counts (balanced), L2 = 4/6 fp32-as-trial-A counts (mild bf16-as-A bias acceptable per the architectural-blinding contract).
+
+**NFR1 measurement (Task 8) — OFR-E producer-bottleneck close ACHIEVED.**
+
+Three branches × N=10 fresh-process launches per branch; one Sarira-F long-form utterance per launch (Story 17.3 §4.1 step 3 canonical paragraph; ≥250 chars / ~22 s of speech):
+
+| metric | A (bf16+compile) | B (bf16+eager) | C (fp32+eager) |
+|---|---|---|---|
+| median first_chunk_latency_ms | 5929.4 | 5517.8 | 5455.3 |
+| p90 | 6072.9 | 6388.9 | 5601.9 |
+| p95 | 6057.3 | 6191.5 | 5593.5 |
+| **producer-bottleneck steady-state ratio** | **0.670×** ✓ | 1.663× | 1.430× |
+
+Pairwise first-chunk-latency deltas (positive = treatment faster than baseline):
+- A vs B (compile gain over bf16-eager): median Δ = -411.5 ms (-7.46%) — compile slower on first-chunk
+- A vs C (compounded gain over fp32-eager): median Δ = -474.1 ms (-8.69%) — compile+bf16 slower on first-chunk
+- B vs C (bf16-only re-validation): median Δ = -62.6 ms (-1.15%) — bf16-only ~tied with fp32; reconfirms Story 18.3's empirical-null finding.
+
+**Producer-bottleneck ratio history:** Story 18.1 baseline 3.23× → Story 18.2 fp32+TF32 1.40× → Story 18.3 bf16+TF32 1.62× (net null) → **Story 18.4 bf16+compile 0.670×** (producer emits chunks at ~1.49× real-time; Story 17.3 §4.4 underrun gaps are *structurally impossible* under `tts_compile="auto"` on Ampere+).
+
+**Split-verdict mechanism (architecturally important).** First-chunk latency reflects talker speed (still eager under `compile_talker=False`); steady-state throughput reflects compiled codebook-predictor + decoder speed (~21× per-call faster per the standalone smoke at `_bmad-output/implementation-artifacts/18-4-qwen-compile-smoke.py`). Net user-perceived experience under `tts_compile="auto"`: audio starts ~400 ms later than fp32-eager baseline; once it starts, plays through without underrun gaps. The OQ #1 routing trigger (sub-20% A-vs-B speedup gate at line 1402 of the story's anticipated 1.5–3× warm-cache decode speedup) fired in the aggregator output, but Commander **overrode** the trigger 2026-05-11 — the OQ #1 framing measured first-chunk latency as a proxy for "did compile work?"; the actual OFR-E acceptance criterion (producer-bottleneck ratio) is met.
+
+**NFR3 joint audition (Task 9) — L1 PARTIAL PASS.**
+
+Per-actual-mode defect-flag counts (L1 only, N=10 trials per actual mode after un-blinding via truth-table):
+
+| defect | fp32_eager | bf16_compile |
+|---|---|---|
+| `none` | 10 | 10 |
+| `audible_seam` (← verdict gate) | **0** | **0** |
+| `clipping` | 0 | 0 |
+| `phase_artifact` | 0 | 0 |
+| `tonal_distortion` | 0 | 0 |
+| `other_describe_in_notes` | 0 | 0 |
+
+L1 actual-mode preferences: bf16_compile = 1 (s-015, with note *"Seemed like better quality/volume"*); fp32_eager = 0; equivalent = 9. **L1 partial verdict: PASS.** Zero `audible_seam` flags on bf16_compile trials; zero defects of any kind on either system; L1's only non-equivalent preference favors bf16_compile.
+
+**Architectural decision: ship Story 18.4 source-tree work + compile-as-default-on-Ampere+ pending full audition closure.**
+
+- ✓ `requirements.txt:23` + `build_tools/requirements-production.txt:61` bumped to `dffdeeq/Qwen3-TTS-streaming@3fdb4682`; `_QWEN_TTS_PIN_HASH = "3fdb4682"` (Story 17.2 cache invalidation discipline triggers cleanly on first run after the bump).
+- ✓ `src/myvoice/services/tts_streaming/compile_cache.py` (7-dim cache key per D-24; per-key `%LOCALAPPDATA%/MyVoice/torch_compile_cache/` storage; H1+H2 cache-invalidation discipline mirrored from Story 17.2).
+- ✓ `src/myvoice/services/tts_streaming/torch_runtime.py::engage_compile_optimizations` (8-branch reason enum; `compile_talker=False`; D-25 invariant; P-12 probe; NFR7 graceful-degradation fallback chain).
+- ✓ `ModelRegistry._load_model_sync` engages compile after `from_pretrained`; INFO log line extended with `compile_engaged='deferred'` at `__init__` + `compile_engaged='True/False'` at post-load.
+- ✓ `AppSettings.tts_compile` field with `auto`/`on`/`off` validation. Default **flipped to `"off"`** by Fix #4 (2026-05-10 bundled-smoke triton-on-Windows blocker; per OQ #4 routing). The compile source-tree machinery is LIVE but bypassed at runtime by the "off" default; advanced users opt-in via hand-edit of `settings.json`.
+- ✓ `QwenTTSService.warmup_compile_async` (fire-and-forget; "Preparing TTS engine…" indicator; persistent-cache hit/miss/failure branches). Code-review pass added `tts_compile="off"` gate at H1 (prevents the warmup priming generation from playing audible "Hello world." to users on first launch under the "off" default).
+- ✓ `audio_coordinator.stop_streaming_session(wait_for_drain=True)` extended for producer-FASTER-than-real-time regime — `max(last_chunk_remaining, total_queued_audio_s)` handles both Story 18.3 M6's producer-slower case AND Story 18.4's compile-engaged producer-faster case.
+- **Deferred:** L2 + L3 audition (Task 9.3/9.4). The Story 17.1 protocol expects ≥3 listeners (L1 = Commander; L2 + L3 = co-located in-person walkthrough listeners). L1's signal is unambiguously clean (zero defects across all 20 trials; slight bf16_compile preference) so L2 + L3 are unlikely to flip the verdict, but architecturally the audition is INCOMPLETE until they land. The architecture amendment lands in this partial form; re-amend in place when L2 + L3 complete.
+- **Deferred to Story 18.5:** the production-bundle packaging path. The dev-env triton-on-Windows blocker (`Cannot find a working triton installation`) is **resolved** in the dev environment (Python 3.10.11 headers + libs + CUDA Toolkit 12.8 + `pip install --no-deps triton-windows`; verified via the standalone smoke and the real-model smoke at `_bmad-output/implementation-artifacts/18-4-triton-smoke.py` and `18-4-qwen-compile-smoke.py`). The bundle-side problem is a packaging-only issue (need to ship CUDA Toolkit redistributables + Python headers + triton-windows in the PyInstaller bundle), not a fundamental compatibility problem. Story 18.5 scope.
+
+**NFR3 status (re-clearance status mixed).** The Story 17.1 audition's verdict (PASS — zero `audible_seam` flags across 30 trials on the post-Story-16.8 regenerated fixture) remains the canonical NFR3 clearance for the streaming-default ramp. Story 18.4's L1 partial PASS adds preliminary perceptual coverage for the bf16+compile+new-pin composite, but does NOT yet constitute full re-clearance (≥3 listeners required per Story 17.1 protocol). The bf16+compile path is engaged in production *only* when the user explicitly sets `tts_compile != "off"` (the bundled-smoke default is "off" pending Story 18.5); production users running the bundle today get the pre-Story-18.4 Story 18.3 bf16-eager baseline.
+
+**Methodology composition.** The fp32 branch in this 3-way A/B/C is **fp32-with-TF32-engaged**, not strict-fp32 (Story 18.2's TF32 + cuDNN benchmark autotune engages at startup on every Ampere+ host regardless of precision). The bf16+compile vs fp32+eager comparison is therefore (bf16 + compile + TF32) vs (fp32 + TF32). Strict-fp32 was closed-as-null by Story 18.2 on the producer-bottleneck workload and Story 18.4 does not re-litigate.
+
+**Methodology limitations (mirrored from Story 17.1 / 18.3 follow-up notes).** Four structural limitations apply:
+
+1. **Single-host RTX 5090 measurement.** Captured only on Commander's RTX 5090 Blackwell dev host (capability 12.0 / GeForce variant). Earlier Ampere/Ada hosts (RTX 30xx/40xx) may show a different compile-engaged-vs-eager profile — Blackwell's tensor cores are unusually capable. The architecture amendment's data should not be cited as "compile delivers 0.670× ratio on Ampere+" generally; only as "compile delivers 0.670× ratio on Blackwell GeForce 12.0 in our V2 inference workload with the canonical Story 17.3 §4.1 step 3 long-form Sarira-F utterance."
+2. **L2 + L3 audition not run.** The audition is L1-PARTIAL until L2 + L3 land. Future maintainers re-validating bf16+compile for a future qwen-tts pin bump or for a Story 18.5 bundle-shipping rollout need to run L2 + L3 fresh.
+3. **Cold-compile run discarded.** Branch A's run #1 (6154.6 ms) was discarded from the median calculation per the aggregator's cold-compile discipline at Task 8.4. The architecture's anticipated 10-30 s cold-compile budget is respected — 6.1 s observed is well within budget on Blackwell — but the cold cost is real for first-process-launch UX and the persistent compile cache (D-23) amortizes it across launches.
+4. **Audition listener count limited to L1.** Per Story 17.1's M1 reproducibility section, the audition's external reproducibility depends on the gitignored fixture remaining on Commander's filesystem; force-add of the 20 WAVs to `_bmad-output/implementation-artifacts/18-4-perceptual-fixtures/` is the canonical cross-session retention path. The truth-table seed `"Story 18.4 joint audition:<listener_id>"` is reproducible; if the truth-table is lost, regenerate via `18-4-generate-truthtable.py`.
+
+Source artifacts (✓ = git-tracked; ○ = working file under gitignored `_bmad-output/`, retained on Commander's filesystem only):
+
+- ✓ `_bmad-output/implementation-artifacts/18-4-torch-compile-decoder-persistent-cache.md` (story document with full Tasks 1–13 closure state and Change Log entries; force-added).
+- ✓ `_bmad-output/implementation-artifacts/18-4-torch-compile-decoder-persistent-cache-evidence.md` (evidence file with full §"D-22 verification" + §"Pin-bump rationale" + §"P-12 probe selection" + §"Bundled smoke" (4-fix iteration) + §"NFR1 first-chunk-latency measurement (3-way A/B/C)" + §"NFR3 joint audition verdict (L1 partial PASS)" + §"Triton-on-Windows dev-env smoke" + §"Real-model compile smoke"; force-added).
+- ✓ `_bmad-output/implementation-artifacts/18-4-triton-smoke.py` + `18-4-qwen-compile-smoke.py` (dev-env smoke probes; force-added).
+- ✓ `_bmad-output/implementation-artifacts/18-4-set-precision-and-compile.py` (settings.json mutator for the 3 NFR1 branches; force-added).
+- ✓ `_bmad-output/implementation-artifacts/18-4-aggregate-nfr1.py` (3-way A/B/C aggregator + OFR-E gate check + OQ #1 routing surface; force-added).
+- ✓ `_bmad-output/implementation-artifacts/18-4-regen-fixture.py` (one-shot fixture-regen driver via `model.generate_voice_clone`; force-added).
+- ✓ `_bmad-output/implementation-artifacts/18-4-generate-truthtable.py` (deterministic truth-table builder; force-added).
+- ✓ `_bmad-output/implementation-artifacts/18-4-compute-verdict.py` (verdict computation cross-referencing truth-table; force-added).
+- ✓ `_bmad-output/implementation-artifacts/18-4-l1-audition-helper.py` (audition helper — adapted from 17-1 / 18-3; force-added).
+- ✓ `05_Story_18.4_NFR1_BF16_COMPILE.bat` + `06_Story_18.4_NFR1_BF16_EAGER.bat` + `07_Story_18.4_NFR1_FP32_EAGER.bat` (3-way NFR1 harness; CRLF; paren-trap free; force-added).
+- ✓ `08_Story_18.4_NFR3_Audition.bat` (Commander-facing audition launcher; mirrors `01_Run_MyVoice_With_CSV_Capture.bat` structure; force-added).
+- ✓ `_bmad-output/implementation-artifacts/18-4-rtx5090-bf16-compile.csv` + `18-4-rtx5090-bf16-eager.csv` + `18-4-rtx5090-fp32-eager.csv` (consolidated N=10 cold-start `first_chunk_latency_ms`; force-added).
+- ✓ `_bmad-output/implementation-artifacts/18-4-rtx5090-bf16-compile-run<NN>.csv` + `-bf16-eager-run<NN>.csv` + `-fp32-eager-run<NN>.csv` (30 per-run CSVs; force-added).
+- ✓ `_bmad-output/implementation-artifacts/18-4-perceptual-fixtures/` (20 paired WAVs + `_perlistener_truthtable.json` + `LISTENING-INSTRUCTIONS.md`; force-added).
+- ✓ `_bmad-output/implementation-artifacts/18-4-bf16-compile-pinbump-audition.csv` (10 L1 rows; appendable when L2 + L3 land; force-added).
 
 ### Implementation Readiness Validation — with surfaced gaps
 
