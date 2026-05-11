@@ -65,7 +65,7 @@ for /L %%I in (1,1,10) do (
     set "RUN_NUM=!RUN_NUM:~-2!"
     set "MYVOICE_PROGRESSIVE_PLAYBACK_CSV=%SCRIPT_DIR%\_bmad-output\implementation-artifacts\18-4-rtx5090-fp32-eager-run!RUN_NUM!.csv"
     echo.
-    echo ===== Run %%I of 10 (FP32+EAGER) =====
+    echo ===== Run %%I of 10 FP32+EAGER =====
     echo CSV: !MYVOICE_PROGRESSIVE_PLAYBACK_CSV!
     echo.
     "%SCRIPT_DIR%\python310\python.exe" "%SCRIPT_DIR%\src\myvoice\main.py"

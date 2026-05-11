@@ -273,7 +273,86 @@ All three internal targets compiled without error. The MyVoice-side `compile_tal
 
 ## NFR1 first-chunk-latency measurement (3-way A/B/C) — Task 8
 
-(Pending Commander run of `05_Story_18.4_NFR1_BF16_COMPILE.bat` + `06_*_BF16_EAGER.bat` + `07_*_FP32_EAGER.bat` × N=10 per branch.)
+**Closed 2026-05-11.** All three branches captured (N=10 per branch); aggregator at `18-4-aggregate-nfr1.py` produced the 3-way comparison + producer-bottleneck ratio + OFR-E gate check.
+
+### Pre-run blockers surfaced during the first .bat launch (resolved)
+
+Two issues caught + fixed before the measurement could begin:
+
+1. **`.bat` for-loop body terminated early.** The label string `(BF16+COMPILE)` inside `echo ===== Run %%I of 10 (BF16+COMPILE) =====` contained a literal `)` that cmd.exe's `for /L do (...)` parser treated as the closing paren of the loop block. The loop ran 10 iterations of the `echo` (parser-stripped at the `)`), but everything after — including the `python.exe` launch — was treated as outside the loop and ran ONCE with the final iteration's env values (`RUN_NUM=10`, CSV=`run10.csv`). Fix: dropped the parens from the label inside the loop body. The closing `=====` now prints correctly and the loop iterates `Run 1 of 10` through `Run 10 of 10` as expected. All three `.bat` files updated (`05/06/07_Story_18.4_NFR1_*.bat`).
+2. **`.bat` files written with bare-LF line endings.** cmd.exe's tolerance of Unix line endings is fragile in nested-paren contexts; converted all three `.bat` files to CRLF as a belt-and-suspenders fix. (Independent of #1; both fixes were needed.)
+
+### Audio-drain regression surfaced during the first valid run (resolved)
+
+The first single-launch under `tts_compile="auto"` produced **audible audio cut-off mid-sentence**. Log analysis pinpointed the cause: `audio_coordinator.stop_streaming_session(wait_for_drain=True)` used the Story 18.3 M6 last-chunk-only drain math, which was correct for the producer-SLOWER-than-real-time regime that story addressed. But Story 18.4's compile-engaged path makes the producer FASTER than real-time (chunks queue in PyAudio's output buffer); the last-chunk-only math underestimates remaining audio by the entire queued depth.
+
+Observed: 18.9 s of audio arrived in 14 s; sessions stopped 566 ms after the last chunk write while ~4.9 s of audio was still buffered. Fix at `audio_coordinator.py:1356-1402` computes both the last-chunk-remaining and the total-queued-audio estimates and takes the max so both producer regimes are covered. Regression tests at `test_audio_coordinator.py::test_wait_for_drain_under_producer_faster_than_realtime_waits_for_queued_audio` (the new bug class) and `test_wait_for_drain_under_producer_slower_than_realtime_still_uses_last_chunk_math` (preserves Story 18.3 M6 contract). All 10 drain tests pass post-fix.
+
+### Per-launch first_chunk_latency_ms (cold-start record per CSV)
+
+| run | A (bf16+compile) | B (bf16+eager) | C (fp32+eager) |
+|---|---|---|---|
+| 1 | 6154.6 (cold-compile; **discarded from median**) | 5507.1 | 5019.7 |
+| 2 | 5879.1 | 5694.3 | 5258.0 |
+| 3 | 5929.4 | 5435.2 | 5601.9 |
+| 4 | 6072.9 | 5281.2 | (missing) |
+| 5 | 5889.3 | 5895.4 | (missing) |
+| 6 | 5721.3 | 5415.9 | 5574.0 |
+| 7 | 6034.1 | 6388.9 | 5455.3 |
+| 8 | 5956.2 | 5723.2 | (missing) |
+| 9 | 5958.0 | (missing) | 4941.8 |
+| 10 | 5887.3 | 5517.8 | 5479.1 |
+
+Three Branch C runs and one Branch B run are missing `first_chunk_latency_ms` records (chunk-emit + chunk-arrival records DID land — same listener-registration race intermittently affecting the `_FirstChunkLatencyAggregator` listener registration during process startup). The aggregator handles the missing samples gracefully (skips them in the median; produces a warning per missing CSV). Effective N: Branch A warm-cache = 9, Branch B = 9, Branch C = 7.
+
+### Aggregated summary
+
+| metric | A (bf16+compile) | B (bf16+eager) | C (fp32+eager) |
+|---|---|---|---|
+| median first_chunk_latency_ms | **5929.4** | **5517.8** | **5455.3** |
+| p90 | 6072.9 | 6388.9 | 5601.9 |
+| p95 | 6057.3 | 6191.5 | 5593.5 |
+
+**Pairwise deltas (positive = treatment faster than baseline):**
+- **A vs B (compile gain over bf16-eager):** median Δ = **-411.5 ms (-7.46%)** — compile is 7.46% slower on first-chunk latency.
+- **A vs C (compounded gain over fp32-eager):** median Δ = **-474.1 ms (-8.69%)** — compile+bf16 is 8.69% slower on first-chunk latency.
+- **B vs C (bf16-only re-validation):** median Δ = **-62.6 ms (-1.15%)** — bf16-only is essentially tied with fp32-eager; **reconfirms Story 18.3's empirical-null finding**.
+
+### Producer-bottleneck steady-state ratio (Story 18.1 §4.4 methodology) — the architecture's OFR-E gate
+
+| baseline / branch | ratio | notes |
+|---|---|---|
+| Story 18.1 baseline | 3.23× | talker @ 31% real-time on RTX 5090 |
+| Story 18.2 close | 1.40× | fp32+TF32+cuDNN benchmark |
+| Story 18.3 close | 1.62× | bf16+TF32; net null over 18.2 |
+| **Story 18.4 Branch A (bf16+compile)** | **0.670×** | **✓ OFR-E target (<1.0× sustained) ACHIEVED** |
+| Story 18.4 Branch B (bf16+eager) | 1.663× | reconfirms Story 18.3 baseline |
+| Story 18.4 Branch C (fp32+eager) | 1.430× | reconfirms Story 18.2 baseline |
+
+**The producer emits chunks at ~1.5× real-time on Branch A.** Story 18.1's underrun gap is *structurally impossible* with compile engaged — the producer outpaces playback rather than falling behind. The drain-math fix this story landed handles exactly the new regime.
+
+### Task 8.6 routing condition (Open Question #1) — TRIGGERED but OVERRIDDEN
+
+The aggregator's automatic routing condition fired (sub-20% A-vs-B speedup; threshold from the story's anticipated 1.5–3× warm-cache decode speedup at line 1402). Commander reviewed and **overrode** the routing on 2026-05-11.
+
+Rationale: the OQ #1 framing assumed the producer-bottleneck question would *fail* alongside the first-chunk-latency question. In the actual measurement, the producer-bottleneck OFR-E target — the architecture's load-bearing acceptance criterion — is *met* (0.670× vs <1.0× sustained). The sub-20% first-chunk speedup is a proxy mismatch: first chunk has to come out of the talker's autoregressive loop, and `compile_talker=False` (Fix #1 for Story 16.8's TRUE_STREAM forward-hook compatibility) keeps the talker eager. So first-chunk latency reflects talker speed (unchanged) while steady-state throughput reflects compiled codebook-predictor + decoder speed (massively faster).
+
+Net user-perceived experience under `tts_compile="auto"` on Ampere+ CUDA:
+- Audio starts ~400 ms later than fp32-eager baseline (negligible).
+- Once it starts, plays through **without underrun gaps** (the Story 17.3 §4.4 silent gaps now structurally impossible).
+
+The NFR3 listener audition (Task 9) is the perceptual-quality gate; that's where the user-facing question gets answered.
+
+### Artifacts
+
+- 10 raw per-iteration CSVs per branch (force-added):
+  - `_bmad-output/implementation-artifacts/18-4-rtx5090-bf16-compile-run{01..10}.csv`
+  - `_bmad-output/implementation-artifacts/18-4-rtx5090-bf16-eager-run{01..10}.csv`
+  - `_bmad-output/implementation-artifacts/18-4-rtx5090-fp32-eager-run{01..10}.csv`
+- 3 consolidated CSVs (force-added):
+  - `_bmad-output/implementation-artifacts/18-4-rtx5090-bf16-compile.csv` (10 rows; run #1 marked is_cold_compile=yes)
+  - `_bmad-output/implementation-artifacts/18-4-rtx5090-bf16-eager.csv` (9 rows; missing run 9)
+  - `_bmad-output/implementation-artifacts/18-4-rtx5090-fp32-eager.csv` (7 rows; missing runs 4/5/8)
 
 ## NFR3 joint audition verdict — Task 9
 

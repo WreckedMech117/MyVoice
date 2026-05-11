@@ -1353,6 +1353,22 @@ class AudioCoordinator(BaseService):
             # buffer of grace on top of any unplayed audio in the last
             # chunk. The `if remaining > 0` gate is dropped — safety always
             # fires when wait_for_drain is True.
+            #
+            # Story 18.4 code-review pass follow-up — the last-chunk-only
+            # math was correct under producer-SLOWER-than-real-time (Story
+            # 18.3's case: the PyAudio buffer is approximately empty when
+            # the last chunk arrives, because slow chunks let playback
+            # catch up). But under producer-FASTER-than-real-time (Story
+            # 18.4's compile-engaged path: torch.compile + CUDA Graph
+            # replay produces chunks faster than playback consumes them),
+            # multiple prior chunks queue in PyAudio's buffer when the
+            # last chunk arrives. The last-chunk-only math underestimates
+            # remaining audio by the entire queued depth. Observed in
+            # Story 18.4 Task 8 first run (2026-05-11): 18.9 s of audio
+            # arrived in 14 s; sessions stopped 566 ms after last chunk
+            # while ~4.9 s of audio was still buffered → user heard the
+            # audio cut mid-sentence. Fix: compute both estimates and
+            # take the max so both producer regimes are covered.
             if (
                 wait_for_drain
                 and self._stream_last_write_ts is not None
@@ -1374,16 +1390,40 @@ class AudioCoordinator(BaseService):
                     last_chunk_remaining = max(
                         0.0, last_chunk_duration_s - time_since_last_write
                     )
+                    # Story 18.4 follow-up: producer-faster regime check.
+                    # ``total_audio_duration_s`` is the wall-clock duration
+                    # of all audio bytes ever written to the stream;
+                    # ``playback_elapsed_s`` is wall-clock since the first
+                    # write (PyAudio plays at real-time after a small
+                    # device-internal latency we ignore here — the safety
+                    # buffer covers it). The difference is how much audio
+                    # is still queued in PyAudio's buffer. Under producer-
+                    # slower-than-real-time this goes to 0 (playback
+                    # caught up); the max() with last_chunk_remaining
+                    # preserves Story 18.3's M6 fix for that case.
+                    if self._stream_first_write_ts is not None:
+                        total_audio_duration_s = (
+                            self._stream_total_bytes / bytes_per_second
+                        )
+                        playback_elapsed_s = (
+                            time.monotonic() - self._stream_first_write_ts
+                        )
+                        total_queued_audio_s = max(
+                            0.0, total_audio_duration_s - playback_elapsed_s
+                        )
+                    else:
+                        total_queued_audio_s = 0.0
+                    remaining_s = max(last_chunk_remaining, total_queued_audio_s)
                     drain_wait = min(
-                        last_chunk_remaining + self._DRAIN_SAFETY_BUFFER_S,
+                        remaining_s + self._DRAIN_SAFETY_BUFFER_S,
                         self._MAX_DRAIN_WAIT_S,
                     )
                     self.logger.debug(
                         "Draining output buffer before close: "
                         "last_chunk_duration=%.3fs time_since_last_write=%.3fs "
-                        "last_chunk_remaining=%.3fs waiting=%.3fs",
+                        "last_chunk_remaining=%.3fs total_queued=%.3fs waiting=%.3fs",
                         last_chunk_duration_s, time_since_last_write,
-                        last_chunk_remaining, drain_wait,
+                        last_chunk_remaining, total_queued_audio_s, drain_wait,
                     )
                     await asyncio.sleep(drain_wait)
 

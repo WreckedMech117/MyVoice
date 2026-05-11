@@ -443,6 +443,130 @@ class TestStopStreamingSessionDrain:
             f"got elapsed={elapsed:.3f}s"
         )
 
+    async def test_wait_for_drain_under_producer_faster_than_realtime_waits_for_queued_audio(
+        self
+    ):
+        """Story 18.4 code-review follow-up — drain math must handle the
+        producer-FASTER-than-real-time regime (torch.compile + CUDA Graph
+        replay produces chunks faster than PyAudio consumes them).
+
+        Bug class: the last-chunk-only math (Story 18.3 M6 fix) was correct
+        when the producer was SLOWER than real-time (the PyAudio buffer is
+        approximately empty when the last chunk arrives — playback caught
+        up during slow chunks). But when the producer outpaces real-time,
+        multiple prior chunks queue in PyAudio's buffer; the last-chunk-
+        only math underestimates remaining audio by the entire queued
+        depth.
+
+        Observed Story 18.4 Task 8 first-run (2026-05-11): 18.9 s of audio
+        arrived in 14 s; sessions stopped 566 ms after last chunk write
+        while ~4.9 s of audio was still buffered → user heard the audio
+        cut mid-sentence. Fix: take max(last_chunk_remaining,
+        total_queued_audio_s). This test pins the producer-faster regime;
+        the existing Story 18.3 M6 tests pin the producer-slower regime.
+
+        Setup mirrors the observed run:
+          * 18.9 s of audio in total (sample_rate=24000, bytes=24000*2*18.9=907200)
+          * Last chunk written 0.05 s ago (just arrived; producer faster)
+          * First chunk written 14 s ago (chunks streamed over 14 s wall-clock)
+          * Last chunk is 1.9 s of audio (38000 bytes); last_chunk_remaining
+            ≈ 1.85 s under the OLD math.
+          * Total queued ≈ 18.9 - 14 = 4.9 s.
+          * The fix takes max(1.85, 4.9) = 4.9 s, then adds safety buffer.
+
+        The OLD math would have computed ~1.85 + 0.5 = 2.35 s wait. The
+        FIXED math computes ~4.9 + 0.5 = 5.4 s wait. We patch the cap
+        down to a small value to avoid waiting 5+ seconds in CI; the
+        contract under test is "the wait is the larger of the two
+        estimates."
+        """
+        coord, _monitor, _virtual = _coord_with_drain_services()
+        await coord.start_streaming_session(sample_rate=24000, channels=1, sample_width=2)
+        now = _time.monotonic()
+        # Producer-faster scenario: 18.9 s of audio arrived in 14 s.
+        coord._stream_first_write_ts = now - 14.0
+        coord._stream_total_bytes = 24000 * 2 * 19  # ~19 s of audio (round number)
+        coord._stream_last_write_ts = now - 0.05
+        coord._stream_last_chunk_bytes = 24000 * 2 * 2  # 2 s chunk
+        # last_chunk_remaining = 2.0 - 0.05 = 1.95 s
+        # total_queued = 19.0 - 14.0 = 5.0 s   (the regime the bug missed)
+        # remaining = max(1.95, 5.0) = 5.0 s
+
+        # Cap the wait so the test doesn't actually sleep 5+ s; the
+        # contract is that the wait HITS the cap (proving math >> 1.95 s).
+        safety_s = AudioCoordinator._DRAIN_SAFETY_BUFFER_S
+        # We need a cap that is unambiguously > old-math-result + safety
+        # (1.95 + 0.5 = 2.45 s) AND < new-math-result + safety (5.0 + 0.5
+        # = 5.5 s), so the test can distinguish: OLD math returns 2.45 s
+        # (test would FAIL the lower bound); NEW math returns capped value
+        # (test PASSES).
+        cap = 3.0
+        lower_bound = 2.8  # > old-math result of 2.45 s
+        upper_bound = 3.6  # cap + asyncio jitter
+        original_cap = AudioCoordinator._MAX_DRAIN_WAIT_S
+        AudioCoordinator._MAX_DRAIN_WAIT_S = cap
+        try:
+            t0 = _time.monotonic()
+            await coord.stop_streaming_session(wait_for_drain=True)
+            elapsed = _time.monotonic() - t0
+        finally:
+            AudioCoordinator._MAX_DRAIN_WAIT_S = original_cap
+
+        assert lower_bound <= elapsed <= upper_bound, (
+            f"Drain wait under producer-faster-than-real-time regime must "
+            f"use total-queued-audio estimate, NOT last-chunk-only. "
+            f"OLD math would have returned ~2.45s (last_chunk_remaining "
+            f"1.95s + safety {safety_s:.3f}s); NEW math should return "
+            f"capped value (~{cap:.3f}s). Got elapsed={elapsed:.3f}s "
+            f"(expected {lower_bound}-{upper_bound}s)."
+        )
+
+    async def test_wait_for_drain_under_producer_slower_than_realtime_still_uses_last_chunk_math(
+        self
+    ):
+        """Story 18.4 code-review follow-up — the max() fix must NOT
+        regress Story 18.3 M6's producer-slower-than-real-time case.
+
+        Under producer-slower regime, the PyAudio buffer is approximately
+        empty when the last chunk arrives (playback caught up during slow
+        chunks). total_queued_audio_s should be ~0 (or negative, clamped
+        to 0); the max() picks last_chunk_remaining, preserving Story
+        18.3 M6's contract.
+
+        Setup mirrors Story 18.3's producer-bottleneck scenario:
+          * Producer 3.23× slower than real-time (Story 18.1 baseline)
+          * Last chunk is 2 s of audio
+          * Total audio is 6 s (3 chunks at 2 s each)
+          * Wall-clock since first write: 19.4 s (6 s of audio at 3.23×)
+          * Wall-clock since last write: 0.1 s (just arrived; producer
+            still emitting)
+          * total_audio (6 s) - playback_elapsed (19.4 s) = -13.4 s → clamp to 0
+          * last_chunk_remaining = 2 s - 0.1 s = 1.9 s
+          * max = 1.9 s — Story 18.3 M6 contract preserved.
+        """
+        coord, _monitor, _virtual = _coord_with_drain_services()
+        await coord.start_streaming_session(sample_rate=24000, channels=1, sample_width=2)
+        now = _time.monotonic()
+        coord._stream_first_write_ts = now - 19.4
+        coord._stream_total_bytes = 24000 * 2 * 6  # 6 s of audio
+        coord._stream_last_write_ts = now - 0.1
+        coord._stream_last_chunk_bytes = 24000 * 2 * 2  # 2 s chunk
+        safety_s = AudioCoordinator._DRAIN_SAFETY_BUFFER_S
+        # last_chunk_remaining = 1.9 s; total_queued clamped to 0
+        # → wait ≈ 1.9 + safety
+        expected_wait = 1.9 + safety_s
+
+        t0 = _time.monotonic()
+        await coord.stop_streaming_session(wait_for_drain=True)
+        elapsed = _time.monotonic() - t0
+
+        assert (expected_wait - 0.2) <= elapsed <= (expected_wait + 0.4), (
+            f"Producer-slower regime must preserve Story 18.3 M6 last-chunk-"
+            f"only math (total_queued clamped to 0; max picks "
+            f"last_chunk_remaining). Expected ~{expected_wait:.3f}s; "
+            f"got elapsed={elapsed:.3f}s."
+        )
+
     async def test_wait_for_drain_with_no_writes_does_not_wait(self):
         """If no chunks were ever written (last_chunk_bytes == 0), there
         is nothing to drain. Early-out without sleeping."""
