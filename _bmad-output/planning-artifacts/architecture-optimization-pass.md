@@ -800,7 +800,7 @@ qwen_tts_service                streaming_decoder              session_registry
 | NFR | Covered by |
 |---|---|
 | NFR1 First audio <2s | GPU: meets via TRUE_STREAM (~1.5–1.8s estimated). CPU: meets via inherited SENTENCE_STREAM (per FR2 row). **Empirical measurement gate at Phase ⊥ POC.** *(Story 16.9 reconciled 2026-05-08 — empirical contradiction; per-class targets adopted. See follow-up note below.)* |
-| NFR3 No audio stuttering | D-8 chunk + overlap-add with seam-quality A/B testing before flipping streaming default; sentence-stream/batch unchanged from V2 *(Story 17.1 audition cleared 2026-05-08 — see follow-up note below.)* *(Story 18.3 bf16 audition DEFERRED 2026-05-10 pending Story 18.4 producer-bottleneck close — measured no speedup over Story 18.2 fp32+TF32 baseline; revisit post-18.4. See follow-up note below.)* *(Story 18.4 joint audition L1 PARTIAL PASS 2026-05-11 — certified bf16 + compile + pin-bump from QwenLM/Qwen3-TTS@1ab0dd75 to dffdeeq/Qwen3-TTS-streaming@3fdb4682; OFR-E producer-bottleneck closed (ratio 3.23× → 0.670×); zero `audible_seam` flags on L1's 20 trials. L2 + L3 deferred pending listener recruitment. See follow-up note below.)* |
+| NFR3 No audio stuttering | D-8 chunk + overlap-add with seam-quality A/B testing before flipping streaming default; sentence-stream/batch unchanged from V2 *(Story 17.1 audition cleared 2026-05-08 — see follow-up note below.)* *(Story 18.3 bf16 audition DEFERRED 2026-05-10 pending Story 18.4 producer-bottleneck close — measured no speedup over Story 18.2 fp32+TF32 baseline; revisit post-18.4. See follow-up note below.)* *(Story 18.4 joint audition FULL PASS 2026-05-11 — certified bf16 + compile + pin-bump from QwenLM/Qwen3-TTS@1ab0dd75 to dffdeeq/Qwen3-TTS-streaming@3fdb4682; OFR-E producer-bottleneck closed (ratio 3.23× → 0.670×); zero `audible_seam` flags across all 30 trials × 2 conditions = 60 defect observations from 3 listeners; one slight bf16_compile preference (L1 on s-015), 29 equivalent. See follow-up note below.)* |
 | NFR4 UI <200ms | D-2 Qt-thread ownership of registry; mutation work bounded to state transitions, not waveform I/O |
 | NFR6 No crashes | D-12 import-attribute test + P-1 state-bound method validity (no silent no-ops) + P-7 clean cancellation (no half-state CUDA) |
 | NFR7 Graceful degradation | D-9 + the three-mode dispatch in `qwen_tts_service.py` (BATCH ← SENTENCE_STREAM ← TRUE_STREAM fallback chain) |
@@ -959,9 +959,9 @@ Source artifacts (✓ = git-tracked; ○ = working file under gitignored `_bmad-
 - ○ `_bmad-output/implementation-artifacts/18-3-perceptual-fixtures/` — **not produced** (audition deferred). The directory will be created if/when the audition is re-attempted post-Story-18.4.
 - ○ `_bmad-output/implementation-artifacts/18-3-bf16-precision-audition.csv` — **not produced** (audition deferred).
 
-#### Story 18.4 Follow-up Note (Joint bf16 + Compile + Pin-Bump Audition — L1 PARTIAL PASS, 2026-05-11)
+#### Story 18.4 Follow-up Note (Joint bf16 + Compile + Pin-Bump Audition — FULL PASS, 2026-05-11)
 
-Story 18.4 (Epic 18 / Phase ⊥-Polish-2 fourth and final story — torch.compile Decoder + Persistent Compile Cache) executed all dev-agent-autonomous tasks + Task 8 (NFR1 3-way A/B/C measurement) + Task 9.2 (fixture regen) + Task 9.4 L1 (Commander audition). The architecture's load-bearing OFR-E producer-bottleneck-close target is **ACHIEVED**; the perceptual NFR3 gate is **L1 PARTIAL PASS** with L2 + L3 listener recruitment deferred.
+Story 18.4 (Epic 18 / Phase ⊥-Polish-2 fourth and final story — torch.compile Decoder + Persistent Compile Cache) executed all dev-agent-autonomous tasks + Task 8 (NFR1 3-way A/B/C measurement) + Task 9.2 (fixture regen) + Task 9.4 (full L1 + L2 + L3 audition). The architecture's load-bearing OFR-E producer-bottleneck-close target is **ACHIEVED**; the perceptual NFR3 gate is **FULL PASS** — zero `audible_seam` flags across all 30 trials × 2 conditions from 3 listeners.
 
 **D-22 verification — Branch B fires (architecture's high-risk gate, named at line 1319 of `architecture-streaming-acceleration-and-lightning-tier.md`).**
 
@@ -1001,20 +1001,27 @@ Pairwise first-chunk-latency deltas (positive = treatment faster than baseline):
 
 **Split-verdict mechanism (architecturally important).** First-chunk latency reflects talker speed (still eager under `compile_talker=False`); steady-state throughput reflects compiled codebook-predictor + decoder speed (~21× per-call faster per the standalone smoke at `_bmad-output/implementation-artifacts/18-4-qwen-compile-smoke.py`). Net user-perceived experience under `tts_compile="auto"`: audio starts ~400 ms later than fp32-eager baseline; once it starts, plays through without underrun gaps. The OQ #1 routing trigger (sub-20% A-vs-B speedup gate at line 1402 of the story's anticipated 1.5–3× warm-cache decode speedup) fired in the aggregator output, but Commander **overrode** the trigger 2026-05-11 — the OQ #1 framing measured first-chunk latency as a proxy for "did compile work?"; the actual OFR-E acceptance criterion (producer-bottleneck ratio) is met.
 
-**NFR3 joint audition (Task 9) — L1 PARTIAL PASS.**
+**NFR3 joint audition (Task 9) — FULL PASS.**
 
-Per-actual-mode defect-flag counts (L1 only, N=10 trials per actual mode after un-blinding via truth-table):
+All 3 listeners auditioned (L1 = Commander; L2 + L3 = co-located in-person walkthrough listeners per the Story 17.1 protocol). 30 trials × 2 conditions = 60 defect observations.
+
+Per-actual-mode defect-flag counts (N=30 trials per actual mode after un-blinding via truth-table):
 
 | defect | fp32_eager | bf16_compile |
 |---|---|---|
-| `none` | 10 | 10 |
+| `none` | 30 | 30 |
 | `audible_seam` (← verdict gate) | **0** | **0** |
 | `clipping` | 0 | 0 |
 | `phase_artifact` | 0 | 0 |
 | `tonal_distortion` | 0 | 0 |
 | `other_describe_in_notes` | 0 | 0 |
 
-L1 actual-mode preferences: bf16_compile = 1 (s-015, with note *"Seemed like better quality/volume"*); fp32_eager = 0; equivalent = 9. **L1 partial verdict: PASS.** Zero `audible_seam` flags on bf16_compile trials; zero defects of any kind on either system; L1's only non-equivalent preference favors bf16_compile.
+Per-listener actual-mode preference (un-blinded via truth-table):
+- L1: bf16_compile = 1 (s-015, with note *"Seemed like better quality/volume"*); fp32_eager = 0; equivalent = 9
+- L2: bf16_compile = 0; fp32_eager = 0; equivalent = 10
+- L3: bf16_compile = 0; fp32_eager = 0; equivalent = 10
+
+**Full audition verdict: PASS.** Zero `audible_seam` flags on bf16_compile trials (and zero on fp32_eager — clean across all 60 observations); zero defects of any kind on either system across all 3 listeners; only non-equivalent preference (1/30 trials) favors bf16_compile. The bf16+compile+pin-bump composite is perceptually indistinguishable from fp32+eager across the 3-listener panel.
 
 **Architectural decision: ship Story 18.4 source-tree work + compile-as-default-on-Ampere+ pending full audition closure.**
 
@@ -1025,19 +1032,18 @@ L1 actual-mode preferences: bf16_compile = 1 (s-015, with note *"Seemed like bet
 - ✓ `AppSettings.tts_compile` field with `auto`/`on`/`off` validation. Default **flipped to `"off"`** by Fix #4 (2026-05-10 bundled-smoke triton-on-Windows blocker; per OQ #4 routing). The compile source-tree machinery is LIVE but bypassed at runtime by the "off" default; advanced users opt-in via hand-edit of `settings.json`.
 - ✓ `QwenTTSService.warmup_compile_async` (fire-and-forget; "Preparing TTS engine…" indicator; persistent-cache hit/miss/failure branches). Code-review pass added `tts_compile="off"` gate at H1 (prevents the warmup priming generation from playing audible "Hello world." to users on first launch under the "off" default).
 - ✓ `audio_coordinator.stop_streaming_session(wait_for_drain=True)` extended for producer-FASTER-than-real-time regime — `max(last_chunk_remaining, total_queued_audio_s)` handles both Story 18.3 M6's producer-slower case AND Story 18.4's compile-engaged producer-faster case.
-- **Deferred:** L2 + L3 audition (Task 9.3/9.4). The Story 17.1 protocol expects ≥3 listeners (L1 = Commander; L2 + L3 = co-located in-person walkthrough listeners). L1's signal is unambiguously clean (zero defects across all 20 trials; slight bf16_compile preference) so L2 + L3 are unlikely to flip the verdict, but architecturally the audition is INCOMPLETE until they land. The architecture amendment lands in this partial form; re-amend in place when L2 + L3 complete.
+- ✓ **Full audition complete (Task 9.3/9.4):** L1 = Commander + L2 + L3 = co-located in-person walkthrough listeners per the Story 17.1 protocol. 30 trials × 2 conditions = 60 defect observations; zero `audible_seam` flags on bf16_compile trials (and zero on fp32_eager); zero defects of any kind on either system across all 3 listeners.
 - **Deferred to Story 18.5:** the production-bundle packaging path. The dev-env triton-on-Windows blocker (`Cannot find a working triton installation`) is **resolved** in the dev environment (Python 3.10.11 headers + libs + CUDA Toolkit 12.8 + `pip install --no-deps triton-windows`; verified via the standalone smoke and the real-model smoke at `_bmad-output/implementation-artifacts/18-4-triton-smoke.py` and `18-4-qwen-compile-smoke.py`). The bundle-side problem is a packaging-only issue (need to ship CUDA Toolkit redistributables + Python headers + triton-windows in the PyInstaller bundle), not a fundamental compatibility problem. Story 18.5 scope.
 
-**NFR3 status (re-clearance status mixed).** The Story 17.1 audition's verdict (PASS — zero `audible_seam` flags across 30 trials on the post-Story-16.8 regenerated fixture) remains the canonical NFR3 clearance for the streaming-default ramp. Story 18.4's L1 partial PASS adds preliminary perceptual coverage for the bf16+compile+new-pin composite, but does NOT yet constitute full re-clearance (≥3 listeners required per Story 17.1 protocol). The bf16+compile path is engaged in production *only* when the user explicitly sets `tts_compile != "off"` (the bundled-smoke default is "off" pending Story 18.5); production users running the bundle today get the pre-Story-18.4 Story 18.3 bf16-eager baseline.
+**NFR3 status (FULLY RE-CLEARED).** The Story 17.1 audition's verdict (PASS — zero `audible_seam` flags across 30 trials on the post-Story-16.8 regenerated fixture) remains the canonical NFR3 clearance for the streaming-default ramp. Story 18.4's full audition (3 listeners × 10 utterances × A/B = 60 defect observations) **re-clears NFR3** for the bf16+compile+new-pin composite. The bf16+compile path is engaged in production *only* when the user explicitly sets `tts_compile != "off"` (the bundled-smoke default is "off" pending Story 18.5); production users running the bundle today get the pre-Story-18.4 Story 18.3 bf16-eager baseline. Once Story 18.5 ships the bundle infrastructure, flipping the default back to `tts_compile="auto"` is **architecturally pre-cleared** by this audition.
 
 **Methodology composition.** The fp32 branch in this 3-way A/B/C is **fp32-with-TF32-engaged**, not strict-fp32 (Story 18.2's TF32 + cuDNN benchmark autotune engages at startup on every Ampere+ host regardless of precision). The bf16+compile vs fp32+eager comparison is therefore (bf16 + compile + TF32) vs (fp32 + TF32). Strict-fp32 was closed-as-null by Story 18.2 on the producer-bottleneck workload and Story 18.4 does not re-litigate.
 
-**Methodology limitations (mirrored from Story 17.1 / 18.3 follow-up notes).** Four structural limitations apply:
+**Methodology limitations (mirrored from Story 17.1 / 18.3 follow-up notes).** Three structural limitations apply:
 
 1. **Single-host RTX 5090 measurement.** Captured only on Commander's RTX 5090 Blackwell dev host (capability 12.0 / GeForce variant). Earlier Ampere/Ada hosts (RTX 30xx/40xx) may show a different compile-engaged-vs-eager profile — Blackwell's tensor cores are unusually capable. The architecture amendment's data should not be cited as "compile delivers 0.670× ratio on Ampere+" generally; only as "compile delivers 0.670× ratio on Blackwell GeForce 12.0 in our V2 inference workload with the canonical Story 17.3 §4.1 step 3 long-form Sarira-F utterance."
-2. **L2 + L3 audition not run.** The audition is L1-PARTIAL until L2 + L3 land. Future maintainers re-validating bf16+compile for a future qwen-tts pin bump or for a Story 18.5 bundle-shipping rollout need to run L2 + L3 fresh.
-3. **Cold-compile run discarded.** Branch A's run #1 (6154.6 ms) was discarded from the median calculation per the aggregator's cold-compile discipline at Task 8.4. The architecture's anticipated 10-30 s cold-compile budget is respected — 6.1 s observed is well within budget on Blackwell — but the cold cost is real for first-process-launch UX and the persistent compile cache (D-23) amortizes it across launches.
-4. **Audition listener count limited to L1.** Per Story 17.1's M1 reproducibility section, the audition's external reproducibility depends on the gitignored fixture remaining on Commander's filesystem; force-add of the 20 WAVs to `_bmad-output/implementation-artifacts/18-4-perceptual-fixtures/` is the canonical cross-session retention path. The truth-table seed `"Story 18.4 joint audition:<listener_id>"` is reproducible; if the truth-table is lost, regenerate via `18-4-generate-truthtable.py`.
+2. **Cold-compile run discarded.** Branch A's run #1 (6154.6 ms) was discarded from the median calculation per the aggregator's cold-compile discipline at Task 8.4. The architecture's anticipated 10-30 s cold-compile budget is respected — 6.1 s observed is well within budget on Blackwell — but the cold cost is real for first-process-launch UX and the persistent compile cache (D-23) amortizes it across launches.
+3. **Audition reproducibility.** Per Story 17.1's M1 reproducibility section, the audition's external reproducibility depends on the gitignored fixture remaining on Commander's filesystem; force-add of the 20 WAVs to `_bmad-output/implementation-artifacts/18-4-perceptual-fixtures/` is the canonical cross-session retention path. The truth-table seed `"Story 18.4 joint audition:<listener_id>"` is reproducible; if the truth-table is lost, regenerate via `18-4-generate-truthtable.py`. Future maintainers re-validating bf16+compile for a future qwen-tts pin bump can re-run the audition fresh — or amend in place if the new pin is a minor patch over `3fdb4682`.
 
 Source artifacts (✓ = git-tracked; ○ = working file under gitignored `_bmad-output/`, retained on Commander's filesystem only):
 
@@ -1055,7 +1061,7 @@ Source artifacts (✓ = git-tracked; ○ = working file under gitignored `_bmad-
 - ✓ `_bmad-output/implementation-artifacts/18-4-rtx5090-bf16-compile.csv` + `18-4-rtx5090-bf16-eager.csv` + `18-4-rtx5090-fp32-eager.csv` (consolidated N=10 cold-start `first_chunk_latency_ms`; force-added).
 - ✓ `_bmad-output/implementation-artifacts/18-4-rtx5090-bf16-compile-run<NN>.csv` + `-bf16-eager-run<NN>.csv` + `-fp32-eager-run<NN>.csv` (30 per-run CSVs; force-added).
 - ✓ `_bmad-output/implementation-artifacts/18-4-perceptual-fixtures/` (20 paired WAVs + `_perlistener_truthtable.json` + `LISTENING-INSTRUCTIONS.md`; force-added).
-- ✓ `_bmad-output/implementation-artifacts/18-4-bf16-compile-pinbump-audition.csv` (10 L1 rows; appendable when L2 + L3 land; force-added).
+- ✓ `_bmad-output/implementation-artifacts/18-4-bf16-compile-pinbump-audition.csv` (30 rows = L1 + L2 + L3 × 10 utterances; force-added).
 
 ### Implementation Readiness Validation — with surfaced gaps
 

@@ -356,7 +356,7 @@ The NFR3 listener audition (Task 9) is the perceptual-quality gate; that's where
 
 ## NFR3 joint audition verdict — Task 9
 
-**L1 partial PASS, 2026-05-11.** Fixture fully regenerated + L1 (Commander) audition complete; L2 + L3 recruitment deferred.
+**FULL PASS, 2026-05-11.** All 3 listeners (L1 = Commander; L2 + L3 = co-located in-person walkthrough listeners) auditioned the full 10-utterance fixture. 30 trials × 2 conditions = 60 defect observations; zero `audible_seam` flags on either system; only 1 non-equivalent preference (L1's bf16_compile preference on s-015).
 
 ### Fixture regen (Task 9.2) — fully automated 2026-05-11
 
@@ -377,38 +377,45 @@ Notable: B's first generation (s-014) absorbed the cold-compile cost (~14 s). Al
 
 WAV inventory: all 20 files PCM_16 mono 24 kHz. Durations match utterance length class (short 2-4 s, medium 2.5-3.7 s, long 9.5-11 s). A vs B durations within ~10 % per utterance (model sampling stochasticity, expected).
 
-### L1 audition (Task 9.4 L1) — 2026-05-11
+### Full audition (Task 9.4 L1 + L2 + L3) — 2026-05-11
+
+#### L1 audition
 
 Helper script `18-4-l1-audition-helper.py` (already in place from earlier dev-agent work) was wrapped in `08_Story_18.4_NFR3_Audition.bat` so the user-facing flow mirrors `01_Run_MyVoice_With_CSV_Capture.bat`. Commander ran L1 session via the .bat with headphones. Session completed cleanly (10 / 10 rows recorded; no aborts).
 
-### Verdict computation (Task 9.5) — partial
+#### L2 + L3 audition
+
+L2 + L3 (co-located in-person walkthrough listeners per Story 17.1's protocol) ran the audition via the same `08_Story_18.4_NFR3_Audition.bat L2` / `L3` invocations. Both sessions completed cleanly (10 / 10 rows each). The truth-table's per-listener randomization (L2: 4/6 fp32-as-trial-A, L3: 5/5 fp32-as-trial-A — different from L1's 5/5) ensures the A/B ordering varies across listeners.
+
+### Verdict computation (Task 9.5) — full audition
 
 `18-4-compute-verdict.py` cross-references the truth-table to map listener "trial A / trial B defects observed" back to actual modes (`fp32_eager` / `bf16_compile`).
 
-**Per-actual-mode defect-flag counts (L1 only, N=10 trials per mode):**
+**Per-actual-mode defect-flag counts (3 listeners × 10 utterances = 30 trials per mode):**
 
 | defect | fp32_eager | bf16_compile |
 |---|---|---|
-| `none` | 10 | 10 |
+| `none` | 30 | 30 |
 | `audible_seam` (← verdict gate) | **0** | **0** |
 | `clipping` | 0 | 0 |
 | `phase_artifact` | 0 | 0 |
 | `tonal_distortion` | 0 | 0 |
 | `other_describe_in_notes` | 0 | 0 |
 
-**L1 actual-mode preferences (after un-blinding via truth-table):**
+**Per-listener actual-mode preferences (after un-blinding via truth-table):**
 
-- bf16_compile: 1 (s-015, with note "Seemed like better quality/volume")
-- fp32_eager: 0
-- equivalent: 9
+| listener | bf16_compile | fp32_eager | equivalent |
+|---|---|---|---|
+| L1 | 1 (s-015 — "Seemed like better quality/volume") | 0 | 9 |
+| L2 | 0 | 0 | 10 |
+| L3 | 0 | 0 | 10 |
+| **total** | **1** | **0** | **29** |
 
-**L1 partial verdict: PASS** — zero `audible_seam` flags on bf16_compile trials; zero defects of any kind on either system; L1's only non-equivalent preference favors bf16_compile.
+**Full audition verdict: PASS.** Zero `audible_seam` flags on bf16_compile trials (and zero on fp32_eager — clean across all 60 defect observations). Zero defects of any kind on either system. Only 1 / 30 trials non-equivalent — and it favors bf16_compile. The bf16+compile+pin-bump composite is perceptually indistinguishable from fp32+eager across the 3-listener panel.
 
-### Listener recruitment (Task 9.3) — L2 + L3 deferred
+### Listener recruitment (Task 9.3) — complete
 
-The Story 17.1 protocol expects ≥3 listeners (L1 = Commander; L2 + L3 = co-located in-person walkthrough listeners) for the full audition. L2 + L3 recruitment is deferred to when humans are available. The L1 signal is unambiguously clean (zero defects across all 20 trials; slight bf16_compile preference on the one non-equivalent row), so L2 + L3 are unlikely to flip the verdict — but architecturally the audition is INCOMPLETE until they land.
-
-**Routing:** the architecture amendment (Task 10) waits on full audition closure. The L1 partial verdict is recorded here as a placeholder. When L2 + L3 land, re-run `18-4-compute-verdict.py` and update this section + amend the architecture.
+The Story 17.1 protocol's ≥3 listener requirement is met. L1 = Commander; L2 + L3 = co-located in-person walkthrough listeners. Both L2 + L3 sessions completed cleanly via `08_Story_18.4_NFR3_Audition.bat L2` and `... L3`.
 
 ### Artifacts
 
@@ -416,7 +423,7 @@ Force-added per gitignore precedent:
 - 20 WAV files at `_bmad-output/implementation-artifacts/18-4-perceptual-fixtures/{s-014..l-014}-{fp32_eager,bf16_compile}.wav`
 - `_bmad-output/implementation-artifacts/18-4-perceptual-fixtures/_perlistener_truthtable.json`
 - `_bmad-output/implementation-artifacts/18-4-perceptual-fixtures/LISTENING-INSTRUCTIONS.md` (verbatim from `16-7-perceptual-fixtures/`)
-- `_bmad-output/implementation-artifacts/18-4-bf16-compile-pinbump-audition.csv` (L1 rows; appendable when L2 + L3 land)
+- `_bmad-output/implementation-artifacts/18-4-bf16-compile-pinbump-audition.csv` (30 rows = L1 + L2 + L3 × 10 utterances)
 - `_bmad-output/implementation-artifacts/18-4-regen-fixture.py` (one-shot regen)
 - `_bmad-output/implementation-artifacts/18-4-generate-truthtable.py` (truth-table builder)
 - `_bmad-output/implementation-artifacts/18-4-compute-verdict.py` (verdict cross-reference)

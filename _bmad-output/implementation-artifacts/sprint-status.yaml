@@ -124,9 +124,9 @@ development_status:
   # Recommended sequencing: 18.1 + 18.2 in either order or parallel; 18.3 third (settles
   # precision question); 18.4 last (compiles whatever precision 18.3 selected). 18.3 + 18.4
   # may amortize a single NFR3 audition if shipped close together.
-  epic-18: in-progress
+  epic-18: done
   18-1-underrun-gap-mitigation: done
   18-2-tf32-cudnn-benchmark-enable: done
   18-3-bf16-precision-on-talker-decoder: done
-  18-4-torch-compile-decoder-persistent-cache: review
+  18-4-torch-compile-decoder-persistent-cache: done
   epic-18-retrospective: optional
