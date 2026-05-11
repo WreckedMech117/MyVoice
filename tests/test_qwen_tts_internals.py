@@ -45,14 +45,24 @@ def test_voice_clone_prompt_item_class_is_deep_path_importable():
 
 
 def test_qwen3_tts_model_method_surface_intact():
-    """Pin every callable MyVoice invokes on a Qwen3TTSModel instance."""
+    """Pin every callable MyVoice invokes on a Qwen3TTSModel instance.
+
+    Story 18.4 / D-22 Branch B extension: `enable_streaming_optimizations` is the
+    upstream-blessed compile+CUDA-graph engagement API introduced by the
+    dffdeeq/Qwen3-TTS-streaming fork at commit `3fdb4682` ("compile and fast codebook",
+    2026-02-03). Story 18.4 wires it into the model-load path via
+    services/tts_streaming/torch_runtime.py:engage_compile_optimizations. The architecture
+    binds the call (P-11 invariant assertion at startup); this trip-wire fails CI before
+    a silent fork-pin reversion can break that wire-up.
+    """
     from qwen_tts import Qwen3TTSModel
     expected_methods = (
-        "from_pretrained",            # classmethod — services/model_registry.py:459
-        "create_voice_clone_prompt",  # services/qwen_tts_service.py:1285, 1296
-        "generate_voice_clone",       # services/qwen_tts_service.py:2606, 2632
-        "generate_voice_design",      # services/qwen_tts_service.py:2596
-        "generate_custom_voice",      # services/qwen_tts_service.py:2588
+        "from_pretrained",                    # classmethod — services/model_registry.py:459
+        "create_voice_clone_prompt",          # services/qwen_tts_service.py:1285, 1296
+        "generate_voice_clone",               # services/qwen_tts_service.py:2606, 2632
+        "generate_voice_design",              # services/qwen_tts_service.py:2596
+        "generate_custom_voice",              # services/qwen_tts_service.py:2588
+        "enable_streaming_optimizations",     # Story 18.4 — services/tts_streaming/torch_runtime.py
     )
     missing = [m for m in expected_methods if not callable(getattr(Qwen3TTSModel, m, None))]
     assert not missing, (

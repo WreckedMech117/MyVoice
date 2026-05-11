@@ -17,7 +17,19 @@ import sys
 import os
 import logging
 import asyncio
+import multiprocessing
 from pathlib import Path
+
+# CRITICAL: PyInstaller multiprocessing guard. Story 18.4 / D-22 Branch B
+# engages torch.compile, whose inductor backend spawns subprocess workers
+# for parallel kernel compilation. In a PyInstaller-bundled app without
+# this guard, each spawned subprocess re-execs the bundled exe, triggering
+# the splash screen + Qt init + everything else at the top of main.py —
+# the user sees the app launch twice. `freeze_support()` makes spawned
+# subprocesses recognize themselves as workers and exit cleanly instead.
+# Documented PyInstaller best practice; harmless in dev mode (no subprocess
+# re-exec happens there).
+multiprocessing.freeze_support()
 
 # Add the src directory to Python path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))

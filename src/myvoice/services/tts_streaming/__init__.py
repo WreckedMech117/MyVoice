@@ -22,9 +22,11 @@ from myvoice.services.tts_streaming.streaming_decoder import (
 )
 from myvoice.services.tts_streaming.torch_runtime import (
     enable_tf32_and_cudnn_benchmark,
+    engage_compile_optimizations,
     is_ampere_or_newer,
     resolve_tts_precision,
 )
+from myvoice.services.tts_streaming import compile_cache
 
 __all__ = [
     "StreamingMode",
@@ -36,4 +38,6 @@ __all__ = [
     "enable_tf32_and_cudnn_benchmark",
     "is_ampere_or_newer",
     "resolve_tts_precision",
+    "engage_compile_optimizations",
+    "compile_cache",
 ]

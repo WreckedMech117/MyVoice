@@ -62,7 +62,7 @@ Telemetry breadcrumb (the metric Stories 18.3 + 18.4 baseline against):
 from __future__ import annotations
 
 import logging
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from myvoice.observability import metrics
 
@@ -70,6 +70,8 @@ from myvoice.observability import metrics
 _logger = logging.getLogger(__name__)
 
 _METRIC_NAME = "tf32_cudnn_benchmark_enabled"
+_METRIC_NAME_TTS_PRECISION = "tts_precision_resolved"
+_METRIC_NAME_COMPILE = "tts_compile_engaged"
 
 # Compute-capability major mapping (informational; the test is `major >= 8`):
 #   Pascal       = 6.x   (GTX 10xx)        — pre-Ampere, no TF32 tensor cores
@@ -335,3 +337,434 @@ def resolve_tts_precision(override: Optional[str]) -> "torch.dtype":  # type: ig
     if is_ampere_or_newer():
         return torch.bfloat16
     return torch.float32
+
+
+# --------------------------------------------------------------------------- #
+# Story 18.4 — torch.compile + CUDA Graph engagement via upstream API
+# --------------------------------------------------------------------------- #
+
+
+def _probe_compile_engaged(model: Any) -> bool:
+    """P-12 capability probe — has ``torch.compile`` actually wrapped a target?
+
+    Architecture P-12 (line 674-713 of
+    ``architecture-streaming-acceleration-and-lightning-tier.md``) requires
+    verifying that ``enable_streaming_optimizations`` actually engaged compile,
+    not merely returned without raising. The fork's added 50 lines could be a
+    no-op stub; the probe is the canonical signal.
+
+    The fork's ``enable_streaming_optimizations`` (when called with our
+    ``compile_talker=False`` argument — see ``engage_compile_optimizations``
+    for the rationale) compiles the codebook predictor by default. The
+    fork's ``CodePredictor.enable_compile`` executes
+    ``self.model.forward = torch.compile(self.model.forward, mode=mode, fullgraph=False)``.
+    After compile, the wrapped function carries the
+    ``_torchdynamo_orig_callable`` attribute (PyTorch's canonical wrapped-
+    function sentinel since 2.0). The probe walks
+    ``model.model.talker.code_predictor.model.forward`` and checks for that
+    attribute.
+
+    Why NOT the talker forward: we pass ``compile_talker=False`` to preserve
+    Story 16.8's TRUE_STREAM forward-hook (the talker's forward-hook captures
+    per-step `codec_ids`; torch.compile-wrapping breaks that path). With
+    `compile_talker=False`, the talker's inner forward stays eager, so a
+    talker-targeted probe would always return False — wrong signal.
+
+    Defensive: returns False if any step of the dereference chain returns
+    None or a non-callable. The False return triggers the NFR7 graceful-
+    degradation fallback (eager-mode generation stays available).
+
+    Args:
+        model: The ``Qwen3TTSModel`` wrapper instance.
+
+    Returns:
+        True iff the codebook predictor's inner forward is torch.compile-wrapped.
+    """
+    # Dereference chain: Qwen3TTSModel → Qwen3TTSForConditionalGeneration →
+    # Qwen3TTSTalkerForConditionalGeneration → CodePredictor → inner model → forward.
+    inner = getattr(model, "model", None)
+    if inner is None:
+        return False
+    talker = getattr(inner, "talker", None)
+    if talker is None:
+        return False
+    code_predictor = getattr(talker, "code_predictor", None)
+    if code_predictor is None:
+        return False
+    predictor_inner = getattr(code_predictor, "model", None)
+    if predictor_inner is None:
+        return False
+    fwd = getattr(predictor_inner, "forward", None)
+    if fwd is None:
+        return False
+    # torch.compile(fn) returns a wrapper function with this attribute
+    # since PyTorch 2.0. Defensive against renames: also accept the
+    # ``__wrapped__`` and ``_orig_mod`` attributes (the wrapper variants
+    # for module-level and bound-method compile targets).
+    return (
+        hasattr(fwd, "_torchdynamo_orig_callable")
+        or hasattr(fwd, "__wrapped__")
+        or hasattr(predictor_inner, "_orig_mod")
+    )
+
+
+def engage_compile_optimizations(
+    model: Any,
+    *,
+    app_settings: Optional[Any] = None,
+    streamer_chunk_size: int = 25,
+    streamer_lookahead: int = 5,
+    decode_window_frames: Optional[int] = None,
+    qwen_tts_pin_hash: Optional[str] = None,
+) -> dict:
+    """Engage torch.compile + CUDA Graph replay on the qwen-tts talker + decoder.
+
+    Story 18.4 — Phase ⊥-Polish-2 of D-20, Cluster E of
+    ``architecture-streaming-acceleration-and-lightning-tier.md`` (sealed
+    2026-05-10). Executes architecture decisions D-21 (decode_window=30
+    fixed), D-22 Branch B (calls the upstream-blessed API the pin-bump
+    engaged), D-25 (decode-window invariant), and P-12 (capability
+    verification probe).
+
+    The function gates engagement on:
+
+      1. **D-9 hardware probe** — CUDA-available + Ampere-or-newer
+         (capability major >= 8). CPU and pre-Ampere hosts stay on the V2
+         baseline (eager-mode generation).
+      2. **AppSettings.tts_compile** — three-valued ("auto" / "on" /
+         "off"). "off" forces eager (NFR7 fallback); "on" + pre-Ampere
+         emits a WARNING + ``pre_ampere_user_explicit`` telemetry; "auto"
+         defers to the hardware probe.
+      3. **D-22 Branch A invariant** — ``model.enable_streaming_optimizations``
+         must be callable (the pin-bump should have ensured this; the
+         assertion catches a hypothetical silent pin reversion per P-11).
+      4. **D-25 decode-window invariant** — ``decode_window_frames`` must
+         equal ``streamer_chunk_size + streamer_lookahead`` (today 30;
+         architecture-bound). Hard-fail on mismatch (not a warning log —
+         silent fallthrough produces wrong audio).
+      5. **P-12 capability probe** — after the API returns, verify that
+         compile actually engaged (the API didn't no-op silently).
+
+    The eight reason-enum values for the returned status dict map to the
+    eight architectural branches:
+
+        cuda_unavailable         — D-9 CPU-or-torch-absent
+        pre_ampere               — D-9 pre-Ampere CUDA host
+        pre_ampere_user_explicit — pre-Ampere + tts_compile="on" (WARNING)
+        user_disabled            — tts_compile="off"
+        engaged_warm_cache       — engaged; compile_cache.is_warm(key) == True
+        engaged_cold_compile     — engaged; compile_cache.is_warm(key) == False
+        compile_failed           — API raised; eager fallback returned
+        probe_failed             — API returned; probe says compile didn't engage
+
+    Telemetry contract (architecture P-15 + parent D-19 / P-9):
+    ``metrics.record("tts_compile_engaged", 1.0 if engaged else 0.0,
+                       reason=<enum>, decode_window_frames=<int>,
+                       cuda_capability=<"major.minor">, cache_warm=<bool_str>)``
+
+    NFR7 graceful degradation: the dispatch chain at
+    ``qwen_tts_service._dispatch_by_streaming_mode`` is untouched by this
+    function. Compile is a model-state mutation; the dispatch chain reads
+    the same model object regardless of compile state. Any non-engaged
+    branch leaves the model in eager mode; the dispatch chain continues
+    to route TRUE_STREAM through the existing Story 16.8 talker-patch
+    path without modification.
+
+    Args:
+        model: The ``Qwen3TTSModel`` instance returned by
+            ``Qwen3TTSModel.from_pretrained(...)`` (typically owned by
+            ``ModelRegistry._load_model_sync``).
+        app_settings: Optional ``AppSettings`` instance; if provided, the
+            function reads ``app_settings.tts_compile`` via ``getattr`` for
+            defensive access (mirrors Story 18.3's ``tts_precision``
+            precedent at ``model_registry.py:137``).
+        streamer_chunk_size: ``codec_token_streamer.DEFAULT_CHUNK_SIZE``
+            (= 25 today). The architecture-bound value drives the D-25
+            invariant; future streamer re-tunes pass explicit values here
+            and the cache key auto-invalidates via D-24.
+        streamer_lookahead: ``codec_token_streamer.DEFAULT_LOOKAHEAD``
+            (= 5 today).
+        decode_window_frames: Optional explicit decode-window override. If
+            ``None`` (the typical caller contract), the function computes
+            ``streamer_chunk_size + streamer_lookahead`` itself. If the
+            caller passes an explicit value, the D-25 invariant asserts
+            equality between explicit and computed — the architecture's
+            "loud at startup" P-11 contract catches a divergent caller
+            without permitting silent fallthrough.
+        qwen_tts_pin_hash: Optional first-8-hex-chars of the active
+            qwen-tts pin. If ``None``, defaults to ``"unknown"`` (cache
+            key still computes; the dimension simply becomes a non-
+            invalidating constant — acceptable degraded behavior). The
+            canonical caller is ``ModelRegistry._load_model_sync``, which
+            reads ``QwenTTSService._QWEN_TTS_PIN_HASH`` and passes it
+            through, preserving module-boundary discipline (this module
+            does NOT reach into ``services.qwen_tts_service``).
+
+    Returns:
+        Status dict::
+
+            {
+                "engaged": bool,                          # True iff compile engaged
+                "reason": str,                            # one of the eight reasons
+                "decode_window_frames": int,              # the resolved value (30)
+                "cuda_capability": tuple | None,          # (major, minor) or None
+                "cache_warm": bool | None,                # True/False on engage paths; None on skip
+            }
+    """
+    # Lazy-import: torch (DLL ordering); compile_cache (avoid __init__.py
+    # partial-init recursion since __init__.py imports both leaf modules).
+    import torch
+    from myvoice.services.tts_streaming import compile_cache
+
+    # ----- D-25 invariant (architecture-bound; P-11 "loud at startup") ----- #
+    # The streamer's chunk_size + lookahead is the canonical decode-window.
+    # If the caller passes an explicit ``decode_window_frames``, it MUST
+    # equal the streamer-derived value — a mismatch produces wrong audio
+    # under CUDA Graph replay (the compiled graph captures one window
+    # shape; emitting under a different shape diverges silently).
+    # Architecture P-11 forbids ``log.warning(...)`` fallthrough — this
+    # is a hard ``AssertionError`` at startup.
+    streamer_window = streamer_chunk_size + streamer_lookahead
+    if decode_window_frames is None:
+        decode_window_frames = streamer_window
+    else:
+        assert decode_window_frames == streamer_window, (
+            f"Decode-window drift: streamer expects "
+            f"{streamer_window} (chunk_size={streamer_chunk_size} + "
+            f"lookahead={streamer_lookahead}); caller passed "
+            f"decode_window_frames={decode_window_frames}. CUDA Graph "
+            f"replay would produce wrong audio. The architecture binds "
+            f"D-21 to the streamer-derived value; pass None to inherit "
+            f"or re-tune the streamer constants in lockstep with the "
+            f"caller."
+        )
+
+    # ----- Resolve tts_compile setting ----- #
+    tts_compile = getattr(app_settings, "tts_compile", None)
+    if tts_compile is None:
+        tts_compile = "auto"
+
+    # ----- AppSettings gate: tts_compile == "off" ----- #
+    if tts_compile == "off":
+        metrics.record(
+            _METRIC_NAME_COMPILE,
+            0.0,
+            reason="user_disabled",
+            decode_window_frames=decode_window_frames,
+            cuda_capability="none",
+            cache_warm="none",
+        )
+        _logger.info("torch.compile skipped: user_disabled")
+        return {
+            "engaged": False,
+            "reason": "user_disabled",
+            "decode_window_frames": decode_window_frames,
+            "cuda_capability": None,
+            "cache_warm": None,
+        }
+
+    # ----- D-9 hardware probe ----- #
+    cuda_available = torch.cuda.is_available()
+    if not cuda_available:
+        metrics.record(
+            _METRIC_NAME_COMPILE,
+            0.0,
+            reason="cuda_unavailable",
+            decode_window_frames=decode_window_frames,
+            cuda_capability="none",
+            cache_warm="none",
+        )
+        _logger.info("torch.compile skipped: cuda_unavailable")
+        return {
+            "engaged": False,
+            "reason": "cuda_unavailable",
+            "decode_window_frames": decode_window_frames,
+            "cuda_capability": None,
+            "cache_warm": None,
+        }
+
+    capability = torch.cuda.get_device_capability()
+    cap_str = _device_capability_str(capability)
+
+    if capability[0] < _AMPERE_CAPABILITY_MAJOR:
+        # Pre-Ampere CUDA host. Two sub-branches based on user setting:
+        # tts_compile="on" → WARNING + pre_ampere_user_explicit (the user
+        # explicitly opted in; the WARNING surfaces the no-op decision).
+        # Other values (auto / unknown) → silent pre_ampere skip.
+        if tts_compile == "on":
+            reason = "pre_ampere_user_explicit"
+            _logger.warning(
+                "torch.compile skipped: tts_compile='on' on pre-Ampere host "
+                "(device_capability=%s); compile requires Ampere or newer.",
+                cap_str,
+            )
+        else:
+            reason = "pre_ampere"
+            _logger.info(
+                "torch.compile skipped: pre_ampere (device_capability=%s)",
+                cap_str,
+            )
+        metrics.record(
+            _METRIC_NAME_COMPILE,
+            0.0,
+            reason=reason,
+            decode_window_frames=decode_window_frames,
+            cuda_capability=cap_str,
+            cache_warm="none",
+        )
+        return {
+            "engaged": False,
+            "reason": reason,
+            "decode_window_frames": decode_window_frames,
+            "cuda_capability": capability,
+            "cache_warm": None,
+        }
+
+    # ----- D-22 Branch A invariant assertion ----- #
+    # The pin-bump should have made this method callable. The assertion
+    # catches a hypothetical silent pin reversion (e.g., a pip install
+    # that didn't actually pick up the bumped pin). P-11 "loud at startup".
+    assert callable(getattr(model, "enable_streaming_optimizations", None)), (
+        "qwen-tts pin lacks enable_streaming_optimizations(); the pin-bump "
+        "did not propagate. Re-run `pip install -e .` against the bumped "
+        "requirements.txt or rebuild the production bundle."
+    )
+
+    # ----- Cache key + cache dir ----- #
+    # Resolve the seven cache-key dimensions for compile_cache.compute_key().
+    # The model_id and precision_str are best-effort extractions from the
+    # loaded model; defaults are conservative (no cache pollution risk if
+    # the attribute name shifts).
+    model_id = (
+        getattr(getattr(model, "model", None), "name_or_path", None)
+        or getattr(model, "name_or_path", None)
+        or "unknown"
+    )
+    model_dtype = getattr(getattr(model, "model", None), "dtype", None)
+    precision_str = "bf16" if model_dtype == torch.bfloat16 else "fp32"
+    # qwen-tts pin hash — caller-provided (ModelRegistry passes the
+    # canonical QwenTTSService._QWEN_TTS_PIN_HASH constant through). This
+    # module does NOT import services.qwen_tts_service: the architecture's
+    # module-boundary rule (line 1157-1166 of
+    # architecture-streaming-acceleration-and-lightning-tier.md) forbids
+    # tts_streaming/* from reaching into services.*. ``None`` degrades
+    # gracefully to ``"unknown"`` — cache still computes a stable key,
+    # the pin dimension simply ceases to invalidate on a pin bump
+    # (acceptable for callers that don't track pins, e.g. unit tests).
+    pin_hash = qwen_tts_pin_hash if qwen_tts_pin_hash is not None else "unknown"
+    compile_mode = "reduce-overhead"
+
+    key = compile_cache.compute_key(
+        qwen_tts_pin_hash=pin_hash,
+        model_id=model_id,
+        precision_str=precision_str,
+        torch_version=torch.__version__,
+        decode_window_frames=decode_window_frames,
+        cuda_capability=capability,
+        compile_mode=compile_mode,
+    )
+    is_warm_at_call = compile_cache.is_warm(key)
+    compile_cache.set_torchinductor_cache_dir(key)
+
+    # ----- API call (wrapped for compile_failed branch) ----- #
+    # NOTE: `compile_talker=False` is REQUIRED for compatibility with
+    # Story 16.8's TRUE_STREAM forward-hook. The Story 16.8 dispatch chain
+    # (qwen_tts_service._build_true_stream_talker at :3404-:3571) patches
+    # `model.model.talker.forward` to capture per-step `codec_ids` from
+    # `Qwen3TTSTalkerOutputWithPast.hidden_states[1]`. When the fork's
+    # `enable_streaming_optimizations(compile_talker=True)` wraps the
+    # talker's inner forward via torch.compile, the codec_id extraction
+    # path breaks and the talker emits zero chunks — observed in the
+    # Story 18.4 bundled smoke 2026-05-10 (ValueError: finalize() called
+    # with no chunks).
+    #
+    # Disabling talker compile preserves the dispatch chain's audited
+    # correctness. The 2.15×-per-frame upstream-blessed gain lives on
+    # the codebook predictor + decoder (fork's README); leaving the talker
+    # eager forfeits only a fraction of the speedup while preserving
+    # generation correctness. If a future architecture revision finds a
+    # way to compose torch.compile with the Story 16.8 forward-hook
+    # cleanly, this kwarg flips back to True.
+    try:
+        model.enable_streaming_optimizations(
+            decode_window_frames=decode_window_frames,
+            use_compile=True,
+            compile_mode=compile_mode,
+            compile_talker=False,
+        )
+    except Exception as exc:  # noqa: BLE001 — NFR7 graceful degradation: any compile failure → eager
+        # NFR7 graceful degradation: log + record + return eager-fallback.
+        # The dispatch chain is untouched; eager-mode generation stays
+        # available.
+        metrics.record(
+            _METRIC_NAME_COMPILE,
+            0.0,
+            reason="compile_failed",
+            decode_window_frames=decode_window_frames,
+            cuda_capability=cap_str,
+            cache_warm=str(is_warm_at_call),
+            error=type(exc).__name__,
+        )
+        _logger.warning(
+            "torch.compile skipped: compile_failed (%s: %s); eager-mode fallback engaged",
+            type(exc).__name__,
+            exc,
+        )
+        return {
+            "engaged": False,
+            "reason": "compile_failed",
+            "decode_window_frames": decode_window_frames,
+            "cuda_capability": capability,
+            "cache_warm": is_warm_at_call,
+            "error": str(exc),
+        }
+
+    # ----- P-12 capability probe ----- #
+    if not _probe_compile_engaged(model):
+        # API returned without raising but the model state is unchanged.
+        # NFR7 fallback — eager-mode generation stays available.
+        metrics.record(
+            _METRIC_NAME_COMPILE,
+            0.0,
+            reason="probe_failed",
+            decode_window_frames=decode_window_frames,
+            cuda_capability=cap_str,
+            cache_warm=str(is_warm_at_call),
+        )
+        _logger.warning(
+            "torch.compile skipped: probe_failed (API returned but model state unchanged); "
+            "eager-mode fallback engaged"
+        )
+        return {
+            "engaged": False,
+            "reason": "probe_failed",
+            "decode_window_frames": decode_window_frames,
+            "cuda_capability": capability,
+            "cache_warm": is_warm_at_call,
+        }
+
+    # ----- Engaged: success path ----- #
+    reason = "engaged_warm_cache" if is_warm_at_call else "engaged_cold_compile"
+    cache_label = "warm" if is_warm_at_call else "cold"
+    metrics.record(
+        _METRIC_NAME_COMPILE,
+        1.0,
+        reason=reason,
+        decode_window_frames=decode_window_frames,
+        cuda_capability=cap_str,
+        cache_warm=str(is_warm_at_call),
+    )
+    _logger.info(
+        "torch.compile + CUDA Graph engaged "
+        "(decode_window_frames=%d, cuda_capability=%s, cache=%s)",
+        decode_window_frames,
+        cap_str,
+        cache_label,
+    )
+    return {
+        "engaged": True,
+        "reason": reason,
+        "decode_window_frames": decode_window_frames,
+        "cuda_capability": capability,
+        "cache_warm": is_warm_at_call,
+    }

@@ -54,11 +54,13 @@ torch>=2.0.0; sys_platform == 'win32'
 # =============================================================================
 # Qwen3-TTS (V2 - Embedded Voice Cloning)
 # =============================================================================
-# Pinned to commit 1ab0dd75 (Story 16.1 / D-12) — bumping requires running
-# tests/test_qwen_tts_internals.py first; do NOT replace with the unpinned
-# `pip install git+https://github.com/QwenLM/Qwen3-TTS.git` form, which
-# would resolve to upstream HEAD and silently subvert the pin.
-qwen-tts @ git+https://github.com/QwenLM/Qwen3-TTS.git@1ab0dd75353392f28a0d05d9ca960c9954b13c83
+# Story 18.4 / D-22 Branch B — pin bumped from QwenLM/Qwen3-TTS@1ab0dd75 to community fork
+# dffdeeq/Qwen3-TTS-streaming@3fdb4682 to engage the upstream
+# `enable_streaming_optimizations()` API. Drop-in replacement (same package name + version).
+# Bumping further requires running tests/test_qwen_tts_internals.py first; do NOT replace
+# with the unpinned `pip install git+...` form, which would resolve to fork HEAD and
+# silently subvert the pin.
+qwen-tts @ git+https://github.com/dffdeeq/Qwen3-TTS-streaming.git@3fdb468233d73fa537202b94a1cc7c4e7a6160b8
 # Size: ~50MB (library only, models downloaded at runtime ~3.4GB per model)
 # NOTE: Requires Python 3.9+ (3.10 confirmed working)
 

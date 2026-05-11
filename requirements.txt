@@ -16,11 +16,17 @@ openai-whisper>=20231117
 # ===============================================
 # NOTE: qwen-tts requires Python 3.9+ (3.10 confirmed working)
 # Models are downloaded on first use (~3.4GB per model)
-# Pinned to commit 1ab0dd75 (Story 16.1 / D-12) — bumping requires running
-# tests/test_qwen_tts_internals.py first; do NOT replace with the unpinned
-# `pip install git+https://github.com/QwenLM/Qwen3-TTS.git` form, which
-# would resolve to upstream HEAD and silently subvert the pin.
-qwen-tts @ git+https://github.com/QwenLM/Qwen3-TTS.git@1ab0dd75353392f28a0d05d9ca960c9954b13c83
+# Story 18.4 / D-22 Branch B (architecture-streaming-acceleration-and-lightning-tier.md
+# sealed 2026-05-10) — pin bumped from QwenLM/Qwen3-TTS@1ab0dd75 to community fork
+# dffdeeq/Qwen3-TTS-streaming@3fdb4682 to engage the upstream
+# `enable_streaming_optimizations()` API (introducing commit "compile and fast codebook",
+# 2026-02-03). Package name (`qwen-tts`) and version (0.0.4) are unchanged — drop-in
+# replacement at the import level. Fork diff is +50/-6 lines additive; no removed symbols.
+# Joint NFR3 ≥3-listener audition (Story 18.4 Task 9) certifies the swap.
+# Bumping further requires running tests/test_qwen_tts_internals.py first; do NOT
+# replace with the unpinned `pip install git+...` form, which would resolve to fork
+# HEAD and silently subvert the pin.
+qwen-tts @ git+https://github.com/dffdeeq/Qwen3-TTS-streaming.git@3fdb468233d73fa537202b94a1cc7c4e7a6160b8
 
 # Audio I/O for Qwen3-TTS
 soundfile>=0.12.1

@@ -155,6 +155,12 @@ class ModelRegistry:
 
         self.models_path = models_path
         self._progress_callback = progress_callback
+        # Story 18.4 — store app_settings so _load_model_sync can pass it
+        # into engage_compile_optimizations after model load. The Story 18.3
+        # wire-up at __init__ already reads tts_precision from this object
+        # inline (above); Story 18.4 needs the reference at load-time too,
+        # so we keep it on self.
+        self._app_settings = app_settings
 
         # Quality tier configuration (Small 0.6B vs Quality 1.7B)
         from myvoice.models.service_enums import ModelQualityTier
@@ -195,9 +201,18 @@ class ModelRegistry:
             device_capability=cap_str,
         )
 
+        # Story 18.4 — `compile_engaged='deferred'` at __init__ time because
+        # the compile engagement happens during _load_model_sync (after
+        # from_pretrained returns) — the model object doesn't exist at
+        # __init__ time. The same INFO log line is RE-EMITTED at the end of
+        # _load_model_sync with the resolved compile_engaged state (True /
+        # False / one of the eight `reason` enum values). Static log parsers
+        # see the tag schema at both points; Commander sees the final state
+        # at the post-load log line.
         self.logger.info(
             f"ModelRegistry initialized: device={self.device}, dtype={self.dtype}, "
-            f"precision_source='{precision_source}', quality_tier={self._quality_tier.value}"
+            f"precision_source='{precision_source}', quality_tier={self._quality_tier.value}, "
+            f"compile_engaged='deferred'"
         )
 
     @property
@@ -522,6 +537,65 @@ class ModelRegistry:
         # lifetime is bounded by the first generation.
         if os.environ.get("MYVOICE_DTYPE_AUDIT") == "1":
             self._instrument_dtype_audit(model)
+
+        # Story 18.4 — engage torch.compile + CUDA Graph optimizations via
+        # the upstream-blessed `enable_streaming_optimizations` API (D-22
+        # Branch B). Hardware-gated (D-9 / NFR12), AppSettings-gated
+        # (`tts_compile` field), NFR7-fallback-aware (compile_failed /
+        # probe_failed branches drop back to eager-mode), and telemetry-
+        # emitting. The function lives in services/tts_streaming/torch_runtime.py;
+        # this is the canonical wire-up site (after from_pretrained, before
+        # the warmup worker dispatches the priming generation in Story 18.4
+        # Task 6). The function's own INFO log line is the canonical
+        # observability breadcrumb; the result dict is captured here so the
+        # post-load model_registry log line summarises the final state.
+        from myvoice.services.tts_streaming import engage_compile_optimizations
+        # Read the canonical pin-hash constant here (the
+        # ``services.qwen_tts_service`` boundary is allowed at this caller
+        # site; the architecture's module-boundary rule scopes
+        # ``tts_streaming/*`` as leaves and ``model_registry`` as a
+        # composer). Passing through preserves the cache-key dimension
+        # without making torch_runtime.py reach across boundaries.
+        try:
+            from myvoice.services.qwen_tts_service import QwenTTSService
+            qwen_tts_pin_hash = getattr(
+                QwenTTSService, "_QWEN_TTS_PIN_HASH", None
+            )
+        except (ImportError, AttributeError):
+            qwen_tts_pin_hash = None
+        try:
+            self._compile_engage_result = engage_compile_optimizations(
+                model,
+                app_settings=self._app_settings,
+                qwen_tts_pin_hash=qwen_tts_pin_hash,
+            )
+        except Exception as exc:  # noqa: BLE001 — defensive against any unexpected probe path
+            # engage_compile_optimizations is supposed to absorb its own
+            # exceptions (NFR7) and return a result dict. If it somehow
+            # raises, we log + fall through to eager-mode (the model is
+            # already in eager state since the engagement was attempted
+            # but failed). The next launch will retry.
+            self.logger.warning(
+                "engage_compile_optimizations raised unexpectedly (%s: %s); "
+                "continuing with eager-mode model.",
+                type(exc).__name__,
+                exc,
+            )
+            self._compile_engage_result = {
+                "engaged": False,
+                "reason": "internal_error",
+                "error": str(exc),
+            }
+
+        # Post-load log line: re-emit the init INFO with the resolved
+        # compile state. Append-only tag schema preserves backward-compat
+        # for log-parsing consumers.
+        engaged_state = self._compile_engage_result.get("engaged", False)
+        engaged_reason = self._compile_engage_result.get("reason", "unknown")
+        self.logger.info(
+            f"ModelRegistry model loaded: model_type={model_type.value if hasattr(model_type, 'value') else model_type}, "
+            f"compile_engaged='{engaged_state}', compile_reason='{engaged_reason}'"
+        )
 
         return model
 

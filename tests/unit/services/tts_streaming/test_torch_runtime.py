@@ -31,7 +31,9 @@ import torch  # noqa: F401  — conftest already enforced DLL ordering
 
 from myvoice.observability import metrics
 from myvoice.services.tts_streaming import (
+    compile_cache,
     enable_tf32_and_cudnn_benchmark,
+    engage_compile_optimizations,
     is_ampere_or_newer,
     resolve_tts_precision,
 )
@@ -558,3 +560,373 @@ def test_resolve_tts_precision_does_not_mutate_torch_backends_flags(
     assert torch.backends.cuda.matmul.allow_tf32 is False
     assert torch.backends.cudnn.allow_tf32 is False
     assert torch.backends.cudnn.benchmark is False
+
+
+# --------------------------------------------------------------------------- #
+# Story 18.4 — engage_compile_optimizations(): the 8-branch reason enum.
+#
+# Mirrors Story 18.2/18.3's parametrization + monkeypatch patterns. All
+# branches are exercised purely via monkeypatch — no real GPU required.
+# The model is a Mock with the talker dereference chain hand-built.
+# --------------------------------------------------------------------------- #
+
+
+class _PlainObj:
+    """Plain attribute-only object — used in place of MagicMock for the
+    talker dereference chain so ``hasattr`` returns False for unset
+    attributes (MagicMock would auto-create them, defeating the
+    ``_probe_compile_engaged`` False-branch assertions).
+    """
+    pass
+
+
+def _make_fake_model_with_compile_api(
+    *,
+    api_succeeds: bool = True,
+    api_raises: type = None,
+    probe_engages: bool = True,
+    dtype=None,
+):
+    """Build a fake that mimics the Qwen3TTSModel wrapper surface.
+
+    The probe at ``_probe_compile_engaged`` walks ``model.model.talker.model.forward``;
+    when ``probe_engages`` is True, the talker's inner forward gets a
+    ``_torchdynamo_orig_callable`` attribute attached so the probe returns
+    True. When False, the forward is a plain function with NO compile
+    sentinel attributes — the probe returns False (the silent-no-op
+    failure mode P-12 guards against).
+
+    Uses ``_PlainObj`` for the talker chain so attribute presence is
+    explicitly controlled. The wrapper itself uses MagicMock so
+    ``enable_streaming_optimizations`` can be a tracked callable with
+    configurable side_effect / return_value.
+    """
+    from unittest.mock import MagicMock
+
+    if dtype is None:
+        dtype = torch.bfloat16
+
+    # Plain forward function — no compile-sentinel attributes unless we
+    # explicitly attach them. Defines a no-op so `callable(fwd)` returns True.
+    def _plain_forward(*args, **kwargs):
+        return None
+
+    if probe_engages:
+        _plain_forward._torchdynamo_orig_callable = _plain_forward  # PyTorch sentinel
+
+    # Build the dereference chain matching _probe_compile_engaged's path:
+    # model.model.talker.code_predictor.model.forward (the codebook predictor's
+    # inner forward — what torch.compile wraps under compile_talker=False).
+    # Story 18.4 bundled-smoke regression fix: compile_talker MUST be False to
+    # preserve Story 16.8's forward-hook; probe targets the code_predictor
+    # (which is still compiled by default) for the "compile actually engaged"
+    # signal.
+    predictor_inner = _PlainObj()
+    predictor_inner.forward = _plain_forward
+    code_predictor = _PlainObj()
+    code_predictor.model = predictor_inner
+    # The talker.model.forward also exists in the real model but is NOT
+    # compiled under compile_talker=False. We give it a plain forward
+    # (no sentinel) so test code that walks the older path sees no
+    # compile signature there.
+    talker_inner = _PlainObj()
+    talker_inner.forward = lambda *a, **k: None
+    talker = _PlainObj()
+    talker.model = talker_inner
+    talker.code_predictor = code_predictor
+    inner = _PlainObj()
+    inner.talker = talker
+    inner.dtype = dtype
+    inner.name_or_path = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+
+    wrapper = MagicMock(name="Qwen3TTSModel")
+    wrapper.model = inner
+
+    if api_raises is not None:
+        wrapper.enable_streaming_optimizations.side_effect = api_raises("simulated compile failure")
+    else:
+        wrapper.enable_streaming_optimizations.return_value = wrapper if api_succeeds else None
+    return wrapper
+
+
+@pytest.fixture
+def _isolated_inductor_env(monkeypatch, tmp_path):
+    """Isolate set_torchinductor_cache_dir and cache_root for the test process.
+
+    Force a non-Windows cache root under tmp_path and snapshot/restore
+    TORCHINDUCTOR_CACHE_DIR so engage_compile_optimizations() does not
+    pollute test isolation across rows.
+    """
+    monkeypatch.setattr(compile_cache, "sys", _make_inductor_sys_shim("linux"))
+    monkeypatch.setattr(
+        "pathlib.Path.home",
+        classmethod(lambda cls: tmp_path),
+    )
+    snapshot = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+    yield
+    if snapshot is None:
+        os.environ.pop("TORCHINDUCTOR_CACHE_DIR", None)
+    else:
+        os.environ["TORCHINDUCTOR_CACHE_DIR"] = snapshot
+
+
+def _make_inductor_sys_shim(platform: str):
+    class _Shim:
+        pass
+
+    s = _Shim()
+    s.platform = platform
+    return s
+
+
+# Import os here (used by the isolated inductor env fixture above).
+import os  # noqa: E402
+
+
+def test_engage_compile_cuda_unavailable_returns_eager_fallback(
+    monkeypatch, _snapshot_and_restore_torch_backends, metric_records
+):
+    """Reason `cuda_unavailable` — CPU-only host skips compile entirely."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+    model = _make_fake_model_with_compile_api()
+
+    result = engage_compile_optimizations(model)
+
+    assert result["engaged"] is False
+    assert result["reason"] == "cuda_unavailable"
+    model.enable_streaming_optimizations.assert_not_called()
+    compile_records = [r for r in metric_records if r.name == "tts_compile_engaged"]
+    assert len(compile_records) == 1
+    assert compile_records[0].value == 0.0
+    assert compile_records[0].tags["reason"] == "cuda_unavailable"
+
+
+def test_engage_compile_pre_ampere_returns_eager_fallback(
+    monkeypatch, _snapshot_and_restore_torch_backends, metric_records
+):
+    """Reason `pre_ampere` — Turing/Pascal CUDA host skips compile entirely."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (7, 5))  # Turing
+    model = _make_fake_model_with_compile_api()
+
+    result = engage_compile_optimizations(model)
+
+    assert result["engaged"] is False
+    assert result["reason"] == "pre_ampere"
+    model.enable_streaming_optimizations.assert_not_called()
+    compile_records = [r for r in metric_records if r.name == "tts_compile_engaged"]
+    assert len(compile_records) == 1
+    assert compile_records[0].value == 0.0
+    assert compile_records[0].tags["reason"] == "pre_ampere"
+
+
+def test_engage_compile_user_disabled_returns_eager_fallback(
+    monkeypatch, _snapshot_and_restore_torch_backends, metric_records
+):
+    """Reason `user_disabled` — tts_compile='off' forces eager even on Ampere+."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (8, 9))
+    model = _make_fake_model_with_compile_api()
+
+    class _Settings:
+        tts_compile = "off"
+
+    result = engage_compile_optimizations(model, app_settings=_Settings())
+
+    assert result["engaged"] is False
+    assert result["reason"] == "user_disabled"
+    model.enable_streaming_optimizations.assert_not_called()
+    compile_records = [r for r in metric_records if r.name == "tts_compile_engaged"]
+    assert len(compile_records) == 1
+    assert compile_records[0].tags["reason"] == "user_disabled"
+
+
+def test_engage_compile_pre_ampere_user_explicit_warns_and_returns_eager(
+    monkeypatch, _snapshot_and_restore_torch_backends, metric_records, caplog
+):
+    """Reason `pre_ampere_user_explicit` — tts_compile='on' + Turing emits WARNING."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (7, 5))  # Turing
+    model = _make_fake_model_with_compile_api()
+
+    class _Settings:
+        tts_compile = "on"
+
+    with caplog.at_level(logging.WARNING, logger="myvoice.services.tts_streaming.torch_runtime"):
+        result = engage_compile_optimizations(model, app_settings=_Settings())
+
+    assert result["engaged"] is False
+    assert result["reason"] == "pre_ampere_user_explicit"
+    model.enable_streaming_optimizations.assert_not_called()
+    compile_records = [r for r in metric_records if r.name == "tts_compile_engaged"]
+    assert len(compile_records) == 1
+    assert compile_records[0].tags["reason"] == "pre_ampere_user_explicit"
+    # WARNING log must be emitted (the user's explicit opt-in deserves
+    # visibility about why it didn't engage).
+    warning_records = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING
+        and r.name == "myvoice.services.tts_streaming.torch_runtime"
+    ]
+    assert len(warning_records) >= 1
+
+
+def test_engage_compile_engaged_cold_compile_populates_cache(
+    monkeypatch, _snapshot_and_restore_torch_backends, metric_records, _isolated_inductor_env
+):
+    """Reason `engaged_cold_compile` — Ampere+ host, cache cold, API + probe succeed."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (8, 9))
+    model = _make_fake_model_with_compile_api(api_succeeds=True, probe_engages=True)
+
+    result = engage_compile_optimizations(model)
+
+    assert result["engaged"] is True
+    assert result["reason"] == "engaged_cold_compile"
+    assert result["cache_warm"] is False
+    model.enable_streaming_optimizations.assert_called_once()
+    call_kwargs = model.enable_streaming_optimizations.call_args.kwargs
+    assert call_kwargs["decode_window_frames"] == 30
+    assert call_kwargs["use_compile"] is True
+    assert call_kwargs["compile_mode"] == "reduce-overhead"
+    # Story 18.4 bundled-smoke regression fix: compile_talker MUST be False
+    # to preserve Story 16.8's forward-hook (talker compile breaks the
+    # codec_id capture path; observed zero-chunks error in production smoke).
+    assert call_kwargs["compile_talker"] is False
+    compile_records = [r for r in metric_records if r.name == "tts_compile_engaged"]
+    assert len(compile_records) == 1
+    assert compile_records[0].value == 1.0
+    assert compile_records[0].tags["reason"] == "engaged_cold_compile"
+
+
+def test_engage_compile_engaged_warm_cache_short_circuits_probe_label(
+    monkeypatch, _snapshot_and_restore_torch_backends, metric_records, _isolated_inductor_env
+):
+    """Reason `engaged_warm_cache` — Ampere+ host, cache warm (mark_warm called pre-test)."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (8, 9))
+
+    # Pre-warm the cache by computing the same key engage_compile_optimizations
+    # will compute and calling mark_warm. Pin hash is caller-provided per
+    # the code-review M1 fix (torch_runtime no longer imports QwenTTSService
+    # to read the constant); the test passes a known value through the
+    # parameter and pre-warms with the same value.
+    pin_hash = "test_pin_hash_18.4"
+
+    key = compile_cache.compute_key(
+        qwen_tts_pin_hash=pin_hash,
+        model_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        precision_str="bf16",
+        torch_version=torch.__version__,
+        decode_window_frames=30,
+        cuda_capability=(8, 9),
+        compile_mode="reduce-overhead",
+    )
+    compile_cache.mark_warm(key)
+
+    model = _make_fake_model_with_compile_api(api_succeeds=True, probe_engages=True)
+    result = engage_compile_optimizations(model, qwen_tts_pin_hash=pin_hash)
+
+    assert result["engaged"] is True
+    assert result["reason"] == "engaged_warm_cache"
+    assert result["cache_warm"] is True
+    compile_records = [r for r in metric_records if r.name == "tts_compile_engaged"]
+    assert len(compile_records) == 1
+    assert compile_records[0].tags["reason"] == "engaged_warm_cache"
+
+
+def test_engage_compile_compile_failed_returns_eager_fallback(
+    monkeypatch, _snapshot_and_restore_torch_backends, metric_records, _isolated_inductor_env, caplog
+):
+    """Reason `compile_failed` — API raises RuntimeError; NFR7 eager fallback engages."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (8, 9))
+    model = _make_fake_model_with_compile_api(api_raises=RuntimeError)
+
+    with caplog.at_level(logging.WARNING, logger="myvoice.services.tts_streaming.torch_runtime"):
+        result = engage_compile_optimizations(model)
+
+    assert result["engaged"] is False
+    assert result["reason"] == "compile_failed"
+    assert "error" in result
+    compile_records = [r for r in metric_records if r.name == "tts_compile_engaged"]
+    assert len(compile_records) == 1
+    assert compile_records[0].value == 0.0
+    assert compile_records[0].tags["reason"] == "compile_failed"
+
+
+def test_engage_compile_d25_invariant_raises_on_explicit_window_mismatch(
+    monkeypatch, _snapshot_and_restore_torch_backends, _isolated_inductor_env
+):
+    """Code-review H2 (Story 18.4 review pass): D-25 decode-window invariant.
+
+    Per architecture P-11 ("loud at startup"), passing an explicit
+    ``decode_window_frames`` that does NOT match
+    ``streamer_chunk_size + streamer_lookahead`` MUST raise
+    ``AssertionError`` — silent fallthrough under a divergent window
+    produces wrong audio under CUDA Graph replay (compiled graph
+    captures one shape; emitting under another diverges silently).
+
+    The previous implementation had a tautological assertion that
+    re-computed the variable from its own RHS, making the invariant
+    dead code. This regression test pins the real contract — a future
+    refactor that drops the hard-fail (e.g., demotes to a log.warning)
+    fails here. Per `memory/code_review_regression_test_exact_class.md`,
+    this row mirrors the EXACT bug class (silent fallthrough on
+    invariant violation).
+    """
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (8, 9))
+    model = _make_fake_model_with_compile_api(api_succeeds=True, probe_engages=True)
+
+    # Streamer expects 25+5=30; caller passes 80 (the fork's default).
+    # Architecture D-21 binds the value to MyVoice's streamer window;
+    # any caller passing a divergent value is a bug.
+    with pytest.raises(AssertionError, match="Decode-window drift"):
+        engage_compile_optimizations(
+            model,
+            streamer_chunk_size=25,
+            streamer_lookahead=5,
+            decode_window_frames=80,
+        )
+
+    # Sanity: passing None (the canonical contract) does NOT raise —
+    # the function derives the window from streamer params.
+    result = engage_compile_optimizations(
+        model,
+        streamer_chunk_size=25,
+        streamer_lookahead=5,
+        decode_window_frames=None,
+    )
+    assert result["decode_window_frames"] == 30
+
+    # Sanity: passing the matching explicit value also does NOT raise.
+    result = engage_compile_optimizations(
+        model,
+        streamer_chunk_size=25,
+        streamer_lookahead=5,
+        decode_window_frames=30,
+    )
+    assert result["decode_window_frames"] == 30
+
+
+def test_engage_compile_probe_failed_returns_eager_fallback(
+    monkeypatch, _snapshot_and_restore_torch_backends, metric_records, _isolated_inductor_env, caplog
+):
+    """Reason `probe_failed` — API succeeds but P-12 probe says model state unchanged."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (8, 9))
+    # API succeeds; probe fails (no _torchdynamo_orig_callable on the
+    # talker forward).
+    model = _make_fake_model_with_compile_api(api_succeeds=True, probe_engages=False)
+
+    with caplog.at_level(logging.WARNING, logger="myvoice.services.tts_streaming.torch_runtime"):
+        result = engage_compile_optimizations(model)
+
+    assert result["engaged"] is False
+    assert result["reason"] == "probe_failed"
+    # API DID get called (the failure mode is silent no-op, not exception).
+    model.enable_streaming_optimizations.assert_called_once()
+    compile_records = [r for r in metric_records if r.name == "tts_compile_engaged"]
+    assert len(compile_records) == 1
+    assert compile_records[0].tags["reason"] == "probe_failed"

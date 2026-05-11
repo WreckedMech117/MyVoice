@@ -1,9 +1,20 @@
 """verify_qwen_tts_pin.py — pre-build qwen-tts pin verification gate.
 
 Confirms that ``python310/Lib/site-packages/qwen_tts/`` corresponds to the
-pinned commit (``1ab0dd75353392f28a0d05d9ca960c9954b13c83`` per Story 16.1
-/ D-12) by hashing three load-bearing source files and comparing against
-the known-good hashes captured at pin time.
+pinned commit (``3fdb468233d73fa537202b94a1cc7c4e7a6160b8`` per Story 18.4
+/ D-22 Branch B, bumped 2026-05-10 from the original Story 16.1 / D-12 pin
+``1ab0dd75353392f28a0d05d9ca960c9954b13c83``) by hashing three load-bearing
+source files and comparing against the known-good hashes captured at pin
+time.
+
+The current pin is the community fork ``dffdeeq/Qwen3-TTS-streaming``, NOT
+the upstream ``QwenLM/Qwen3-TTS`` repository. The fork is a drop-in
+replacement (same `qwen-tts` package name + 0.0.4 version; +50/-6 lines
+additive diff) that engages the upstream-blessed
+``Qwen3TTSModel.enable_streaming_optimizations`` API for torch.compile +
+CUDA Graph replay. See
+``_bmad-output/planning-artifacts/architecture-streaming-acceleration-and-lightning-tier.md``
+D-22 for the architectural rationale.
 
 Story tooling-2 AC #2 / Subtask 2.2. Mirrors Story 16.1's runtime trip-wire
 (``tests/test_qwen_tts_internals.py``) at build time rather than test time.
@@ -36,19 +47,24 @@ import sys
 from pathlib import Path
 
 
-PINNED_COMMIT = "1ab0dd75353392f28a0d05d9ca960c9954b13c83"
+PINNED_COMMIT = "3fdb468233d73fa537202b94a1cc7c4e7a6160b8"
+PINNED_REPO = "dffdeeq/Qwen3-TTS-streaming"
 
 # Known-good SHA-256 hashes of the load-bearing qwen_tts files at the pinned
-# commit. Captured 2026-05-08 from the maintainer's correctly-installed
-# python310/Lib/site-packages/qwen_tts/ on Windows 11 (file-byte ordering
-# preserved as installed by pip; no LF/CRLF normalization).
+# commit. Captured 2026-05-10 from the maintainer's correctly-installed
+# python310/Lib/site-packages/qwen_tts/ on Windows 11 after Story 18.4's
+# D-22 Branch B pin bump (file-byte ordering preserved as installed by pip;
+# no LF/CRLF normalization).
+#
+# Note: __init__.py is byte-identical to the previous QwenLM upstream pin
+# (1ab0dd75) — the fork's 3-file diff did not touch the package root.
 KNOWN_GOOD_HASHES = {
     "__init__.py":
         "2f2d51d7c65be2afa47675760dafb57f0f8cf48d4db3f4aa337b3bb4561004b5",
     "inference/qwen3_tts_model.py":
-        "8498559de22a9e152d1fef70d046eb0c7c5fba0dfcfb9592d3c662e3b15d87e8",
+        "92ce4e87603b00218bac359e17c2a1f87cde983385a718648981de2769358116",
     "core/models/modeling_qwen3_tts.py":
-        "2f4b6c451195b94b61b210ef840d2194ff64d20459ded55ef9abf5025c05bedd",
+        "53282082e25d96a7b032ddfe866a3ce9eeb5ef7b45049fe259fdccbdbb39a4f4",
 }
 
 
@@ -95,8 +111,8 @@ def _verify(pkg: Path) -> int:
         print("ERROR: qwen_tts pin verification FAILED")
         print("=" * 76)
         print()
-        print(f"Pinned commit (per Story 16.1 / D-12):")
-        print(f"  {PINNED_COMMIT}")
+        print(f"Pinned commit (per Story 18.4 / D-22 Branch B):")
+        print(f"  {PINNED_REPO}@{PINNED_COMMIT}")
         print()
         print("File-hash mismatches:")
         for relpath, actual, expected in mismatches:
@@ -108,8 +124,8 @@ def _verify(pkg: Path) -> int:
         print("commit (e.g., a debugging session reinstalled from upstream HEAD).")
         print()
         print("To restore the pinned commit:")
-        print(f"  python310\\python.exe -m pip install --force-reinstall \\")
-        print(f'    "qwen-tts @ git+https://github.com/QwenLM/Qwen3-TTS.git@{PINNED_COMMIT}"')
+        print(f"  python310\\python.exe -m pip install --force-reinstall --no-deps \\")
+        print(f'    "qwen-tts @ git+https://github.com/{PINNED_REPO}.git@{PINNED_COMMIT}"')
         print()
         print("To bump the pin (only if upstream issued a needed update):")
         print(f"  1. Update requirements.txt and build_tools/requirements-production.txt")

@@ -46,8 +46,9 @@ def test_end_of_stream_is_not_a_list():
 def test_package_all_lists_expected_symbols_in_order():
     import myvoice.services.tts_streaming as pkg
     # Story 16.2's three names, then Story 16.3's two, then Story 16.4's
-    # one, then Story 18.2's two, then Story 18.3's one — declaration order
-    # matches each story's append-only precedent.
+    # one, then Story 18.2's two, then Story 18.3's one, then Story 18.4's
+    # two (engage_compile_optimizations + compile_cache module) — declaration
+    # order matches each story's append-only precedent.
     assert pkg.__all__ == [
         "StreamingMode",
         "default_streaming_mode_for_hardware",
@@ -58,6 +59,8 @@ def test_package_all_lists_expected_symbols_in_order():
         "enable_tf32_and_cudnn_benchmark",
         "is_ampere_or_newer",
         "resolve_tts_precision",
+        "engage_compile_optimizations",
+        "compile_cache",
     ]
 
 

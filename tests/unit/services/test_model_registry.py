@@ -115,11 +115,14 @@ def test_app_settings_none_with_float32_dtype_legacy_path(monkeypatch, metric_re
 class _StubAppSettings:
     """Minimal stub mirroring AppSettings for precedence testing.
 
-    The ModelRegistry only reads ``tts_precision`` via getattr; we don't
-    need the full AppSettings construction surface here.
+    The ModelRegistry reads ``tts_precision`` (Story 18.3) and stores
+    ``self._app_settings`` so ``_load_model_sync`` can pass it to
+    ``engage_compile_optimizations`` for the ``tts_compile`` gate
+    (Story 18.4). Both fields are exposed here for completeness.
     """
-    def __init__(self, tts_precision=None):
+    def __init__(self, tts_precision=None, tts_compile=None):
         self.tts_precision = tts_precision
+        self.tts_compile = tts_compile
 
 
 def test_app_settings_with_tts_precision_none_falls_back_to_legacy(monkeypatch, metric_records):
@@ -254,6 +257,58 @@ def test_app_settings_auto_on_pre_ampere_resolves_to_float32(monkeypatch, metric
     rec = _single_record(metric_records, "tts_precision_resolved")
     assert rec.tags.get("source") == "app_settings_auto_fallback"
     assert rec.tags.get("device_capability") == "7.5"
+
+
+# --------------------------------------------------------------------------- #
+# Story 18.4 — compile_engaged INFO log breadcrumb + app_settings storage
+# --------------------------------------------------------------------------- #
+
+
+def test_app_settings_stored_on_self_for_load_model_compile_engagement(
+    monkeypatch, metric_records
+):
+    """Story 18.4 — `self._app_settings` must be retained for _load_model_sync's
+    `engage_compile_optimizations(model, app_settings=self._app_settings)`
+    call. The Story 18.3 wire-up only used the constructor argument inline;
+    Story 18.4 widened it to a stored field. Regression test: assert the
+    stored attribute matches the passed argument."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (8, 9))
+
+    settings = _StubAppSettings(tts_precision="auto", tts_compile="on")
+    registry = _make_registry(app_settings=settings, dtype="bfloat16", device="cpu")
+
+    assert registry._app_settings is settings, (
+        "ModelRegistry must store the app_settings argument on self._app_settings "
+        "so _load_model_sync can pass it to engage_compile_optimizations."
+    )
+
+
+def test_modelregistry_init_info_log_includes_compile_engaged_deferred(
+    monkeypatch, metric_records, caplog
+):
+    """Story 18.4 — the __init__ INFO log line carries `compile_engaged='deferred'`
+    because the actual engagement happens during _load_model_sync (after
+    from_pretrained returns; the model object doesn't exist at __init__).
+    Static log parsers see the tag schema at __init__ time; the resolved
+    state lands at the post-load INFO line that _load_model_sync emits.
+
+    Per `memory/code_review_regression_test_exact_class.md`, this is the
+    canonical regression test for the tag-schema-drift class — the new tag
+    must always appear at __init__ even when no model is loaded."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (8, 9))
+
+    settings = _StubAppSettings(tts_precision="auto")
+    with caplog.at_level(logging.INFO, logger="ModelRegistry"):
+        _make_registry(app_settings=settings, dtype="bfloat16", device="cpu")
+
+    info_messages = [r.message for r in caplog.records if r.levelno == logging.INFO]
+    matched = [m for m in info_messages if "ModelRegistry initialized" in m]
+    assert matched, f"Expected ModelRegistry init INFO breadcrumb; got {info_messages}"
+    assert "compile_engaged='deferred'" in matched[0], (
+        f"Expected compile_engaged='deferred' breadcrumb at __init__; got {matched[0]}"
+    )
 
 
 # --------------------------------------------------------------------------- #

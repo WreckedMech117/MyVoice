@@ -114,6 +114,26 @@ class AppSettings:
     # streaming_mode_override pattern. See epics-optimization-pass.md:1377.
     tts_precision: str = "auto"
 
+    # Story 18.4 — TTS compile override (D-21 / D-22 Branch B). "auto"
+    # = engages on Ampere+ CUDA via the upstream
+    # `Qwen3TTSModel.enable_streaming_optimizations` API; "on" = user-
+    # explicit opt-in (same hardware gate; pre-Ampere users still get
+    # eager mode with a WARNING log); "off" (default) = NFR7 fallback —
+    # forces eager mode even on Ampere+.
+    #
+    # Story 18.4 bundled-smoke 2026-05-10 outcome: default flipped from
+    # "auto" to "off" because torch.compile's Windows toolchain
+    # (triton-windows + tcc.exe + portable-Python headers) is non-functional
+    # in the production bundle — observed failure was BackendCompilerFailed
+    # propagating to `finalize() called with no chunks`. The compile
+    # source-tree machinery is preserved (pin bump, compile_cache, engage
+    # function, warmup worker, ModelRegistry wire-up) so advanced users
+    # can opt in by editing settings.json to `"tts_compile": "auto"` or
+    # `"on"`. A future story will resolve the triton-on-Windows blocker
+    # and flip the default back to "auto" after re-running the joint NFR3
+    # audition (Story 18.4 Task 9 deferred).
+    tts_compile: str = "off"
+
     # Advanced settings
     advanced_settings: Dict[str, Any] = field(default_factory=dict)
 
@@ -415,6 +435,34 @@ class AppSettings:
                 ))
                 self.tts_precision = "auto"
 
+            # Validate TTS compile (Story 18.4 / D-21 / D-22 Branch B /
+            # NFR7). Allowed values: "auto" (Ampere+ engages via the
+            # upstream API), "on" (user-explicit opt-in; same hardware
+            # gate), "off" (declared default + NFR7 fallback per the
+            # Story 18.4 bundled-smoke 2026-05-10 amendment; forces eager
+            # even on Ampere+). On unknown values, reset to the field's
+            # declared default ("off") — NFR7 graceful-degradation
+            # discipline: an invalid input is exactly when safe
+            # degradation should kick in, NOT silently re-engage the
+            # broken Windows triton toolchain the "off" default was
+            # designed to avoid. Reset target intentionally matches the
+            # declaration at line 133 to avoid the "validation drift
+            # between two near-identical fields" bug class per
+            # memory/code_review_regression_test_exact_class.md.
+            valid_tts_compile_values = ["auto", "on", "off"]
+            if self.tts_compile not in valid_tts_compile_values:
+                warnings.append(ValidationIssue(
+                    field="tts_compile",
+                    message=(
+                        f"Unknown TTS compile mode '{self.tts_compile}', "
+                        f"defaulting to 'off'. Allowed values: "
+                        f"{', '.join(valid_tts_compile_values)}."
+                    ),
+                    code="UNKNOWN_TTS_COMPILE",
+                    severity=ValidationStatus.WARNING
+                ))
+                self.tts_compile = "off"
+
             # Validate TTS service URL
             if not self.tts_service_url or not self.tts_service_url.strip():
                 issues.append(ValidationIssue(
@@ -553,6 +601,7 @@ class AppSettings:
                 "clear_comms_queue_mode": self.clear_comms_queue_mode,
                 "streaming_mode_override": self.streaming_mode_override,
                 "tts_precision": self.tts_precision,
+                "tts_compile": self.tts_compile,
                 "advanced_settings": self.advanced_settings.copy(),
                 "training_enabled": self.training_enabled,
                 "training_workspace_directory": self.training_workspace_directory,
@@ -620,6 +669,7 @@ class AppSettings:
                 clear_comms_queue_mode=data.get("clear_comms_queue_mode", False),
                 streaming_mode_override=data.get("streaming_mode_override"),
                 tts_precision=data.get("tts_precision", "auto"),
+                tts_compile=data.get("tts_compile", "off"),
                 advanced_settings=data.get("advanced_settings", {}),
                 training_enabled=data.get("training_enabled", True),
                 training_workspace_directory=data.get("training_workspace_directory", "training_workspace"),
@@ -737,6 +787,7 @@ class AppSettings:
             "clear_comms_queue_mode",
             "streaming_mode_override",
             "tts_precision",
+            "tts_compile",
             "advanced_settings",
             "training_enabled", "training_workspace_directory",
             "custom_emotion_text", "custom_emotion_presets"

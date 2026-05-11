@@ -99,8 +99,9 @@ def test_package_all_lists_expected_symbols_in_declaration_order():
     import myvoice.services.tts_streaming as pkg
     # Story 18.2 widened the package surface with two new exports
     # (`enable_tf32_and_cudnn_benchmark`, `is_ampere_or_newer`); Story 18.3
-    # added one more (`resolve_tts_precision`) per the append-only
-    # declaration-order discipline.
+    # added one more (`resolve_tts_precision`); Story 18.4 appends two
+    # (`engage_compile_optimizations` + the `compile_cache` module re-export)
+    # per the append-only declaration-order discipline.
     assert pkg.__all__ == [
         "StreamingMode",
         "default_streaming_mode_for_hardware",
@@ -111,6 +112,8 @@ def test_package_all_lists_expected_symbols_in_declaration_order():
         "enable_tf32_and_cudnn_benchmark",
         "is_ampere_or_newer",
         "resolve_tts_precision",
+        "engage_compile_optimizations",
+        "compile_cache",
     ]
 
 

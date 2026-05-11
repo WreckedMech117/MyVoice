@@ -532,6 +532,31 @@ class MyVoiceApp(QObject):
                     f"Voice clone prompt cache wiring failed: {exc}"
                 )
 
+            # Story 18.4 / D-23 — fire-and-forget torch.compile warmup
+            # worker. Skips entirely when MYVOICE_DISABLE_COMPILE_WARMUP=1,
+            # on CPU / pre-Ampere hosts, or before the model is loaded
+            # (in which case the first user-facing generation triggers
+            # compile inline — the lazy fallback path per architecture D-23).
+            # On Ampere+ CUDA with cache cold, runs one short synthetic
+            # priming generation with a "Preparing TTS engine…" indicator
+            # visible; on cache warm, logs a steady-state breadcrumb and
+            # returns. Mirrors Story 17.2's hydrate_voice_clone_prompt_cache
+            # fire-and-forget hook discipline.
+            try:
+                self._run_async_task(
+                    self._tts_service.warmup_compile_async(),
+                    on_success=lambda result: self.logger.debug(
+                        "torch.compile warmup task completed"
+                    ),
+                    on_error=lambda error: self.logger.warning(
+                        f"torch.compile warmup task failed: {error}"
+                    ),
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    f"torch.compile warmup wiring failed: {exc}"
+                )
+
             # Preload the appropriate model based on cached active voice profile
             # This ensures fast first generation without model switching delay
             preferred_model = self._voice_manager.get_active_profile_model_type()

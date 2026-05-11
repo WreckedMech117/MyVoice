@@ -69,9 +69,59 @@ hiddenimports_torch = [
     'torch._dynamo.polyfills.tensor',
     'torch._dynamo.polyfills._collections',
 ]
+# Story 18.4 / D-22 Branch B — torch.compile lazy-imports the inductor
+# backend's pattern-matching tables via importlib.import_module(name_string)
+# at first-compilation time. PyInstaller's static analysis can't detect
+# importlib-by-string, so the inductor's fx_passes.serialized_patterns
+# subtree (and surrounding lazy-imports across _inductor + _functorch)
+# must be force-collected for the bundle. Observed failure mode without
+# this collection: at first user generation, the code_predictor's
+# torch.compile-wrapped forward raises
+# `ModuleNotFoundError: No module named 'torch._inductor.fx_passes.serialized_patterns'`,
+# which propagates as BackendCompilerFailed → TRUE_STREAM emits 0 chunks
+# → ValueError finalize() (Story 18.4 bundled-smoke, 2026-05-10 log).
+hiddenimports_torch += collect_submodules('torch._inductor')
+hiddenimports_torch += collect_submodules('torch._functorch')
+
+# Story 18.4 fix #3 (2026-05-10) — collect_submodules('torch._inductor')
+# did NOT recurse into `fx_passes/serialized_patterns/` (PyInstaller's
+# package discovery skips this subdirectory; observed in the post-fix-#2
+# bundle where `_internal/torch/_inductor/fx_passes/` was present but
+# the `serialized_patterns/` subtree was missing entirely). Force-copy
+# the directory as data files + enumerate the modules explicitly.
+import glob as _glob  # used by fix #3 below + by the torch DLL block further down
+_serialized_patterns_dir = (
+    project_root / 'python310' / 'Lib' / 'site-packages' / 'torch'
+    / '_inductor' / 'fx_passes' / 'serialized_patterns'
+)
+torch_serialized_patterns_datas = []
+torch_serialized_patterns_hiddenimports = []
+if _serialized_patterns_dir.exists():
+    for _py in _glob.glob(str(_serialized_patterns_dir / '*.py')):
+        _name = Path(_py).stem
+        # Skip __pycache__ entries; pyc files only.
+        if _name.startswith('__pycache__'):
+            continue
+        torch_serialized_patterns_datas.append(
+            (_py, 'torch/_inductor/fx_passes/serialized_patterns')
+        )
+        if _name == '__init__':
+            torch_serialized_patterns_hiddenimports.append(
+                'torch._inductor.fx_passes.serialized_patterns'
+            )
+        else:
+            torch_serialized_patterns_hiddenimports.append(
+                f'torch._inductor.fx_passes.serialized_patterns.{_name}'
+            )
+    print(
+        f"[SPEC] Force-copying {len(torch_serialized_patterns_datas)} "
+        f"torch/_inductor/fx_passes/serialized_patterns/ files "
+        f"(Story 18.4 torch.compile lazy-import fix)"
+    )
+hiddenimports_torch += torch_serialized_patterns_hiddenimports
 
 # Torch DLL binaries - collected manually to avoid import issues
-import glob as _glob
+# (_glob already imported above for fix #3)
 torch_binaries = []
 _torch_lib = project_root / 'python310' / 'Lib' / 'site-packages' / 'torch' / 'lib'
 if _torch_lib.exists():
@@ -318,7 +368,7 @@ a = Analysis(
     [str(myvoice_path / 'main.py')],
     pathex=[str(src_path)],
     binaries=pywin32_binaries + ffmpeg_binaries + torch_binaries,
-    datas=datas + pywin32_datas + torch_datas + qwen_tts_datas + accelerate_datas + soundfile_datas + transformers_deps_datas + transformers_datas,
+    datas=datas + pywin32_datas + torch_datas + torch_serialized_patterns_datas + qwen_tts_datas + accelerate_datas + soundfile_datas + transformers_deps_datas + transformers_datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     module_collection_mode={'torch': 'pyz+py', 'transformers': 'pyz+py', 'qwen_tts': 'pyz+py'},

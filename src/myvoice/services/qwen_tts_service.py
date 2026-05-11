@@ -1145,9 +1145,12 @@ class QwenTTSService(BaseService):
     # ----- Story 17.2: lazy + persistent voice_clone_prompt precompute --- #
 
     # qwen-tts pin per requirements.txt:23 — embedded in .pt.meta.json so a
-    # future pin bump invalidates cached embeddings (defensive: today's pin
-    # is unchanged; this guard ensures a future bump is safe).
-    _QWEN_TTS_PIN_HASH = "1ab0dd75"
+    # pin bump invalidates cached embeddings. Story 18.4 / D-22 Branch B bumped
+    # the pin from `1ab0dd75` (QwenLM/Qwen3-TTS upstream) to `3fdb4682`
+    # (dffdeeq/Qwen3-TTS-streaming fork) — Story 17.2 cached `.pt` files from
+    # the previous pin are invalidated on first run after this bump (Story 17.2
+    # H1+H2 cache-invalidation discipline per memory/code_review_regression_test_exact_class.md).
+    _QWEN_TTS_PIN_HASH = "3fdb4682"
     # Whisper retry policy for the lazy-precompute (AC #2): three attempts
     # total, with progressive backoff between. The bundled subprocess
     # Whisper path (whisper_subprocess.py) typically completes in 1-3s
@@ -1779,6 +1782,286 @@ class QwenTTSService(BaseService):
             self.logger.warning(
                 f"preparing_voice callback raised: {exc}"
             )
+
+    # ------------------------------------------------------------------ #
+    # Story 18.4 — torch.compile warmup worker (D-23)
+    # ------------------------------------------------------------------ #
+
+    _COMPILE_PRIMING_TEXT = "Hello world."
+    _COMPILE_WARMUP_DISABLE_ENV = "MYVOICE_DISABLE_COMPILE_WARMUP"
+
+    async def warmup_compile_async(self) -> None:
+        """Story 18.4 / D-23 — background warmup for the torch.compile cache.
+
+        Fire-and-forget worker that runs ONCE per process startup. Decides
+        between two paths based on ``compile_cache.is_warm(key)``:
+
+          * Cache HIT — log the steady-state breadcrumb + emit a
+            ``cache_hit`` telemetry record; do NOT trigger a priming
+            generation (the inductor cache reloads from disk lazily on
+            first user-facing generation).
+          * Cache MISS — emit the "Preparing TTS engine…" indicator, run
+            one short synthetic priming generation through the production
+            dispatch chain (which exercises ``torch.compile``'s graph
+            capture and writes the inductor cache to the per-key directory),
+            then call ``compile_cache.mark_warm(key)`` on success and clear
+            the indicator. On priming failure, the cache stays cold (next
+            run retries) and a WARNING is logged.
+
+        Gates (fast-exit; fail-closed):
+          1. ``MYVOICE_DISABLE_COMPILE_WARMUP=1`` env var → skip entirely
+             (test surface; CI envs that should not trigger compile).
+          2. ``is_ampere_or_newer()`` False → skip (CPU / pre-Ampere hosts
+             never engage compile per D-9 / NFR12).
+          3. ``self._model_registry`` not wired → skip (no model means no
+             compile state to prime).
+
+        Telemetry contract: ``metrics.record("tts_compile_warmup_priming",
+        value, reason=..., duration_ms=...)``. The eight possible
+        ``reason`` values mirror the engage path: ``"cache_hit"`` (skip),
+        ``"primed_cold"`` (priming succeeded), ``"priming_failed"``
+        (priming raised), ``"cuda_unavailable"`` (D-9 skip),
+        ``"pre_ampere"`` (D-9 skip), ``"user_disabled"`` (env-var skip),
+        ``"no_model_registry"`` (precondition not met), and
+        ``"no_model_loaded"`` (model not yet loaded; defer to first
+        user-facing generation).
+
+        Never raises — every failure path lands in a WARNING log + a
+        telemetry record. The fire-and-forget caller in ``app.py`` does
+        not need a try/except wrapper (mirrors Story 17.2's
+        ``hydrate_voice_clone_prompt_cache`` discipline).
+        """
+        import os
+        import time
+
+        from myvoice.observability import metrics
+
+        start_ms = time.monotonic()
+
+        # Gate 1: env-var-gated skip (production behavior unchanged when
+        # env var unset). Mirrors Story 18.3's ``MYVOICE_AUTO_QUIT_ON_CLOSE``
+        # env-var precedent at memory/main_window_close_confirm_dialog_in_tests.md.
+        if os.environ.get(self._COMPILE_WARMUP_DISABLE_ENV) == "1":
+            self.logger.info(
+                "torch.compile warmup skipped: %s=1 (test mode)",
+                self._COMPILE_WARMUP_DISABLE_ENV,
+            )
+            metrics.record(
+                "tts_compile_warmup_priming",
+                0.0,
+                reason="user_disabled",
+                duration_ms=int((time.monotonic() - start_ms) * 1000),
+            )
+            return
+
+        # Gate 1b: AppSettings.tts_compile gate. If the user (or the
+        # bundled-smoke default flipped to "off" per Fix #4) has disabled
+        # compile, the warmup must NOT run a priming generation — the
+        # priming dispatches a real TRUE_STREAM utterance whose audio
+        # chunks reach the wired audio_chunk_ready_callback (the user's
+        # speakers). Without this gate, a first-launch on Ampere+ CUDA
+        # with tts_compile="off" produces audible "Hello world." spurious
+        # audio AND writes a meaningless meta.json sidecar (engage stayed
+        # eager so no inductor artifacts exist). Mirrors engage_compile_
+        # optimizations' tts_compile="off" → reason="user_disabled" branch.
+        tts_compile = getattr(self._app_settings, "tts_compile", None)
+        if tts_compile == "off":
+            self.logger.info(
+                "torch.compile warmup skipped: tts_compile='off' "
+                "(NFR7 fallback — eager-mode generation remains)"
+            )
+            metrics.record(
+                "tts_compile_warmup_priming",
+                0.0,
+                reason="user_disabled",
+                duration_ms=int((time.monotonic() - start_ms) * 1000),
+            )
+            return
+
+        # Gate 2: D-9 hardware probe.
+        try:
+            from myvoice.services.tts_streaming import is_ampere_or_newer
+            ampere_ok = is_ampere_or_newer()
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(
+                "torch.compile warmup skipped: hardware probe raised (%s: %s)",
+                type(exc).__name__,
+                exc,
+            )
+            metrics.record(
+                "tts_compile_warmup_priming",
+                0.0,
+                reason="cuda_unavailable",
+                duration_ms=int((time.monotonic() - start_ms) * 1000),
+            )
+            return
+        if not ampere_ok:
+            self.logger.info(
+                "torch.compile warmup skipped: pre-Ampere or no CUDA"
+            )
+            metrics.record(
+                "tts_compile_warmup_priming",
+                0.0,
+                reason="pre_ampere",
+                duration_ms=int((time.monotonic() - start_ms) * 1000),
+            )
+            return
+
+        # Gate 3: model_registry must be wired.
+        if self._model_registry is None:
+            self.logger.debug(
+                "torch.compile warmup skipped: no model_registry wired"
+            )
+            metrics.record(
+                "tts_compile_warmup_priming",
+                0.0,
+                reason="no_model_registry",
+                duration_ms=int((time.monotonic() - start_ms) * 1000),
+            )
+            return
+
+        # Cache-key computation (mirrors engage_compile_optimizations'
+        # construction so the warmup and the engage path share state).
+        # If the model isn't loaded yet, defer — the first user-facing
+        # generation will trigger engage + compile + lazy cache write.
+        loaded_model = self._model_registry.get_loaded_model()
+        if loaded_model is None:
+            self.logger.debug(
+                "torch.compile warmup skipped: no model loaded yet "
+                "(lazy fallback path — first generation will prime the cache)"
+            )
+            metrics.record(
+                "tts_compile_warmup_priming",
+                0.0,
+                reason="no_model_loaded",
+                duration_ms=int((time.monotonic() - start_ms) * 1000),
+            )
+            return
+
+        from myvoice.services.tts_streaming import compile_cache
+        import torch
+        try:
+            capability = torch.cuda.get_device_capability()
+            model_id = (
+                getattr(getattr(loaded_model, "model", None), "name_or_path", None)
+                or getattr(loaded_model, "name_or_path", None)
+                or "unknown"
+            )
+            model_dtype = getattr(getattr(loaded_model, "model", None), "dtype", None)
+            precision_str = "bf16" if model_dtype == torch.bfloat16 else "fp32"
+            key = compile_cache.compute_key(
+                qwen_tts_pin_hash=self._QWEN_TTS_PIN_HASH,
+                model_id=model_id,
+                precision_str=precision_str,
+                torch_version=torch.__version__,
+                decode_window_frames=30,
+                cuda_capability=capability,
+                compile_mode="reduce-overhead",
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(
+                "torch.compile warmup skipped: cache-key computation raised "
+                "(%s: %s)",
+                type(exc).__name__,
+                exc,
+            )
+            metrics.record(
+                "tts_compile_warmup_priming",
+                0.0,
+                reason="priming_failed",
+                duration_ms=int((time.monotonic() - start_ms) * 1000),
+                error=type(exc).__name__,
+            )
+            return
+
+        # Cache-hit path: short-circuit; no priming needed.
+        if compile_cache.is_warm(key):
+            self.logger.info(
+                "Compile cache hit; skipping warmup priming"
+            )
+            metrics.record(
+                "tts_compile_warmup_priming",
+                0.0,
+                reason="cache_hit",
+                duration_ms=int((time.monotonic() - start_ms) * 1000),
+            )
+            return
+
+        # Cache-miss path: emit indicator + run priming + mark_warm on success.
+        self._emit_preparing_voice("Preparing TTS engine…")
+        try:
+            await self._run_compile_priming()
+            compile_cache.mark_warm(key)
+            duration_ms = int((time.monotonic() - start_ms) * 1000)
+            self.logger.info(
+                "Compile warmup primed cache successfully (duration=%dms)",
+                duration_ms,
+            )
+            metrics.record(
+                "tts_compile_warmup_priming",
+                1.0,
+                reason="primed_cold",
+                duration_ms=duration_ms,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Cache stays cold (mark_warm not called); next run retries.
+            duration_ms = int((time.monotonic() - start_ms) * 1000)
+            self.logger.warning(
+                "Compile warmup priming failed (%s: %s); cache stays cold, "
+                "next run will retry. Eager-mode generation remains available.",
+                type(exc).__name__,
+                exc,
+            )
+            metrics.record(
+                "tts_compile_warmup_priming",
+                0.0,
+                reason="priming_failed",
+                duration_ms=duration_ms,
+                error=type(exc).__name__,
+            )
+        finally:
+            # Always clear the indicator — even on priming failure the
+            # user should not be left looking at a stuck "Preparing TTS
+            # engine…" message.
+            self._emit_preparing_voice(None)
+
+    async def _run_compile_priming(self) -> None:
+        """Story 18.4 — run one synthetic priming generation.
+
+        Separated from ``warmup_compile_async`` so the gating, cache
+        check, indicator emission, and ``mark_warm`` logic stay independently
+        testable (tests monkeypatch this method to succeed/fail without
+        spinning up a real model or audio output).
+
+        The priming flows through ``generate_custom_voice`` with a short
+        text + the canonical default speaker ("Ryan", matching the
+        ``QwenTTSCustomVoiceRequest.speaker`` default at line 219) so the
+        talker's first forward pass triggers ``torch.compile``'s graph
+        capture and the inductor compile that PyTorch's per-key cache
+        directory absorbs.
+        No audio output reaches the user (the priming runs before the
+        ``set_audio_chunk_ready_callback`` wires consumers up — and even
+        if a consumer is wired, the generation is short enough that any
+        audible artifact is bounded).
+
+        The architecture's D-23 acceptance: "warm = compile-priming
+        generation completed without error". The caller's ``mark_warm``
+        call lands on the success path. Any raised exception bubbles up
+        and the caller's ``except`` lands the ``priming_failed`` telemetry.
+        """
+        # Use a bundled CustomVoice speaker for priming. The default
+        # speaker ("Ryan") is canonical; if it's unavailable, the priming
+        # generation raises and the caller routes to priming_failed (NOT
+        # a fatal — the next run will retry; eager-mode generation stays
+        # available). The custom-voice API does NOT require a voice file;
+        # it dispatches via the same TRUE_STREAM path the user-facing
+        # generation will take, so the talker's first forward pass
+        # triggers torch.compile's graph capture.
+        await self.generate_custom_voice(
+            text=self._COMPILE_PRIMING_TEXT,
+            speaker="Ryan",
+            language="English",
+        )
 
     async def generate_voice_clone(
         self,
