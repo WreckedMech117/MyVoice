@@ -280,14 +280,14 @@ so that **first-chunk latency drops 1.5–3× on warm compile cache (per the ups
   - [ ] 8.5 [PENDING COMMANDER] Compute deltas after Commander runs the three .bat files; the aggregator script surfaces all numbers verbatim. Capture output at evidence file §"NFR1 first-chunk-latency measurement (3-way A/B/C)".
   - [ ] 8.6 [PENDING COMMANDER] OQ #1 routing condition automatically surfaces in aggregator output: sub-20% A-vs-B speedup OR branch-A ratio ≥ 1.0× sustained → STOP and route to OQ #1.
 
-- [~] **Task 9 — NFR3 joint audition** (AC: #10) [HELPER SCRIPT CREATED; FIXTURE REGEN + LISTENER RECRUITMENT + AUDITION RUN COMMANDER-ROUTED]
+- [~] **Task 9 — NFR3 joint audition** (AC: #10) [L1 PARTIAL PASS 2026-05-11; L2 + L3 RECRUITMENT DEFERRED]
   Single-cycle audition certifies bf16 + compile + pin-bump simultaneously.
   - [x] 9.1 Created `_bmad-output/implementation-artifacts/18-4-l1-audition-helper.py` pointing at `18-4-perceptual-fixtures/`. Verdict-gate reminder updated for Story 18.4 framing ("PASS iff zero `audible_seam` flags on B (bf16+compile+new-pin) trials across all 30 trials"). Syntax-validated.
-  - [ ] 9.2 [PENDING COMMANDER-ROUTED] Regenerate the 10-pair fixture subset via the production GUI under bf16+compile (B) and fp32+eager (A). Save to `18-4-perceptual-fixtures/` (NEW directory; do NOT overwrite 16-7 or 18-3). Force-add per `memory/git_repo_state.md`.
-  - [ ] 9.3 [PENDING COMMANDER-ROUTED] Recruit ≥3 listeners (L1=Commander; L2+L3 independent).
-  - [ ] 9.4 [PENDING COMMANDER-ROUTED] Run the audition (30 trials = 10 utterances × 3 listeners × A/B blind). Capture at `18-4-bf16-compile-pinbump-audition.csv`.
-  - [ ] 9.5 [PENDING dev-agent post-audition] Compute the verdict. PASS iff zero `audible_seam` flags on B trials.
-  - [ ] 9.6 [PENDING dev-agent post-audition] On FAIL, route to OQ #2 with failed-utterance class + failed-dimension class annotated.
+  - [x] 9.2 Fixture regen — **AUTOMATED via `18-4-regen-fixture.py`** (drives `Qwen3TTSModel.generate_voice_clone` directly with the Sarira-F voice_clone_prompt cache; bypasses the GUI). Both branches generated in 2 min flat; 20 WAVs at PCM_16 24 kHz mono; compile-engaged Branch B showed ~2× speedup on long utterances (l-013/l-014). Force-added per `memory/git_repo_state.md`. Truth-table built via `18-4-generate-truthtable.py` with deterministic per-listener randomization (L1: 5/5, L2: 4/6, L3: 5/5 fp32-as-trial-A counts).
+  - [~] 9.3 [L1 done; L2 + L3 DEFERRED] L1 = Commander completed audition 2026-05-11 via `08_Story_18.4_NFR3_Audition.bat` (mirrors `01_Run_MyVoice_With_CSV_Capture.bat` structure). L2 + L3 recruitment deferred — to be re-engaged when co-located human listeners are available.
+  - [~] 9.4 L1 session completed cleanly (10/10 rows recorded; no aborts). Capture at `18-4-bf16-compile-pinbump-audition.csv` (10 rows; appendable when L2 + L3 land).
+  - [x] 9.5 **L1 partial verdict: PASS.** `18-4-compute-verdict.py` cross-references truth-table; output at evidence file §"Verdict computation (Task 9.5)". Zero `audible_seam` flags on bf16_compile trials (and zero on fp32_eager); zero defects of any kind across all 20 trials; L1's only non-equivalent preference (s-015) favors bf16_compile with note "Seemed like better quality/volume". **Full verdict pending L2 + L3.**
+  - [ ] 9.6 [N/A for current data] No FAIL routing yet — L1 partial is clean PASS. If L2 or L3 flips the verdict (any `audible_seam` flag on bf16_compile), route to OQ #2 with failed-utterance class + failed-dimension class annotated.
 
 - [ ] **Task 10 — Architecture amendment** (AC: #11)
   Mirrors the Story 17.1 / Story 18.3 two-place edit pattern + the new sealed-architecture amendment marking D-22 Branch B as EXECUTED. Lands ONLY after the joint audition closes (Task 9 verdict input).

@@ -356,7 +356,71 @@ The NFR3 listener audition (Task 9) is the perceptual-quality gate; that's where
 
 ## NFR3 joint audition verdict — Task 9
 
-(Pending Commander fixture regen + listener recruitment + audition completion + dev-agent computation of verdict from joined CSV.)
+**L1 partial PASS, 2026-05-11.** Fixture fully regenerated + L1 (Commander) audition complete; L2 + L3 recruitment deferred.
+
+### Fixture regen (Task 9.2) — fully automated 2026-05-11
+
+The original story plan routed fixture regen via the production GUI (Commander-routed manual work). The dev agent's `18-4-regen-fixture.py` instead drives `Qwen3TTSModel.generate_voice_clone` directly with the Sarira-F voice_clone_prompt (loaded from the pre-existing `voice_files/Sarira-F.quality.pt` cache at pin `3fdb4682`), producing all 20 WAVs in 2 minutes flat.
+
+Branch B's compile-engaged generations were noticeably faster than Branch A's eager generations on the longer utterances:
+
+| Utterance | A (fp32_eager) | B (bf16_compile) | Speedup |
+|---|---|---|---|
+| l-013 (163 chars) | 13.2 s | 6.7 s | **1.97×** |
+| l-014 (158 chars) | 14.7 s | 7.5 s | **1.96×** |
+| m-013 (56 chars) | 4.1 s | 2.3 s | 1.83× |
+| m-012 (48 chars) | 4.6 s | 2.3 s | 2.02× |
+| s-014 (24 chars) | 4.6 s | 14.1 s (cold compile) | — |
+| s-015 (24 chars, warm) | 5.1 s | 2.0 s | 2.50× |
+
+Notable: B's first generation (s-014) absorbed the cold-compile cost (~14 s). All subsequent B generations ran 2-3 s. This is the same warmup discipline architecture D-23 specified.
+
+WAV inventory: all 20 files PCM_16 mono 24 kHz. Durations match utterance length class (short 2-4 s, medium 2.5-3.7 s, long 9.5-11 s). A vs B durations within ~10 % per utterance (model sampling stochasticity, expected).
+
+### L1 audition (Task 9.4 L1) — 2026-05-11
+
+Helper script `18-4-l1-audition-helper.py` (already in place from earlier dev-agent work) was wrapped in `08_Story_18.4_NFR3_Audition.bat` so the user-facing flow mirrors `01_Run_MyVoice_With_CSV_Capture.bat`. Commander ran L1 session via the .bat with headphones. Session completed cleanly (10 / 10 rows recorded; no aborts).
+
+### Verdict computation (Task 9.5) — partial
+
+`18-4-compute-verdict.py` cross-references the truth-table to map listener "trial A / trial B defects observed" back to actual modes (`fp32_eager` / `bf16_compile`).
+
+**Per-actual-mode defect-flag counts (L1 only, N=10 trials per mode):**
+
+| defect | fp32_eager | bf16_compile |
+|---|---|---|
+| `none` | 10 | 10 |
+| `audible_seam` (← verdict gate) | **0** | **0** |
+| `clipping` | 0 | 0 |
+| `phase_artifact` | 0 | 0 |
+| `tonal_distortion` | 0 | 0 |
+| `other_describe_in_notes` | 0 | 0 |
+
+**L1 actual-mode preferences (after un-blinding via truth-table):**
+
+- bf16_compile: 1 (s-015, with note "Seemed like better quality/volume")
+- fp32_eager: 0
+- equivalent: 9
+
+**L1 partial verdict: PASS** — zero `audible_seam` flags on bf16_compile trials; zero defects of any kind on either system; L1's only non-equivalent preference favors bf16_compile.
+
+### Listener recruitment (Task 9.3) — L2 + L3 deferred
+
+The Story 17.1 protocol expects ≥3 listeners (L1 = Commander; L2 + L3 = co-located in-person walkthrough listeners) for the full audition. L2 + L3 recruitment is deferred to when humans are available. The L1 signal is unambiguously clean (zero defects across all 20 trials; slight bf16_compile preference on the one non-equivalent row), so L2 + L3 are unlikely to flip the verdict — but architecturally the audition is INCOMPLETE until they land.
+
+**Routing:** the architecture amendment (Task 10) waits on full audition closure. The L1 partial verdict is recorded here as a placeholder. When L2 + L3 land, re-run `18-4-compute-verdict.py` and update this section + amend the architecture.
+
+### Artifacts
+
+Force-added per gitignore precedent:
+- 20 WAV files at `_bmad-output/implementation-artifacts/18-4-perceptual-fixtures/{s-014..l-014}-{fp32_eager,bf16_compile}.wav`
+- `_bmad-output/implementation-artifacts/18-4-perceptual-fixtures/_perlistener_truthtable.json`
+- `_bmad-output/implementation-artifacts/18-4-perceptual-fixtures/LISTENING-INSTRUCTIONS.md` (verbatim from `16-7-perceptual-fixtures/`)
+- `_bmad-output/implementation-artifacts/18-4-bf16-compile-pinbump-audition.csv` (L1 rows; appendable when L2 + L3 land)
+- `_bmad-output/implementation-artifacts/18-4-regen-fixture.py` (one-shot regen)
+- `_bmad-output/implementation-artifacts/18-4-generate-truthtable.py` (truth-table builder)
+- `_bmad-output/implementation-artifacts/18-4-compute-verdict.py` (verdict cross-reference)
+- `08_Story_18.4_NFR3_Audition.bat` (Commander-facing audition launcher; mirrors `01_Run_MyVoice_With_CSV_Capture.bat` structure)
 
 ## Out-of-scope but tracked
 
