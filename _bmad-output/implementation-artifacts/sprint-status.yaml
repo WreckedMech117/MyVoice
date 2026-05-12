@@ -115,7 +115,7 @@ development_status:
   17-3-progressive-audio-playback-during-true-stream: done
   epic-17-retrospective: optional
 
-  # Epic 18 — Generation-Speed Optimizations (Phase ⊥-Polish-2)
+  # Epic 18 — Generation-Speed Optimizations (Phase ⊥-Polish-2 + Phase ⊥-Polish-2-Ship)
   # Added 2026-05-09 — Epic was fully scoped in `epics-optimization-pass.md` (line 228 +
   # stories at line 1322) but never registered in sprint-status.yaml. Logged retroactively
   # so create-story / sprint-status workflows pick it up. Phase ⊥-Polish-2 of D-20;
@@ -124,9 +124,20 @@ development_status:
   # Recommended sequencing: 18.1 + 18.2 in either order or parallel; 18.3 third (settles
   # precision question); 18.4 last (compiles whatever precision 18.3 selected). 18.3 + 18.4
   # may amortize a single NFR3 audition if shipped close together.
+  #
+  # Re-opened 2026-05-11 (done → in-progress) per Story 18.4 closure handoff
+  # (`_bmad-output/handoff-2026-05-11.md`) + `memory/build_tools_phase_perp_state.md` HIGH
+  # follow-up: Story 18.4 shipped with `AppSettings.tts_compile="off"` because the
+  # production bundle is missing CUDA Toolkit + Python 3.10.11 headers/libs +
+  # triton-windows. Story 18.5 (Phase ⊥-Polish-2-Ship) bundles those three components so
+  # users can flip the default back to `"auto"` and reach the source-tree compile machinery
+  # Stories 18.2 + 18.3 + 18.4 collectively landed. Audition pre-cleared by Story 18.4's
+  # joint A/B (FULL PASS 2026-05-11); 18.5 is a packaging+default-flip story, not a
+  # perceptual story.
   epic-18: done
   18-1-underrun-gap-mitigation: done
   18-2-tf32-cudnn-benchmark-enable: done
   18-3-bf16-precision-on-talker-decoder: done
   18-4-torch-compile-decoder-persistent-cache: done
-  epic-18-retrospective: optional
+  18-5-cuda-toolkit-triton-bundling: done
+  epic-18-retrospective: done

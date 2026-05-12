@@ -1575,5 +1575,40 @@ These are administrative follow-ups, not blocking the architecture handoff:
 
 ---
 
+#### Story 18.5 Follow-up Note (Production-Bundle CUDA Toolkit + Python Headers + triton-windows, 2026-05-12)
+
+**Phase ⊥-Polish-2-Ship closed.** Story 18.5 makes Story 18.4's source-tree torch.compile machinery user-reachable in the production bundle by closing three packaging gaps and resolving one downstream race exposed by compile-engaged producer cadence.
+
+**Three packaging gaps closed:**
+
+1. **CUDA Toolkit redistributable subset bundled.** `build_tools/stage_cuda_subset.py` (committed; output gitignored at `build_tools/cuda_toolkit_subset/`) stages the NVIDIA Attachment A scope: `cudart64_*.dll`, `nvrtc64_*.dll`, `nvrtc-builtins64_*.dll`, the device-side headers from `%CUDA_PATH%/include/crt/` (25 files), `EULA.txt`, and `EULA.txt.sha256`. NVCC is hard-rejected at staging time per EULA §1.1.2 #4. Staged subset = 172.95 MB raw uncompressed (under the 200 MB target). License clearance memo at `18-5-cuda-toolkit-triton-bundling-evidence.md §"NVIDIA license clearance"` (Commander Interpretation A sign-off, 2026-05-11). PyInstaller bundles the subset at `_internal/cuda_redist/`.
+2. **Python 3.10.11 dev headers + libs bundled.** Spec Block B copies `python310/Include/*` → `_internal/Include/` and `python310/libs/python310.lib` → `_internal/libs/python310.lib` (positions match what triton's `find_python()` searches via `sys.exec_prefix`).
+3. **triton-windows bundled.** `requirements.txt` + `build_tools/requirements-production.txt` add `triton-windows>=3.6.0.post26; sys_platform == 'win32'`. Spec Block A uses `collect_submodules('triton') + collect_data_files('triton')`; `module_collection_mode={'triton': 'pyz+py'}` ensures triton's lazy-import surface resolves at runtime. Bundles triton's own `backends/nvidia/{bin/ptxas.exe, include/cuda.h, lib/x64/cuda.lib}` + `runtime/tcc/tcc.exe`.
+
+**Runtime-hook injection** (`build_tools/hooks/rthook_torch.py`, gated on `sys.frozen`):
+
+- `_inject_cuda_redist_paths()` — sets `CUDA_PATH` to `_internal/triton/backends/nvidia/` (so triton's `find_cuda_env` resolves ptxas+cuda.h+cuda.lib); prepends `_internal/cuda_redist/bin` to PATH + `os.add_dll_directory` (for runtime NVRTC + CUDA Runtime DLL loading).
+- `_configure_triton_backend_discovery()` — sets `TRITON_BACKENDS_IN_TREE=1` (triton's documented fast-path env var bypasses `entry_points()`, which fails in PyInstaller because `triton_windows-*.dist-info/` isn't bundled) AND `CC=<_MEIPASS>/triton/runtime/tcc/tcc.exe` (bundled TinyCC; bypasses `sysconfig.get_paths()["platlib"]` resolution issue).
+- `_probe_triton_availability()` — observability-only `import triton` + `triton.backends.backends` registry probe; logs to `rthook_debug.log`. Also fixes the OQ #4 latent debug-log bug via a new `_ensure_logs_dir()` helper.
+
+**Bundled-smoke iteration cycle (3 fixes; under the OQ #1 5-fix threshold):**
+
+- **Fix #1** (2026-05-11) — backend discovery via `TRITON_BACKENDS_IN_TREE=1` closes the `0 active drivers ([]). There should only be one.` failure mode (entry_points needs dist-info; not bundled).
+- **Fix #2** (2026-05-11) — CC env var + CUDA_PATH redirect to triton's bundled subset + Python headers/libs path correction together close the `Failed to find C compiler` failure mode and the `find_python() / find_cuda()` resolution gaps in the frozen sysconfig.
+- **Fix #3** (2026-05-12) — `_progressive_playback_active` race fix at `app.py:2851` + `:2696`: producer-faster-than-real-time under compile-engaged caused chunks queued in the asyncio task loop to drain through `_on_chunk_ready`'s stale-branch early-return AFTER `_play_generated_audio` cleared the flag, silently dropping ~30% of audio bytes from `_stream_total_bytes`. The drain-math underestimate then truncated the playback. The flag now clears AFTER the natural terminal-chunk session-close (where all bytes have registered and drain has waited the full amount).
+
+**Default-flip:** `AppSettings.tts_compile` declared default flipped `"off"` → `"auto"` at `src/myvoice/models/app_settings.py:146` post Fix #3 verification. Validator + `from_dict` default + test-file rows all updated to match. Pre-cleared by Story 18.4 joint A/B NFR3 audition (FULL PASS 2026-05-11; zero `audible_seam` flags) — no new audition required.
+
+**Cross-cutting deliverables:**
+- Source-tree edits: 7 modified, 4 new (3 source + 1 evidence). Including the chunk-race fix outside Story 18.5's original scope (`src/myvoice/app.py`).
+- Unit-test coverage: `tests/unit/build_tools/test_stage_cuda_subset.py` (10 rows; NVCC-rejection regression at the EXACT bug class) + `tests/unit/build_tools/test_rthook_torch.py` (10 rows; CUDA_PATH + CC + TRITON_BACKENDS_IN_TREE + triton availability + sys.frozen-gate). Test default-value rows in `test_app_settings_tts_compile.py` flipped to "auto" per the default-flip.
+- Architecture invariants preserved: D-22 (qwen-tts pin) UNCHANGED, D-23 (background warmup + persistent compile cache) NOW USER-REACHABLE, D-24 (7-dim cache key) UNCHANGED, D-25 (decode-window invariant) UNCHANGED, P-10 through P-12 UNCHANGED.
+- NFR7 (graceful degradation) PRESERVED — compile-failure path still falls back to eager mode; the fallback is now genuinely rare rather than always-active.
+- NFR12 (CPU-only support) PRESERVED — hardware gate at `engage_compile_optimizations` still skips compile for CPU + pre-Ampere hosts.
+
+**Per Epic 18 framing (`epics-optimization-pass.md:234` — "No new D-decisions"), Story 18.5 does NOT amend `architecture-optimization-pass.md`.**
+
+---
+
 _Architecture document complete. Ready for handoff to `/bmad-bmm-create-story` for per-story tech-spec authoring, or `/bmad-bmm-check-implementation-readiness` for cross-document alignment validation against the PRD and existing epics file._
 

@@ -13,6 +13,12 @@ test row structure mirrors the ``tts_precision`` discipline at
 ``tests/unit/models/test_app_settings_tts_precision.py`` verbatim, so any
 post-Story-18.4 change to ``tts_precision``'s validation contract that
 fails to land in ``tts_compile`` (or vice versa) fails this file.
+
+Default-flip history (per the field-level docstring in app_settings.py):
+  - Story 18.4 (2026-05-10): "auto" → "off" (Windows triton toolchain
+    non-functional in bundle).
+  - Story 18.5 (2026-05-12): "off" → "auto" (three packaging gaps closed;
+    bundled-smoke verified compile engages end-to-end).
 """
 
 from __future__ import annotations
@@ -25,14 +31,12 @@ from myvoice.models.app_settings import AppSettings
 
 
 class TestAppSettingsTtsCompileDefaults:
-    """Default value per Story 18.4 AC #6 + the 2026-05-10 bundled-smoke
-    architecture amendment that flipped the default from "auto" to "off"
-    pending the triton-on-Windows toolchain resolution (see field-level
-    docstring in app_settings.py for rationale)."""
+    """Default value per Story 18.5 (flipped from "off" back to "auto"
+    after Phase ⊥-Polish-2-Ship closed the bundle-reach gap)."""
 
-    def test_default_tts_compile_is_off(self):
+    def test_default_tts_compile_is_auto(self):
         settings = AppSettings()
-        assert settings.tts_compile == "off"
+        assert settings.tts_compile == "auto"
 
 
 class TestAppSettingsTtsCompileAcceptedValues:
@@ -58,10 +62,10 @@ class TestAppSettingsTtsCompileRoundTrip:
             "dropping the key silently breaks ConfigurationService.save_settings."
         )
 
-    def test_to_dict_default_persists_off(self):
+    def test_to_dict_default_persists_auto(self):
         settings = AppSettings()
         payload = settings.to_dict()
-        assert payload["tts_compile"] == "off"
+        assert payload["tts_compile"] == "auto"
 
     def test_round_trip_via_real_json_preserves_value(self):
         # Mirror the on-disk path via real JSON — the production
@@ -74,42 +78,33 @@ class TestAppSettingsTtsCompileRoundTrip:
             "dropping the key silently breaks ConfigurationService.load_settings."
         )
 
-    def test_missing_key_in_payload_defaults_to_off(self):
+    def test_missing_key_in_payload_defaults_to_auto(self):
         # Simulates a pre-Story-18.4 settings.json on disk: the key is
-        # absent entirely. ``from_dict`` must default to "off" (the
-        # Story 18.4 bundled-smoke amendment default) rather than
-        # raising or producing None.
+        # absent entirely. ``from_dict`` must default to "auto" (the
+        # Story 18.5 default-flip) rather than raising or producing None.
         payload = AppSettings().to_dict()
         del payload["tts_compile"]
         restored = AppSettings.from_dict(payload)
-        assert restored.tts_compile == "off"
+        assert restored.tts_compile == "auto"
 
 
 class TestAppSettingsTtsCompileValidation:
     """Unknown values must surface a UNKNOWN_TTS_COMPILE ValidationIssue
-    and auto-correct to "off" (the field's declared default).
+    and auto-correct to "auto" (the field's declared default).
 
     Code-review H3 (Story 18.4 review pass): the validator's reset
-    target must match the field-declaration default. A user who typed
-    an invalid value gets safe degradation (eager-mode) rather than
-    silently re-engaging the broken Windows triton toolchain the "off"
-    default was designed to avoid. Per
+    target must match the field-declaration default. Per
     `memory/code_review_regression_test_exact_class.md`, the bug class is
     "validation drift between two near-identical fields" — these tests
     pin the symmetry between declaration default and validator reset.
+    Post Story 18.5, both land at "auto".
     """
 
-    def test_invalid_value_resets_to_off_in_post_init(self):
+    def test_invalid_value_resets_to_auto_in_post_init(self):
         # __post_init__ runs validate(), which resets unknown values to
-        # "off" — the same value as the field's declared default at
-        # ``app_settings.py:133``. NFR7 graceful-degradation discipline:
-        # an invalid input lands at the safe fallback, NOT the engaged
-        # path. The previous behavior (reset → "auto") silently
-        # re-activated compile on Ampere+ hosts where the bundled
-        # triton toolchain is non-functional (Story 18.4 bundled-smoke
-        # Fix #4 outcome).
+        # "auto" — the same value as the field's declared default.
         settings = AppSettings(tts_compile="experimental_unknown_compile")
-        assert settings.tts_compile == "off"
+        assert settings.tts_compile == "auto"
 
     def test_invalid_value_emits_unknown_warning_code(self):
         # validate() must append a ValidationIssue with
@@ -128,8 +123,8 @@ class TestAppSettingsTtsCompileValidation:
             f"warning for unknown compile mode; got warning_codes={warning_codes}"
         )
         # And the auto-correct side effect must have fired — reset
-        # target matches the declared default ("off"), not "auto".
-        assert settings.tts_compile == "off"
+        # target matches the declared default ("auto" per Story 18.5).
+        assert settings.tts_compile == "auto"
 
 
 class TestAppSettingsTtsCompileReset:
@@ -142,15 +137,11 @@ class TestAppSettingsTtsCompileReset:
         # across the reset. Same bug class as the tts_precision reset
         # coverage; if this row is added but ``tts_compile`` is not in the
         # field-name list, this test catches it loudly.
-        # Note: the field's declared default is "off" per the Story 18.4
-        # bundled-smoke amendment, so reset_to_defaults() should land on
-        # "off" (not "auto"). The user-supplied "on" override is what's
-        # being cleared by the reset action.
-        settings = AppSettings(tts_compile="on")
-        assert settings.tts_compile == "on"
+        settings = AppSettings(tts_compile="off")
+        assert settings.tts_compile == "off"
         settings.reset_to_defaults()
-        assert settings.tts_compile == "off", (
+        assert settings.tts_compile == "auto", (
             "reset_to_defaults() must reset tts_compile to its declared "
-            "default ('off' per Story 18.4 bundled-smoke amendment); "
-            "missing it from the reset field-list leaks user overrides past a reset."
+            "default ('auto' per Story 18.5); missing it from the reset "
+            "field-list leaks user overrides past a reset."
         )

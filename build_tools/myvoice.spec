@@ -10,7 +10,7 @@ Output:
     dist/MyVoice/MyVoice.exe
 """
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 from pathlib import Path
 
 # =============================================================================
@@ -130,6 +130,166 @@ if _torch_lib.exists():
         print(f"[SPEC] Adding torch DLL: {Path(_dll).name}")
 torch_datas = []
 
+# =============================================================================
+# Story 18.5 (Phase ⊥-Polish-2-Ship) — triton-windows + Python 3.10.11 dev
+# headers/libs + CUDA Toolkit redistributable subset bundling for the
+# bundle-reach gate that closes Story 18.4's torch.compile machinery on
+# production user machines.
+#
+# Architecture reference: `_bmad-output/planning-artifacts/
+#   architecture-streaming-acceleration-and-lightning-tier.md` D-22 + D-23
+#   (sealed 2026-05-10; LIVE in source-tree since Story 18.4; this story
+#   makes them user-reachable in the bundled exe).
+#
+# License discipline: the bundled CUDA Toolkit subset ships ONLY files
+# explicitly authorized by NVIDIA CUDA Toolkit EULA Attachment A (CUDA
+# Runtime + NVRTC + nvrtc-builtins DLLs + device-side headers from crt/).
+# NVCC is NOT bundled (EULA §1.1.2 #4 — developer tools, internal-use-only).
+# Source-of-truth = `_bmad-output/implementation-artifacts/
+#   18-5-cuda-toolkit-triton-bundling-evidence.md §"NVIDIA license clearance"`
+# (gated on Commander sign-off per Story 18.5 Task 1.8).
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Block A — triton-windows hidden imports + datas
+# -----------------------------------------------------------------------------
+# triton's codegen pipeline uses importlib.import_module(name_string) at
+# compile-time to load backend tables — same pattern as torch._inductor's
+# fx_passes/serialized_patterns/ (the Story 18.4 Fix #3 precedent at
+# `:83-:121`). PyInstaller's static analysis cannot detect importlib-by-
+# string, so force-collect via collect_submodules() + collect_data_files().
+#
+# Without this block the bundled exe raises:
+#   `RuntimeError: Cannot find a working triton installation`
+# at first user TTS generation (the Story 18.4 Fix #4 failure class).
+hiddenimports_triton = collect_submodules('triton')
+triton_datas = collect_data_files('triton')
+print(f"[SPEC] Story 18.5 — collected {len(hiddenimports_triton)} triton hidden imports + "
+      f"{len(triton_datas)} triton data files")
+
+# -----------------------------------------------------------------------------
+# Block B — Python 3.10.11 dev headers + libs
+# -----------------------------------------------------------------------------
+# Required by triton's runtime kernel compilation pipeline. The portable
+# embeddable-zip Python distribution that the production bundle is built
+# from does NOT ship these by default. The build-host's `python310/Include/`
+# + `python310/libs/python310.lib` are copied from a full python.org install
+# at C:\Python310-fullinstall\ (one-time per build host; verified by the
+# `[Bundle Prerequisites]` probes in build_release.bat).
+#
+# Story 18.5 Task 7 Fix #2 (2026-05-11): bundle paths corrected.
+# triton-windows's `find_python()` at `triton/windows_utils.py:289-303`
+# searches THREE locations for `libs/python{ver}.lib`:
+#   - `sys.exec_prefix / libs / python310.lib`       (== _internal/libs/python310.lib in PyInstaller)
+#   - `sys.base_exec_prefix / libs / python310.lib`  (== _internal/libs/python310.lib)
+#   - `os.path.dirname(sys.executable) / libs / python310.lib`  (== dist/MyVoice/libs/python310.lib)
+# So the lib MUST land at `_internal/libs/python310.lib`, NOT
+# `_internal/python310/libs/python310.lib` (the V1 spec target).
+# Similarly, `sysconfig.get_paths()["include"]` resolves to `_internal/Include/`
+# in PyInstaller's frozen sysconfig — headers must land at `_internal/Include/`,
+# NOT `_internal/python310/Include/`. Without these path fixes, triton's
+# host-C-compile step fails with "Failed to find Python libs" warning and
+# subsequent link errors.
+python_headers_dir = project_root / 'python310' / 'Include'
+python_libs_dir = project_root / 'python310' / 'libs'
+python_headers_datas = []
+if python_headers_dir.exists():
+    for _h in _glob.glob(str(python_headers_dir / '**' / '*'), recursive=True):
+        if Path(_h).is_file():
+            _rel_parent = Path(_h).parent.relative_to(python_headers_dir)
+            _dst = 'Include'  # Bundle at _internal/Include/ (PyInstaller sysconfig target)
+            if str(_rel_parent) not in ('.', ''):
+                _dst = f"{_dst}/{_rel_parent.as_posix()}"
+            python_headers_datas.append((_h, _dst))
+    print(f"[SPEC] Story 18.5 — bundling {len(python_headers_datas)} Python "
+          f"dev header files from {python_headers_dir} -> _internal/Include/")
+else:
+    print(f"[SPEC] WARNING: Python dev headers missing at {python_headers_dir} — "
+          f"triton's runtime kernel compilation will fail in the bundled exe; "
+          f"see Story 18.5 Task 1.4 + the build_release.bat [Bundle Prerequisites] probe")
+
+python_libs_datas = []
+if (python_libs_dir / 'python310.lib').exists():
+    # Bundle at _internal/libs/python310.lib (sys.exec_prefix-relative; the
+    # path triton-windows's `find_python()` searches first).
+    python_libs_datas.append(
+        (str(python_libs_dir / 'python310.lib'), 'libs')
+    )
+    print(f"[SPEC] Story 18.5 — bundling python310.lib -> _internal/libs/")
+else:
+    print(f"[SPEC] WARNING: python310.lib missing at {python_libs_dir} — "
+          f"triton's NVRTC build will fail in the bundled exe")
+
+# -----------------------------------------------------------------------------
+# Block C — CUDA Toolkit redistributable subset (NVIDIA EULA Attachment A scope)
+# -----------------------------------------------------------------------------
+# Bundle path = `_internal/cuda_redist/`. The directory name makes the
+# redistribution-only scope explicit in `dir` listings (vs `cuda/` which
+# would imply a full Toolkit install).
+#
+# Source = `build_tools/cuda_toolkit_subset/` produced by Story 18.5 Task 2.1's
+# `stage_cuda_subset.py` (committed staging script). The script is the
+# canonical recipe; its output is gitignored. The runtime hook
+# (`build_tools/hooks/rthook_torch.py::_inject_cuda_redist_paths`) sets
+# CUDA_PATH to the bundled subset at startup so triton's `find_cuda()`
+# resolves to these DLLs without requiring a system-wide CUDA Toolkit install.
+#
+# NVCC IS NOT BUNDLED (EULA §1.1.2 #4 — developer tool, internal-use-only).
+# `stage_cuda_subset.py` enforces this at staging time via a hard-reject;
+# `build_release.bat` enforces it at build time via the [Bundle Prerequisites]
+# probe; this spec relies on those upstream gates and does not re-check.
+cuda_redist_src = project_root / 'build_tools' / 'cuda_toolkit_subset'
+cuda_redist_binaries = []
+cuda_redist_datas = []
+if cuda_redist_src.exists():
+    # Three NVRTC + CUDA Runtime DLL globs — version suffixes are
+    # CUDA-Toolkit-version-specific; the staging script captures the exact
+    # filenames present on the build host. Bundled as binaries so PyInstaller
+    # tracks them as runtime deps.
+    for _dll_pat in ('cudart64_*.dll', 'nvrtc64_*.dll',
+                     'nvrtc-builtins64_*.dll'):
+        for _dll in _glob.glob(str(cuda_redist_src / 'bin' / _dll_pat)):
+            cuda_redist_binaries.append((_dll, 'cuda_redist/bin'))
+            print(f"[SPEC] Story 18.5 — adding CUDA redistributable DLL: "
+                  f"{Path(_dll).name}")
+
+    # Device-side headers from `crt/` — required by NVRTC at compile time.
+    # Small (~1 MB combined). Bundled as datas.
+    _crt_dir = cuda_redist_src / 'include' / 'crt'
+    if _crt_dir.exists():
+        for _h in _glob.glob(str(_crt_dir / '*.h*')):
+            cuda_redist_datas.append((_h, 'cuda_redist/include/crt'))
+        print(f"[SPEC] Story 18.5 — bundling "
+              f"{len([h for h,_ in cuda_redist_datas if 'crt' in h])} CUDA "
+              f"device-side headers from {_crt_dir}")
+
+    # EULA — load-bearing per NVIDIA EULA §1.1.2 #5 (terms-of-distribution
+    # consistency). The installer.iss [Files] block additionally copies this
+    # to {app}/NVIDIA_CUDA_EULA.txt at install root for end-user visibility.
+    _eula = cuda_redist_src / 'EULA.txt'
+    if _eula.exists():
+        cuda_redist_datas.append((str(_eula), 'cuda_redist'))
+        print(f"[SPEC] Story 18.5 — bundling NVIDIA CUDA Toolkit EULA")
+    else:
+        raise FileNotFoundError(
+            f"NVIDIA EULA missing at {_eula}. The staging script "
+            f"build_tools/stage_cuda_subset.py must copy %CUDA_PATH%/EULA.txt. "
+            f"Bundling without the EULA is a license violation per NVIDIA EULA "
+            f"§1.1.2 #5. See Story 18.5 Task 1.8 license clearance memo."
+        )
+
+    # SHA-256 hash of the EULA (written by stage_cuda_subset.py) — bundled
+    # alongside so future audits can detect EULA-version drift across builds.
+    _eula_hash = cuda_redist_src / 'EULA.txt.sha256'
+    if _eula_hash.exists():
+        cuda_redist_datas.append((str(_eula_hash), 'cuda_redist'))
+else:
+    print(f"[SPEC] WARNING: CUDA redistributable subset missing at "
+          f"{cuda_redist_src} — run build_tools/stage_cuda_subset.py first "
+          f"(see Story 18.5 Task 2; gated on Task 1.8 license clearance "
+          f"sign-off). The [Bundle Prerequisites] probe in build_release.bat "
+          f"should have halted the build before reaching this spec.")
+
 # Whisper - Speech recognition
 hiddenimports_whisper = collect_submodules('whisper')
 
@@ -187,7 +347,7 @@ hiddenimports_qwen_tts = [
 ]
 
 # Qwen3-TTS data files (mel_filters.npz, etc.) - copy entire package
-from PyInstaller.utils.hooks import collect_data_files
+# (collect_data_files imported at top alongside collect_submodules + collect_all)
 _qwen_tts_pkg = project_root / 'python310' / 'Lib' / 'site-packages' / 'qwen_tts'
 qwen_tts_datas = [(str(_qwen_tts_pkg), 'qwen_tts')]
 
@@ -259,6 +419,8 @@ if sys.platform == 'win32':
             pass  # Module might not be importable, skip
 
 # Combine all hidden imports
+# Story 18.5 — `hiddenimports_triton` added per Block A; collect_submodules
+# absorbs the triton-windows lazy-import surface (codegen + backends + jit).
 hiddenimports = (
     hiddenimports_pyqt6 +
     hiddenimports_torch +
@@ -271,6 +433,7 @@ hiddenimports = (
     hiddenimports_qwen_tts_deps +
     hiddenimports_transformers +
     hiddenimports_jaraco +
+    hiddenimports_triton +
     pywin32_hiddenimports
 )
 
@@ -367,11 +530,33 @@ excludedimports = [
 a = Analysis(
     [str(myvoice_path / 'main.py')],
     pathex=[str(src_path)],
-    binaries=pywin32_binaries + ffmpeg_binaries + torch_binaries,
-    datas=datas + pywin32_datas + torch_datas + torch_serialized_patterns_datas + qwen_tts_datas + accelerate_datas + soundfile_datas + transformers_deps_datas + transformers_datas,
+    # Story 18.5 — `cuda_redist_binaries` adds the CUDA Toolkit redistributable
+    # subset (NVIDIA EULA Attachment A scope only); see Block C above.
+    binaries=(
+        pywin32_binaries + ffmpeg_binaries + torch_binaries + cuda_redist_binaries
+    ),
+    # Story 18.5 — `triton_datas` + `python_headers_datas` + `python_libs_datas`
+    # + `cuda_redist_datas` add the four bundling components per Blocks A/B/C.
+    datas=(
+        datas + pywin32_datas + torch_datas + torch_serialized_patterns_datas
+        + qwen_tts_datas + accelerate_datas + soundfile_datas
+        + transformers_deps_datas + transformers_datas
+        + triton_datas + python_headers_datas + python_libs_datas
+        + cuda_redist_datas
+    ),
     hiddenimports=hiddenimports,
     hookspath=[],
-    module_collection_mode={'torch': 'pyz+py', 'transformers': 'pyz+py', 'qwen_tts': 'pyz+py'},
+    # Story 18.5 — `'triton': 'pyz+py'` makes triton-windows's Python sources
+    # available BOTH in the PYZ archive AND on the filesystem at `_internal/
+    # triton/` — triton's lazy-import surface expects the on-disk tree to
+    # resolve `importlib.import_module()` calls at runtime. Mirrors the
+    # existing torch / transformers / qwen_tts entries.
+    module_collection_mode={
+        'torch': 'pyz+py',
+        'transformers': 'pyz+py',
+        'qwen_tts': 'pyz+py',
+        'triton': 'pyz+py',
+    },
     hooksconfig={},
     runtime_hooks=[str(spec_dir / 'hooks' / 'rthook_torch.py')],
     excludes=excludes,

@@ -69,6 +69,34 @@ soundfile>=0.12.1
 
 
 # =============================================================================
+# PyTorch JIT Compilation Backend (Story 18.5 — bundle-reach gate for
+# Story 18.4's torch.compile + CUDA Graph machinery)
+# =============================================================================
+# Story 18.5 / Phase ⊥-Polish-2-Ship — bundles triton-windows so production
+# users on Ampere+ CUDA hosts (RTX 30xx/40xx/50xx) can reach the source-tree
+# torch.compile path Story 18.4 landed. Without this entry the bundled exe
+# raises `Cannot find a working triton installation` and the talker forward
+# pass falls back to eager mode via the Story 18.4 NFR7 fallback chain
+# (`memory/build_tools_phase_perp_state.md` HIGH follow-up 2026-05-11).
+#
+# Pinned to `>=3.6.0.post26` (current dev-env install) per OQ #3 default
+# (hard-pin discipline). triton-windows's binary-API stability is not
+# guaranteed by its release cadence; floating pins risk silent regressions
+# in the talker-decoder compile path. Pin bumps require re-running the
+# 5-stage `18-4-triton-smoke.py` + 6-stage `18-4-qwen-compile-smoke.py`
+# dev-env smokes (Story 18.5 Tasks 1.2 + 1.3 pattern).
+#
+# Platform-guarded to win32 only (Linux/macOS users build from source via
+# upstream `triton`; the `triton-windows` package is the Windows-specific
+# fork at https://github.com/woct0rdho/triton-windows).
+triton-windows>=3.6.0.post26; sys_platform == 'win32'
+# Size: ~150 MB site-packages (raw); compressed contribution to installer
+# ~80-100 MB. Triton bundles its own `ptxas.exe` + `libdevice.10.bc` +
+# `cuda.h` under `triton/backends/nvidia/` (permissive license; collected
+# by `collect_data_files('triton')` in myvoice.spec Block A).
+
+
+# =============================================================================
 # Audio Processing (Required)
 # =============================================================================
 pyaudio>=0.2.13

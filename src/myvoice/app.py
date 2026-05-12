@@ -178,14 +178,32 @@ class MyVoiceApp(QObject):
         # forever across many Replay clicks.
         self._advanced_replay_tokens: _BoundedDedupSet = _BoundedDedupSet()
 
-        # Story 17.3 — Phase ⊥-Polish: progressive-playback consumer state.
+        # Story 17.3 / Story 18.5 — progressive-playback consumer state.
         # _progressive_playback_active is latched True from chunk 0 of a
-        # streaming generation and consumed (cleared) by either the dispatch
-        # skip-branch (normal path) or the cancel handler (interrupt path).
-        # The audio device session is closed on the terminal AudioChunk
-        # (is_final=True) but the flag stays True so _play_generated_audio
-        # knows to skip its play_dual_stream call — clearing the flag at
-        # is_final would race the dispatch on the asyncio loop ordering.
+        # streaming generation. The audio device session is closed on the
+        # terminal AudioChunk (is_final=True) but the flag stays True so
+        # _play_generated_audio knows to skip its play_dual_stream call.
+        #
+        # Clearing the flag at terminal-chunk vs. skip-branch is a delicate
+        # race (Story 18.5 Iteration #3 — Fix #3 then code-review pass):
+        #   * Clearing at terminal-chunk races _play_generated_audio in the
+        #     producer-slower regime (eager mode / pre-Ampere / CPU-only)
+        #     where the terminal chunk's asyncio event runs BEFORE the Qt
+        #     signal that schedules _play_generated_audio; the skip-branch
+        #     would then read flag=False and double-play the audio.
+        #   * Clearing synchronously at the skip-branch races the chunk
+        #     handler in the producer-faster regime (compile-engaged) where
+        #     chunks remain queued in the asyncio loop when the signal
+        #     fires; the queued chunks would see flag=False and silently
+        #     drop ~30% of bytes via the chunk-index>0 stale-branch at
+        #     _on_chunk_ready.
+        # Resolution: the skip-branch fires a deferred-clear coroutine
+        # (_clear_progressive_flag_after_drain) that acquires
+        # _progressive_playback_lock and clears the flag AFTER any queued
+        # chunks have drained — the lock serializes against the chunk
+        # handlers so the deferred-clear runs strictly after the terminal
+        # chunk. The cancel handler clears synchronously since it has
+        # already cancelled the producer.
         self._progressive_playback_active: bool = False
         self._progressive_playback_sample_rate: int = 0
         # Lazy-initialized: asyncio.Lock requires a running event loop to
@@ -2701,6 +2719,38 @@ class MyVoiceApp(QObject):
                         "Progressive playback session close failed (non-fatal)",
                         exc_info=True,
                     )
+                # Story 18.5 Task 7 iteration #3 / code-review follow-up —
+                # The flag is NOT cleared here. The producer-slower regime
+                # (eager / pre-Ampere / CPU-only) processes the terminal
+                # chunk BEFORE the Qt-queued _on_tts_generation_complete
+                # signal lands; clearing here would race the signal and
+                # cause _play_generated_audio to take the batch playback
+                # path = double playback. The skip-branch in
+                # _play_generated_audio schedules a deferred-clear that
+                # runs after the chunk-handler lock drains (i.e. after
+                # this terminal handler returns), which is the canonical
+                # clear point for both regimes. See the comment block at
+                # app.py:181 for the full lifecycle.
+
+    async def _clear_progressive_flag_after_drain(self) -> None:
+        """Clear `_progressive_playback_active` after queued chunks drain.
+
+        Story 18.5 Iteration #3 code-review fix. Acquiring
+        `_progressive_playback_lock` serialises this coroutine against any
+        chunk handler still in flight; by the time the lock is held, every
+        queued chunk (including the terminal chunk that closes the
+        streaming session) has run. Clearing the flag here therefore
+        signals "the just-completed progressive playback is fully drained
+        and the next chunk-index=0 may open a fresh session" without
+        racing the chunk handlers in either producer regime.
+        """
+        if self._progressive_playback_lock is None:
+            # No chunk ever ran (chunk-0 lazy-initialised the lock).
+            # Clearing the flag is a no-op equivalent.
+            self._progressive_playback_active = False
+            return
+        async with self._progressive_playback_lock:
+            self._progressive_playback_active = False
 
     def _on_tts_generation_complete(self, response):
         """
@@ -2848,7 +2898,22 @@ class MyVoiceApp(QObject):
                     "Progressive playback already active; skipping batch "
                     f"dispatch (queue_token={queue_token})"
                 )
-                self._progressive_playback_active = False
+                # Story 18.5 Iteration #3 / code-review pass — deferred
+                # flag-clear. Synchronous clear here would race chunks
+                # still queued in the asyncio loop under compile-engaged
+                # cadence (producer-faster regime) and silently drop
+                # ~30% of audio bytes via _on_chunk_ready's stale-branch.
+                # Clearing at terminal-chunk instead would race THIS
+                # function in the producer-slower regime (eager mode /
+                # pre-Ampere) and double-play the audio. The fix is to
+                # schedule a coroutine that acquires
+                # _progressive_playback_lock — the same lock chunk
+                # handlers serialize against — so the flag clears
+                # strictly AFTER all queued chunks have drained
+                # (including the terminal chunk's session close).
+                asyncio.ensure_future(
+                    self._clear_progressive_flag_after_drain()
+                )
                 self._release_queue_slot_on_failure(queue_token)
                 return
 

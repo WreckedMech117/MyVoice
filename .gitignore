@@ -49,6 +49,11 @@ python310/
 # ===========================================================================
 build_tools/build/
 build_tools/dist/
+# Story 18.5 — staged CUDA Toolkit redistributable subset (NVIDIA Attachment A
+# scope ONLY; produced by build_tools/stage_cuda_subset.py). Output is binary
+# DLLs + headers + NVIDIA EULA; never commit to source control. The staging
+# script source IS tracked; only the output directory is ignored.
+build_tools/cuda_toolkit_subset/
 installer_output/
 validation_output/
 

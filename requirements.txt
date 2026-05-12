@@ -42,6 +42,14 @@ soundfile>=0.12.1
 torch>=2.0.0
 numpy>=1.24.0
 
+# Story 18.5 — triton-windows is the Windows JIT compilation backend for
+# torch.compile + CUDA Graph replay on Ampere+ CUDA hosts (RTX 30xx/40xx/50xx).
+# Engages Story 18.4's `engage_compile_optimizations` source-tree machinery;
+# bundled into the production exe via myvoice.spec Block A so end-users don't
+# need a system-wide triton install. Hard-pin per OQ #3 default; pin bumps
+# require re-running the dev-env smokes (Story 18.5 Tasks 1.2 + 1.3).
+triton-windows>=3.6.0.post26; sys_platform == 'win32'
+
 # Audio Processing
 # PyAudioWPatch is preferred on Windows for better WASAPI support and Windows 11 compatibility
 # It includes WASAPI loopback, better device detection, and context manager support

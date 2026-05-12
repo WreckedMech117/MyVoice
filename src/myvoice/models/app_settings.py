@@ -118,21 +118,32 @@ class AppSettings:
     # = engages on Ampere+ CUDA via the upstream
     # `Qwen3TTSModel.enable_streaming_optimizations` API; "on" = user-
     # explicit opt-in (same hardware gate; pre-Ampere users still get
-    # eager mode with a WARNING log); "off" (default) = NFR7 fallback —
+    # eager mode with a WARNING log); "off" = NFR7 fallback —
     # forces eager mode even on Ampere+.
     #
-    # Story 18.4 bundled-smoke 2026-05-10 outcome: default flipped from
-    # "auto" to "off" because torch.compile's Windows toolchain
-    # (triton-windows + tcc.exe + portable-Python headers) is non-functional
-    # in the production bundle — observed failure was BackendCompilerFailed
-    # propagating to `finalize() called with no chunks`. The compile
-    # source-tree machinery is preserved (pin bump, compile_cache, engage
-    # function, warmup worker, ModelRegistry wire-up) so advanced users
-    # can opt in by editing settings.json to `"tts_compile": "auto"` or
-    # `"on"`. A future story will resolve the triton-on-Windows blocker
-    # and flip the default back to "auto" after re-running the joint NFR3
-    # audition (Story 18.4 Task 9 deferred).
-    tts_compile: str = "off"
+    # Default-flip history:
+    #   - Story 18.4 (2026-05-10): "auto" → "off" because torch.compile's
+    #     Windows toolchain (triton-windows + tcc.exe + portable-Python
+    #     headers) was non-functional in the production bundle. Observed
+    #     failure: BackendCompilerFailed propagating to `finalize() called
+    #     with no chunks`. Story 18.4 Fix #4.
+    #   - Story 18.5 (2026-05-12): "off" → "auto". Phase ⊥-Polish-2-Ship
+    #     closed the three packaging gaps: (a) CUDA Toolkit
+    #     redistributable subset bundled at `_internal/cuda_redist/`
+    #     (NVIDIA EULA Attachment A scope only); (b) Python 3.10.11 dev
+    #     headers + libs bundled at `_internal/Include/` +
+    #     `_internal/libs/python310.lib`; (c) triton-windows bundled at
+    #     `_internal/triton/` with TRITON_BACKENDS_IN_TREE=1 + CC=bundled
+    #     tcc + CUDA_PATH=triton's bundled subset injected via rthook.
+    #     Pre-clearance audition: Story 18.4 joint A/B FULL PASS
+    #     2026-05-11 (NFR3 — zero `audible_seam` flags). Bundled-smoke
+    #     iteration #3 confirmed end-to-end compile-engaged playback
+    #     with no audio truncation after the
+    #     `_progressive_playback_active` race fix (app.py:2851 + :2696).
+    #     See `_bmad-output/implementation-artifacts/
+    #     18-5-cuda-toolkit-triton-bundling-evidence.md` for the full
+    #     verification.
+    tts_compile: str = "auto"
 
     # Advanced settings
     advanced_settings: Dict[str, Any] = field(default_factory=dict)
@@ -436,32 +447,28 @@ class AppSettings:
                 self.tts_precision = "auto"
 
             # Validate TTS compile (Story 18.4 / D-21 / D-22 Branch B /
-            # NFR7). Allowed values: "auto" (Ampere+ engages via the
-            # upstream API), "on" (user-explicit opt-in; same hardware
-            # gate), "off" (declared default + NFR7 fallback per the
-            # Story 18.4 bundled-smoke 2026-05-10 amendment; forces eager
-            # even on Ampere+). On unknown values, reset to the field's
-            # declared default ("off") — NFR7 graceful-degradation
-            # discipline: an invalid input is exactly when safe
-            # degradation should kick in, NOT silently re-engage the
-            # broken Windows triton toolchain the "off" default was
-            # designed to avoid. Reset target intentionally matches the
-            # declaration at line 133 to avoid the "validation drift
-            # between two near-identical fields" bug class per
-            # memory/code_review_regression_test_exact_class.md.
+            # NFR7). Allowed values: "auto" (declared default per Story
+            # 18.5 — Ampere+ engages via the upstream API), "on" (user-
+            # explicit opt-in; same hardware gate), "off" (NFR7 fallback;
+            # forces eager even on Ampere+). On unknown values, reset to
+            # the field's declared default ("auto") — reset target
+            # intentionally matches the declaration to avoid the
+            # "validation drift between two near-identical fields" bug
+            # class per
+            # `memory/code_review_regression_test_exact_class.md`.
             valid_tts_compile_values = ["auto", "on", "off"]
             if self.tts_compile not in valid_tts_compile_values:
                 warnings.append(ValidationIssue(
                     field="tts_compile",
                     message=(
                         f"Unknown TTS compile mode '{self.tts_compile}', "
-                        f"defaulting to 'off'. Allowed values: "
+                        f"defaulting to 'auto'. Allowed values: "
                         f"{', '.join(valid_tts_compile_values)}."
                     ),
                     code="UNKNOWN_TTS_COMPILE",
                     severity=ValidationStatus.WARNING
                 ))
-                self.tts_compile = "off"
+                self.tts_compile = "auto"
 
             # Validate TTS service URL
             if not self.tts_service_url or not self.tts_service_url.strip():
@@ -669,7 +676,7 @@ class AppSettings:
                 clear_comms_queue_mode=data.get("clear_comms_queue_mode", False),
                 streaming_mode_override=data.get("streaming_mode_override"),
                 tts_precision=data.get("tts_precision", "auto"),
-                tts_compile=data.get("tts_compile", "off"),
+                tts_compile=data.get("tts_compile", "auto"),
                 advanced_settings=data.get("advanced_settings", {}),
                 training_enabled=data.get("training_enabled", True),
                 training_workspace_directory=data.get("training_workspace_directory", "training_workspace"),
