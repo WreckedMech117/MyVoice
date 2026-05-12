@@ -28,6 +28,7 @@ except ImportError:
     _CACHED_NO_EXIST = None
 
 from myvoice.models.service_enums import ModelState, QwenModelType
+from myvoice.observability import metrics
 
 # Type hint for Qwen3TTSModel - actual import happens at runtime
 try:
@@ -95,17 +96,28 @@ class ModelRegistry:
         dtype: str = "bfloat16",
         models_path: Optional[str] = None,
         progress_callback: Optional[Callable[[ModelLoadProgress], None]] = None,
-        quality_tier: str = "quality"
+        quality_tier: str = "quality",
+        app_settings: Optional[Any] = None,
     ):
         """
         Initialize the ModelRegistry.
 
         Args:
             device: PyTorch device ("auto", "cuda:0", "cpu")
-            dtype: PyTorch dtype ("bfloat16", "float16", "float32")
+            dtype: PyTorch dtype ("bfloat16", "float16", "float32") —
+                preserved as the legacy call surface. When ``app_settings``
+                is None (or its ``tts_precision`` is None), this string
+                parameter is the dtype source.
             models_path: Optional local path for model weights
             progress_callback: Callback for loading progress updates
             quality_tier: Model quality tier ("small" or "quality")
+            app_settings: Optional AppSettings carrying user preferences.
+                Story 18.3 reads ``tts_precision`` from this object and
+                routes through ``resolve_tts_precision`` which honors the
+                Ampere+ probe gate (D-9 / NFR12). Precedence: when
+                ``app_settings.tts_precision`` is set, the resolver wins;
+                otherwise the ``dtype`` string parameter is used (legacy
+                / test compatibility).
         """
         self.logger = logging.getLogger(self.__class__.__name__)
 
@@ -115,16 +127,40 @@ class ModelRegistry:
         else:
             self.device = device
 
-        # Dtype configuration
-        dtype_map = {
-            "bfloat16": torch.bfloat16,
-            "float16": torch.float16,
-            "float32": torch.float32,
-        }
-        self.dtype = dtype_map.get(dtype, torch.bfloat16)
+        # Story 18.3 — dtype precedence resolver. When AppSettings carries an
+        # explicit tts_precision, the resolver wins (and honors the Ampere+
+        # probe gate via "auto"); otherwise we fall back to the legacy
+        # dtype-string parameter mapping. The four `precision_source` labels
+        # surface the chosen path verbatim in the INFO log + telemetry tag
+        # so Commander can confirm at runtime which branch engaged.
+        precision_source: str
+        if app_settings is not None and getattr(app_settings, "tts_precision", None) is not None:
+            from myvoice.services.tts_streaming import resolve_tts_precision
+            override = app_settings.tts_precision
+            self.dtype = resolve_tts_precision(override)
+            if override in ("bf16", "fp32"):
+                precision_source = "app_settings_override"
+            elif self.dtype == torch.bfloat16:
+                precision_source = "app_settings_auto_ampere"
+            else:
+                precision_source = "app_settings_auto_fallback"
+        else:
+            dtype_map = {
+                "bfloat16": torch.bfloat16,
+                "float16": torch.float16,
+                "float32": torch.float32,
+            }
+            self.dtype = dtype_map.get(dtype, torch.bfloat16)
+            precision_source = "legacy_constructor_arg"
 
         self.models_path = models_path
         self._progress_callback = progress_callback
+        # Story 18.4 — store app_settings so _load_model_sync can pass it
+        # into engage_compile_optimizations after model load. The Story 18.3
+        # wire-up at __init__ already reads tts_precision from this object
+        # inline (above); Story 18.4 needs the reference at load-time too,
+        # so we keep it on self.
+        self._app_settings = app_settings
 
         # Quality tier configuration (Small 0.6B vs Quality 1.7B)
         from myvoice.models.service_enums import ModelQualityTier
@@ -141,8 +177,42 @@ class ModelRegistry:
         for model_type in QwenModelType:
             self._models[model_type] = ModelInfo(model_type=model_type)
 
+        # Story 18.3 — precision-engagement telemetry. Mirrors the Story 18.2
+        # tag schema verbatim: device_capability is the string form of the
+        # CUDA compute capability with the "none" sentinel for CPU per
+        # Story 18.2 OQ #2. Single record at startup; not a per-chunk metric.
+        cap_str: str
+        if torch.cuda.is_available():
+            try:
+                cap = torch.cuda.get_device_capability()
+                cap_str = f"{cap[0]}.{cap[1]}"
+            except Exception:
+                cap_str = "none"
+        else:
+            cap_str = "none"
+        dtype_str = "bfloat16" if self.dtype == torch.bfloat16 else (
+            "float16" if self.dtype == torch.float16 else "float32"
+        )
+        metrics.record(
+            "tts_precision_resolved",
+            1.0 if self.dtype == torch.bfloat16 else 0.0,
+            source=precision_source,
+            dtype=dtype_str,
+            device_capability=cap_str,
+        )
+
+        # Story 18.4 — `compile_engaged='deferred'` at __init__ time because
+        # the compile engagement happens during _load_model_sync (after
+        # from_pretrained returns) — the model object doesn't exist at
+        # __init__ time. The same INFO log line is RE-EMITTED at the end of
+        # _load_model_sync with the resolved compile_engaged state (True /
+        # False / one of the eight `reason` enum values). Static log parsers
+        # see the tag schema at both points; Commander sees the final state
+        # at the post-load log line.
         self.logger.info(
-            f"ModelRegistry initialized: device={self.device}, dtype={dtype}, quality_tier={self._quality_tier.value}"
+            f"ModelRegistry initialized: device={self.device}, dtype={self.dtype}, "
+            f"precision_source='{precision_source}', quality_tier={self._quality_tier.value}, "
+            f"compile_engaged='deferred'"
         )
 
     @property
@@ -458,7 +528,276 @@ class ModelRegistry:
 
         model = Qwen3TTSModel.from_pretrained(model_id, **load_kwargs)
 
+        # Story 18.3 Task 1 — env-var-gated dtype audit. When
+        # MYVOICE_DTYPE_AUDIT=1 is set, walk the loaded model and log every
+        # relevant dtype attribute, then attach one-shot forward hooks on
+        # the talker + speech_tokenizer that log input/output dtypes on
+        # first call and detach themselves. Disabled in production (env
+        # var unset → zero overhead). Single capture per launch — the hook
+        # lifetime is bounded by the first generation.
+        if os.environ.get("MYVOICE_DTYPE_AUDIT") == "1":
+            self._instrument_dtype_audit(model)
+
+        # Story 18.4 — engage torch.compile + CUDA Graph optimizations via
+        # the upstream-blessed `enable_streaming_optimizations` API (D-22
+        # Branch B). Hardware-gated (D-9 / NFR12), AppSettings-gated
+        # (`tts_compile` field), NFR7-fallback-aware (compile_failed /
+        # probe_failed branches drop back to eager-mode), and telemetry-
+        # emitting. The function lives in services/tts_streaming/torch_runtime.py;
+        # this is the canonical wire-up site (after from_pretrained, before
+        # the warmup worker dispatches the priming generation in Story 18.4
+        # Task 6). The function's own INFO log line is the canonical
+        # observability breadcrumb; the result dict is captured here so the
+        # post-load model_registry log line summarises the final state.
+        from myvoice.services.tts_streaming import engage_compile_optimizations
+        # Read the canonical pin-hash constant here (the
+        # ``services.qwen_tts_service`` boundary is allowed at this caller
+        # site; the architecture's module-boundary rule scopes
+        # ``tts_streaming/*`` as leaves and ``model_registry`` as a
+        # composer). Passing through preserves the cache-key dimension
+        # without making torch_runtime.py reach across boundaries.
+        try:
+            from myvoice.services.qwen_tts_service import QwenTTSService
+            qwen_tts_pin_hash = getattr(
+                QwenTTSService, "_QWEN_TTS_PIN_HASH", None
+            )
+        except (ImportError, AttributeError):
+            qwen_tts_pin_hash = None
+        try:
+            self._compile_engage_result = engage_compile_optimizations(
+                model,
+                app_settings=self._app_settings,
+                qwen_tts_pin_hash=qwen_tts_pin_hash,
+            )
+        except Exception as exc:  # noqa: BLE001 — defensive against any unexpected probe path
+            # engage_compile_optimizations is supposed to absorb its own
+            # exceptions (NFR7) and return a result dict. If it somehow
+            # raises, we log + fall through to eager-mode (the model is
+            # already in eager state since the engagement was attempted
+            # but failed). The next launch will retry.
+            self.logger.warning(
+                "engage_compile_optimizations raised unexpectedly (%s: %s); "
+                "continuing with eager-mode model.",
+                type(exc).__name__,
+                exc,
+            )
+            self._compile_engage_result = {
+                "engaged": False,
+                "reason": "internal_error",
+                "error": str(exc),
+            }
+
+        # Post-load log line: re-emit the init INFO with the resolved
+        # compile state. Append-only tag schema preserves backward-compat
+        # for log-parsing consumers.
+        engaged_state = self._compile_engage_result.get("engaged", False)
+        engaged_reason = self._compile_engage_result.get("reason", "unknown")
+        self.logger.info(
+            f"ModelRegistry model loaded: model_type={model_type.value if hasattr(model_type, 'value') else model_type}, "
+            f"compile_engaged='{engaged_state}', compile_reason='{engaged_reason}'"
+        )
+
         return model
+
+    def _instrument_dtype_audit(self, model: Any) -> None:
+        """Story 18.3 Task 1 — one-shot dtype audit for the loaded model.
+
+        Logs every relevant dtype attribute at INFO level (so it lands in
+        myvoice.log alongside the existing ModelRegistry breadcrumbs), then
+        attaches one-shot forward hooks on the talker + speech_tokenizer
+        that log on first call and detach themselves. The audit lives
+        here (model_registry.py) rather than in qwen_tts_service.py
+        because (a) the model is already in scope, (b) the hooks need to
+        be attached BEFORE any generation runs, and (c) keeping it in one
+        place makes the env-var-gated code easy to lift out post-Story-18.3
+        if a future cleanup wants to remove the audit infrastructure.
+
+        Walks defensively: every attribute access wrapped in try/except,
+        every getattr with a fallback. The audit is informational, not a
+        gate — if a model's internal naming has shifted under a
+        qwen-tts pin bump, the audit logs what it can and skips the rest
+        rather than raising.
+        """
+        self.logger.info("=" * 70)
+        self.logger.info("STORY 18.3 TASK 1 — DTYPE AUDIT (one-shot)")
+        self.logger.info("=" * 70)
+
+        # 1. Attribute-walk audit (Task 1.1)
+        for attr_path in (
+            "dtype",
+            "model.dtype",
+            "model.talker.dtype",
+            "model.model.dtype",
+            "model.model.talker.dtype",
+        ):
+            try:
+                obj: Any = model
+                for part in attr_path.split("."):
+                    obj = getattr(obj, part)
+                self.logger.info("[DTYPE_AUDIT] model.%s = %s", attr_path, obj)
+            except AttributeError:
+                self.logger.info("[DTYPE_AUDIT] model.%s = <attribute not present>", attr_path)
+            except Exception as e:
+                self.logger.info("[DTYPE_AUDIT] model.%s = <error: %s>", attr_path, e)
+
+        # 2. speech_tokenizer walk (Task 1.1) — note that the speech_tokenizer
+        # is a Qwen3TTSTokenizer wrapper (HuggingFace, not nn.Module). The
+        # actual codec/vocoder lives inside it. Walk for the inner Module.
+        st: Any = None
+        st_path_used: str = ""
+        for st_path in ("model.model.speech_tokenizer", "model.speech_tokenizer"):
+            try:
+                obj = model
+                for part in st_path.split("."):
+                    obj = getattr(obj, part)
+                st = obj
+                st_path_used = st_path
+                self.logger.info("[DTYPE_AUDIT] speech_tokenizer found at: model.%s", st_path)
+                self.logger.info("[DTYPE_AUDIT] speech_tokenizer type: %s", type(st).__name__)
+                break
+            except AttributeError:
+                continue
+
+        # The speech_tokenizer wrapper holds the inner module under attribute
+        # names like ``codec_model`` / ``model`` / ``vocoder`` depending on the
+        # qwen-tts version. Walk a small set of likely names; whichever exists
+        # is the actual nn.Module that performs the GPU-side decode.
+        inner_decoder: Any = None
+        inner_decoder_path: str = ""
+        if st is not None:
+            for inner_attr in ("codec_model", "model", "vocoder", "tokenizer", "_model"):
+                cand = getattr(st, inner_attr, None)
+                if cand is not None and hasattr(cand, "register_forward_hook"):
+                    inner_decoder = cand
+                    inner_decoder_path = f"{st_path_used}.{inner_attr}"
+                    self.logger.info(
+                        "[DTYPE_AUDIT] speech_tokenizer inner Module: %s (type=%s)",
+                        inner_decoder_path, type(cand).__name__,
+                    )
+                    break
+
+        # Sample inner-decoder parameter dtypes (the wrapper itself usually has none).
+        def _sample_params(label: str, mod: Any) -> None:
+            try:
+                if not hasattr(mod, "named_parameters"):
+                    self.logger.info("[DTYPE_AUDIT] %s has no named_parameters", label)
+                    return
+                sampled = 0
+                for name, p in mod.named_parameters():
+                    self.logger.info("[DTYPE_AUDIT] %s.%s.dtype = %s", label, name, p.dtype)
+                    sampled += 1
+                    if sampled >= 5:
+                        self.logger.info("[DTYPE_AUDIT] %s (truncated to first 5 params)", label)
+                        break
+                if sampled == 0:
+                    self.logger.info("[DTYPE_AUDIT] %s has zero named_parameters", label)
+            except Exception as e:
+                self.logger.info("[DTYPE_AUDIT] %s param walk error: %s", label, e)
+
+        if st is not None:
+            _sample_params("speech_tokenizer", st)
+        if inner_decoder is not None:
+            _sample_params(f"speech_tokenizer.{inner_decoder_path.split('.')[-1]}", inner_decoder)
+        if st is None:
+            self.logger.info("[DTYPE_AUDIT] speech_tokenizer NOT found at any expected path")
+
+        # 3. One-shot forward hooks (Task 1.2 + 1.3) — robust against
+        # kwargs-only signatures and structured output objects.
+        def _describe(t: Any) -> str:
+            """One-line dtype/type description for a hook arg or output."""
+            if t is None:
+                return "None"
+            if hasattr(t, "dtype"):
+                shape = tuple(t.shape) if hasattr(t, "shape") else None
+                return f"<Tensor dtype={t.dtype} shape={shape}>"
+            if isinstance(t, (tuple, list)):
+                if not t:
+                    return f"{type(t).__name__}[]"
+                inner = ",".join(_describe(x) for x in t[:3])
+                more = ",..." if len(t) > 3 else ""
+                return f"{type(t).__name__}[{inner}{more}]"
+            if isinstance(t, dict):
+                if not t:
+                    return "dict{}"
+                items = ",".join(f"{k}={_describe(v)}" for k, v in list(t.items())[:5])
+                return f"dict{{{items}}}"
+            # Structured output objects (e.g., Qwen3TTSTalkerOutputWithPast):
+            # walk their public attributes for any tensor-like fields.
+            tensor_fields = []
+            for attr in dir(t):
+                if attr.startswith("_"):
+                    continue
+                try:
+                    v = getattr(t, attr)
+                except Exception:
+                    continue
+                if hasattr(v, "dtype") and hasattr(v, "shape"):
+                    tensor_fields.append(f"{attr}=<dtype={v.dtype} shape={tuple(v.shape)}>")
+                if len(tensor_fields) >= 5:
+                    break
+            if tensor_fields:
+                return f"{type(t).__name__}({'; '.join(tensor_fields)})"
+            return f"<{type(t).__name__}>"
+
+        def _make_hook(label: str, handle_box: list):
+            def _hook(module, inputs, output, *extra, **hook_kwargs):
+                # Newer torch invokes the hook with kwargs as a third positional arg
+                # when register_forward_hook(..., with_kwargs=True). Without that
+                # flag, kwargs are NOT visible to the hook — but since talker.forward
+                # is kwargs-only, we capture whatever positional `inputs` we got AND
+                # any kwargs passed via with_kwargs=True (best-effort).
+                fwd_kwargs = extra[0] if extra and isinstance(extra[0], dict) else hook_kwargs
+                try:
+                    in_desc = _describe(inputs) if inputs else "()"
+                    kw_desc = _describe(fwd_kwargs) if fwd_kwargs else "{}"
+                    out_desc = _describe(output)
+                    self.logger.info(
+                        "[DTYPE_AUDIT_FWD] %s args=%s kwargs=%s out=%s",
+                        label, in_desc, kw_desc, out_desc,
+                    )
+                except Exception as e:
+                    self.logger.info("[DTYPE_AUDIT_FWD] %s hook error: %s", label, e)
+                finally:
+                    # One-shot: detach self after first invocation.
+                    if handle_box and handle_box[0] is not None:
+                        try:
+                            handle_box[0].remove()
+                        except Exception:
+                            pass
+                        handle_box[0] = None
+            return _hook
+
+        def _attach(label: str, mod: Any) -> None:
+            if mod is None or not hasattr(mod, "register_forward_hook"):
+                self.logger.info("[DTYPE_AUDIT] %s not hookable — skipping forward hook", label)
+                return
+            box: list = [None]
+            try:
+                # Try with_kwargs=True first (torch >= 2.0); fall back to legacy signature.
+                try:
+                    box[0] = mod.register_forward_hook(_make_hook(label, box), with_kwargs=True)
+                except TypeError:
+                    box[0] = mod.register_forward_hook(_make_hook(label, box))
+                self.logger.info("[DTYPE_AUDIT] %s forward hook attached (one-shot)", label)
+            except Exception as e:
+                self.logger.info("[DTYPE_AUDIT] %s hook attach error: %s", label, e)
+
+        try:
+            talker = getattr(getattr(model, "model", None), "talker", None)
+            if talker is None:
+                # Try the alternative path (some qwen-tts versions expose it differently)
+                talker = getattr(model, "talker", None)
+            _attach("talker", talker)
+        except Exception as e:
+            self.logger.info("[DTYPE_AUDIT] talker resolve error: %s", e)
+
+        # Hook the inner decoder Module if found; the wrapper itself is HF-only.
+        _attach("speech_tokenizer.inner", inner_decoder)
+
+        self.logger.info(
+            "[DTYPE_AUDIT] audit setup complete — next generation will trigger one-shot forward-hook captures"
+        )
+        self.logger.info("=" * 70)
 
     async def _unload_model(self, model_type: QwenModelType) -> bool:
         """

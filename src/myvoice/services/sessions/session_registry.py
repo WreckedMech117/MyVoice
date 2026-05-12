@@ -161,11 +161,90 @@ Saveable Slot Lifecycle Contract (Story 14.1 lock-down)
     ``TestSaveableSessionIdProperty``, ``TestSaveableAudioProperty``,
     ``TestSaveableEmissionOrdering``, ``TestSaveableModuleBoundary``,
     ``TestNetZeroFromPreviousStories``, ``TestDebugDumpHelper``.
+
+Cooperative Cancellation Chain Contract (Story 16.5 lock-down)
+==============================================================
+
+  * **Two-endpoint API split** (P-7, architecture-optimization-pass.md:443-451):
+    cancellation flows in one direction —
+    ``user → registry → streamer's _cancel_event → talker .generate()
+    returns → decoder drains → session transitions CANCELLED → DISCARDED``.
+    The registry exposes two endpoints that map to the two halves of this
+    chain:
+
+      - ``request_cancel(session_id)`` — synchronous, runs on the calling
+        thread, fires the registered cancel hook (if any). The hook
+        flips ``streamer._cancel_event`` and asks the audio coordinator to
+        stop playback for the session. **Does NOT transition session
+        state** — that's the decoder worker's job (it posts
+        ``('cancel', sid)`` via ``post_mutation`` after draining its queue;
+        the existing ``cancel`` slot then runs on Qt main thread and does
+        the actual ``session.cancel()``).
+      - The existing ``cancel(session_id)`` slot — Qt-main-thread only,
+        transitions state via ``session.cancel()``, emits
+        ``session_state_changed``, invokes saveable-slot invalidation
+        (Story 14.1), auto-clears the cancel hook (Story 16.5).
+
+    The split exists so the architecture's P-7 invariant — "session.cancel()
+    sets the event; it does not immediately transition state. The decoder
+    worker's drain-on-cancel posts the actual CANCELLED transition (so we
+    never have a 'cancelled but still emitting chunks' window)" — is
+    honored verbatim. **Do NOT** extend ``request_cancel`` to also call
+    ``session.cancel()`` directly; that would re-introduce the
+    "cancelled but still emitting" window.
+
+  * **Hook lifecycle**: Story 16.6's TRUE_STREAM dispatcher registers a
+    hook at session-create time via ``register_cancel_hook(sid, fn)``;
+    re-registration replaces the prior hook silently (so the dispatcher
+    can re-construct the streamer + worker pair across retries within a
+    single session_id without leaking stale hooks). The hook is
+    auto-cleared by ``_maybe_clear_cancel_hook(sid)`` at the bottom of
+    every terminal-state slot — ``cancel``, ``mark_done``, ``set_error``,
+    ``discard``. Cleanup is idempotent (``dict.pop(sid, None)``); the
+    redundant ``discard`` call provides defense-in-depth in case a future
+    code path adds an unobserved terminal transition.
+
+  * **Race tolerance**: ``register_cancel_hook`` does NOT require the
+    session_id to be present in ``_sessions`` — Story 16.6's wiring may
+    happen in a slightly different tick from ``create_session``. A hook
+    registered for a never-existing session lives until the registry is
+    GC'd, but that path is not reachable under normal flow (registry
+    callers always create the session first).
+
+  * **Defensive but quiet**: ``request_cancel`` for an unregistered
+    session_id is a quiet no-op (no exception, no metric, no WARN-log).
+    Today's batch + sentence-stream callers in
+    ``QwenTTSService.cancel_generation`` invoke this unconditionally for
+    every session, and those flows correctly carry no hook. A hook that
+    raises is caught and recorded as a ``cancel_hook_error`` metric (per
+    Story 16.4's ``decode_error`` precedent — numeric value 1.0, error
+    repr in tags); ``request_cancel`` returns normally and the hook is
+    NOT auto-cleared on exception (Story 16.6's wiring may want to retry
+    against the same surface in failure-recovery scenarios).
+
+  * **Cross-thread invocation**: ``request_cancel`` runs on the calling
+    thread synchronously — it does NOT hop to the Qt main thread. The
+    hook's job is to flip a thread-safe ``threading.Event`` and schedule
+    an async coroutine on the audio coordinator's event loop; both are
+    thread-safe operations and forcing a Qt-main hop would introduce
+    latency that violates the P-7 100ms cancel-chain target.
+
+  * **Module boundary preserved**: the new code adds at most one
+    ``Callable`` import from ``typing``; it does NOT import
+    ``myvoice.services.tts_streaming.*`` or
+    ``myvoice.services.audio_coordinator`` (architecture line 662). The
+    cancel-hook callable carries any tts_streaming / audio_coordinator
+    reference indirectly via its closure (Story 16.6's wiring composes
+    the closure).
+
+  * Cross-references: see
+    ``tests/unit/services/sessions/test_session_registry.py``,
+    classes ``TestCancelHookRegistration``, ``TestRequestCancelInvocation``.
 """
 
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -180,6 +259,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtWidgets import QApplication
 
+from myvoice.observability import metrics
 from myvoice.services.sessions.generation_session import (
     GenerationSession,
     InvalidSessionStateError,
@@ -292,6 +372,13 @@ class SessionRegistry(QObject):
         # Captured at finalize-time so the audio buffer survives session.discard().
         self._saveable: Optional[SaveableAudio] = None
         self._previous_saveable: Optional[SaveableAudio] = None
+        # Story 16.5: per-session cooperative-cancel hooks. Story 16.6's
+        # TRUE_STREAM dispatcher registers a closure here that flips the
+        # streamer's `_cancel_event` and asks the audio coordinator to stop
+        # playback. Auto-cleared at the bottom of every terminal-state slot
+        # (cancel / mark_done / set_error / discard) per
+        # `_maybe_clear_cancel_hook`.
+        self._cancel_hooks: dict[str, Callable[[], None]] = {}
 
     # ----- AC #4 / #5 — creation gateway and read-only access ----------- #
 
@@ -386,6 +473,8 @@ class SessionRegistry(QObject):
         # buffer hold. See AC #5 / module docstring "Saveable Slot
         # Lifecycle Contract".
         self._maybe_release_previous_saveable_on_done(session)
+        # Story 16.5: terminal-state cleanup — idempotent.
+        self._maybe_clear_cancel_hook(session_id)
 
     @pyqtSlot(str)
     def cancel(self, session_id: str) -> None:
@@ -399,6 +488,8 @@ class SessionRegistry(QObject):
         # scope), so the invariant "no slot ever holds a CANCELLED/ERROR
         # session" holds across subsequent revert paths.
         self._invalidate_saveable_slot_for(session)
+        # Story 16.5: terminal-state cleanup — idempotent.
+        self._maybe_clear_cancel_hook(session_id)
 
     @pyqtSlot(str)
     def discard(self, session_id: str) -> None:
@@ -420,6 +511,10 @@ class SessionRegistry(QObject):
         # Slot lifecycle is driven by mark_done (release per D-4) and cancel
         # (revert per AC #7), not by discard.
         self._recompute_focal_and_maybe_emit()
+        # Story 16.5: defense-in-depth — the prior CANCELLED/DONE/ERROR
+        # transition should already have cleared the hook, but DISCARDED is
+        # the architecturally-correct latest cleanup point. Idempotent.
+        self._maybe_clear_cancel_hook(session_id)
 
     @pyqtSlot(str)
     def set_error(self, session_id: str) -> None:
@@ -442,6 +537,8 @@ class SessionRegistry(QObject):
         # selectable for Save. The idempotency guard above prevents
         # double-invalidation on repeated set_error calls.
         self._invalidate_saveable_slot_for(session)
+        # Story 16.5: terminal-state cleanup — idempotent.
+        self._maybe_clear_cancel_hook(session_id)
 
     # ----- AC #8 — cross-thread helper (P-3) ---------------------------- #
 
@@ -490,6 +587,98 @@ class SessionRegistry(QObject):
             Qt.ConnectionType.QueuedConnection,
             *q_args,
         )
+
+    # ----- Story 16.5 — cooperative cancellation chain ------------------- #
+
+    def register_cancel_hook(
+        self, session_id: str, hook: Callable[[], None]
+    ) -> None:
+        """Story 16.5: register a per-session cancel hook.
+
+        The hook is invoked synchronously by ``request_cancel(session_id)``
+        on whatever thread that method was called from. Story 16.6's
+        TRUE_STREAM dispatcher composes a closure that flips the streamer's
+        ``_cancel_event`` (thread-safe per ``threading.Event`` semantics)
+        and schedules ``audio_coordinator.cancel_playback(session_id)`` on
+        the coordinator's event loop.
+
+        Re-registration replaces the prior hook silently — Story 16.6's
+        dispatcher may re-construct the streamer + worker pair across
+        retries within a single session_id without leaking stale hooks.
+        Story 16.5's wiring contract.
+
+        The session_id is NOT required to be present in ``_sessions``;
+        race-tolerance for Story 16.6's wiring (where hook registration
+        may happen in a slightly different tick from session creation).
+        A hook registered for a never-existing session lives until the
+        registry is GC'd — acceptable at Story 16.5's runtime scale.
+
+        Raises:
+            ValueError: if ``session_id`` is empty/None or ``hook`` is None.
+        """
+        if not session_id:
+            raise ValueError(
+                "register_cancel_hook: session_id must be a non-empty string"
+            )
+        if hook is None:
+            raise ValueError("register_cancel_hook: hook must not be None")
+        self._cancel_hooks[session_id] = hook
+
+    def request_cancel(self, session_id: str) -> None:
+        """Story 16.5: synchronously fire the registered cancel hook.
+
+        Quiet no-op for unregistered session_ids; rationale: today's batch
+        + sentence-stream callers in ``QwenTTSService.cancel_generation``
+        invoke this unconditionally for every session, and the existing
+        flows correctly carry no hook. Story 16.6's TRUE_STREAM dispatch
+        path registers the hook at session-create-time for streaming
+        sessions only.
+
+        Hook exceptions are caught and recorded as a ``cancel_hook_error``
+        metric (numeric value 1.0 per Story 16.4's ``decode_error``
+        precedent — the real ``metrics.record`` validates value to
+        ``int|float``). The hook is NOT auto-cleared on exception;
+        Story 16.6's wiring may want to retry against the same surface.
+
+        Runs on the calling thread (NOT Qt main); the hook's job is to
+        flip a thread-safe ``threading.Event`` and schedule an async
+        coroutine — both thread-safe operations. Forcing a Qt-main hop
+        would introduce latency that violates the P-7 cancel-chain
+        budget.
+
+        **Anti-pattern**: Do NOT extend this method to also call
+        ``session.cancel()`` directly — that would re-introduce the
+        "cancelled but still emitting" window for streaming sessions,
+        where the worker's in-flight ``append_chunk`` post would land
+        AFTER the registry's CANCELLED transition. The two endpoints
+        (request_cancel + cancel) are intentionally split. Non-streaming
+        callers (today's batch + sentence-stream paths) ALSO call
+        ``post_mutation('cancel', sid)`` from their own ``CancelledError``
+        handlers — that path is unchanged.
+        """
+        hook = self._cancel_hooks.get(session_id)
+        if hook is None:
+            return
+        try:
+            hook()
+        except Exception as exc:  # noqa: BLE001 — keep cancel surface resilient
+            metrics.record(
+                "cancel_hook_error",
+                1.0,
+                session_id=session_id,
+                error_repr=repr(exc),
+            )
+
+    def _maybe_clear_cancel_hook(self, session_id: str) -> None:
+        """Story 16.5: idempotent removal of a per-session cancel hook.
+
+        Invoked at the bottom of every terminal-state slot (cancel /
+        mark_done / set_error / discard) so the hook map cannot leak
+        across session lifecycles. ``dict.pop(_, None)`` is the standard
+        idempotent removal idiom; double-clearing across multiple
+        terminal transitions (e.g., cancel → discard) is a silent no-op.
+        """
+        self._cancel_hooks.pop(session_id, None)
 
     # ----- AC #10 / #11 — focal session ---------------------------------- #
 

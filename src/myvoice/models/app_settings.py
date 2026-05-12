@@ -100,6 +100,51 @@ class AppSettings:
     clear_comms_file_path: Optional[str] = None        # Absolute path to WAV; None until configured
     clear_comms_queue_mode: bool = False               # False = interrupt (D-18 default), True = queue
 
+    # Streaming mode override (Story 16.2 / D-9). When None, the runtime
+    # uses default_streaming_mode_for_hardware(). Allowed non-None values:
+    # "batch", "sentence_stream", "true_stream". Settings UI for setting
+    # this lands in Story 16.6; until then, the override is data-only
+    # (hand-edit settings.json or set programmatically for testing).
+    streaming_mode_override: Optional[str] = None
+
+    # Story 18.3 — TTS precision override. "auto" (default) = bf16 on Ampere+ /
+    # fp32 elsewhere; "bf16" = force bf16 (engages on CPU too if user opts in);
+    # "fp32" = force fp32 (NFR7 fallback if bf16 audition flags any utterance
+    # class). UI-less for now (hand-edit settings.json); mirrors the
+    # streaming_mode_override pattern. See epics-optimization-pass.md:1377.
+    tts_precision: str = "auto"
+
+    # Story 18.4 — TTS compile override (D-21 / D-22 Branch B). "auto"
+    # = engages on Ampere+ CUDA via the upstream
+    # `Qwen3TTSModel.enable_streaming_optimizations` API; "on" = user-
+    # explicit opt-in (same hardware gate; pre-Ampere users still get
+    # eager mode with a WARNING log); "off" = NFR7 fallback —
+    # forces eager mode even on Ampere+.
+    #
+    # Default-flip history:
+    #   - Story 18.4 (2026-05-10): "auto" → "off" because torch.compile's
+    #     Windows toolchain (triton-windows + tcc.exe + portable-Python
+    #     headers) was non-functional in the production bundle. Observed
+    #     failure: BackendCompilerFailed propagating to `finalize() called
+    #     with no chunks`. Story 18.4 Fix #4.
+    #   - Story 18.5 (2026-05-12): "off" → "auto". Phase ⊥-Polish-2-Ship
+    #     closed the three packaging gaps: (a) CUDA Toolkit
+    #     redistributable subset bundled at `_internal/cuda_redist/`
+    #     (NVIDIA EULA Attachment A scope only); (b) Python 3.10.11 dev
+    #     headers + libs bundled at `_internal/Include/` +
+    #     `_internal/libs/python310.lib`; (c) triton-windows bundled at
+    #     `_internal/triton/` with TRITON_BACKENDS_IN_TREE=1 + CC=bundled
+    #     tcc + CUDA_PATH=triton's bundled subset injected via rthook.
+    #     Pre-clearance audition: Story 18.4 joint A/B FULL PASS
+    #     2026-05-11 (NFR3 — zero `audible_seam` flags). Bundled-smoke
+    #     iteration #3 confirmed end-to-end compile-engaged playback
+    #     with no audio truncation after the
+    #     `_progressive_playback_active` race fix (app.py:2851 + :2696).
+    #     See `_bmad-output/implementation-artifacts/
+    #     18-5-cuda-toolkit-triton-bundling-evidence.md` for the full
+    #     verification.
+    tts_compile: str = "auto"
+
     # Advanced settings
     advanced_settings: Dict[str, Any] = field(default_factory=dict)
 
@@ -358,6 +403,73 @@ class AppSettings:
                 ))
                 self.clear_comms_source_kind = "last_generation"
 
+            # Validate streaming mode override (Story 16.2 / D-9).
+            # None means "no override; use hardware probe". Any non-None value
+            # must match one of the three StreamingMode enum string values.
+            # Mirrors the warn-and-fallback pattern of clear_comms_source_kind:
+            # bad data does not silently force a mode change; it falls back to
+            # None (= probe-default) and surfaces a WARNING in the validator
+            # output stream that __post_init__ logs.
+            if self.streaming_mode_override is not None:
+                valid_streaming_modes = ["batch", "sentence_stream", "true_stream"]
+                if self.streaming_mode_override not in valid_streaming_modes:
+                    warnings.append(ValidationIssue(
+                        field="streaming_mode_override",
+                        message=(
+                            f"Unknown streaming mode override "
+                            f"'{self.streaming_mode_override}', defaulting to "
+                            f"None (hardware probe). Allowed values: "
+                            f"{', '.join(valid_streaming_modes)}."
+                        ),
+                        code="UNKNOWN_STREAMING_MODE_OVERRIDE",
+                        severity=ValidationStatus.WARNING
+                    ))
+                    self.streaming_mode_override = None
+
+            # Validate TTS precision (Story 18.3 / D-9 / NFR7). Allowed values:
+            # "auto" (default; bf16 on Ampere+ CUDA, fp32 elsewhere), "bf16"
+            # (user-explicit force), "fp32" (NFR7 fallback). Mirrors the
+            # streaming_mode_override warn-and-fallback pattern: bad data
+            # surfaces a WARNING ValidationIssue and resets to "auto" so the
+            # runtime still resolves cleanly via the hardware probe.
+            valid_tts_precisions = ["auto", "bf16", "fp32"]
+            if self.tts_precision not in valid_tts_precisions:
+                warnings.append(ValidationIssue(
+                    field="tts_precision",
+                    message=(
+                        f"Unknown TTS precision '{self.tts_precision}', "
+                        f"defaulting to 'auto'. Allowed values: "
+                        f"{', '.join(valid_tts_precisions)}."
+                    ),
+                    code="UNKNOWN_TTS_PRECISION",
+                    severity=ValidationStatus.WARNING
+                ))
+                self.tts_precision = "auto"
+
+            # Validate TTS compile (Story 18.4 / D-21 / D-22 Branch B /
+            # NFR7). Allowed values: "auto" (declared default per Story
+            # 18.5 — Ampere+ engages via the upstream API), "on" (user-
+            # explicit opt-in; same hardware gate), "off" (NFR7 fallback;
+            # forces eager even on Ampere+). On unknown values, reset to
+            # the field's declared default ("auto") — reset target
+            # intentionally matches the declaration to avoid the
+            # "validation drift between two near-identical fields" bug
+            # class per
+            # `memory/code_review_regression_test_exact_class.md`.
+            valid_tts_compile_values = ["auto", "on", "off"]
+            if self.tts_compile not in valid_tts_compile_values:
+                warnings.append(ValidationIssue(
+                    field="tts_compile",
+                    message=(
+                        f"Unknown TTS compile mode '{self.tts_compile}', "
+                        f"defaulting to 'auto'. Allowed values: "
+                        f"{', '.join(valid_tts_compile_values)}."
+                    ),
+                    code="UNKNOWN_TTS_COMPILE",
+                    severity=ValidationStatus.WARNING
+                ))
+                self.tts_compile = "auto"
+
             # Validate TTS service URL
             if not self.tts_service_url or not self.tts_service_url.strip():
                 issues.append(ValidationIssue(
@@ -494,6 +606,9 @@ class AppSettings:
                 "clear_comms_source_kind": self.clear_comms_source_kind,
                 "clear_comms_file_path": self.clear_comms_file_path,
                 "clear_comms_queue_mode": self.clear_comms_queue_mode,
+                "streaming_mode_override": self.streaming_mode_override,
+                "tts_precision": self.tts_precision,
+                "tts_compile": self.tts_compile,
                 "advanced_settings": self.advanced_settings.copy(),
                 "training_enabled": self.training_enabled,
                 "training_workspace_directory": self.training_workspace_directory,
@@ -559,6 +674,9 @@ class AppSettings:
                 clear_comms_source_kind=data.get("clear_comms_source_kind", "last_generation"),
                 clear_comms_file_path=data.get("clear_comms_file_path"),
                 clear_comms_queue_mode=data.get("clear_comms_queue_mode", False),
+                streaming_mode_override=data.get("streaming_mode_override"),
+                tts_precision=data.get("tts_precision", "auto"),
+                tts_compile=data.get("tts_compile", "auto"),
                 advanced_settings=data.get("advanced_settings", {}),
                 training_enabled=data.get("training_enabled", True),
                 training_workspace_directory=data.get("training_workspace_directory", "training_workspace"),
@@ -674,6 +792,9 @@ class AppSettings:
             "mic_input_device_host_api", "mic_volume",
             "clear_comms_source_kind", "clear_comms_file_path",
             "clear_comms_queue_mode",
+            "streaming_mode_override",
+            "tts_precision",
+            "tts_compile",
             "advanced_settings",
             "training_enabled", "training_workspace_directory",
             "custom_emotion_text", "custom_emotion_presets"

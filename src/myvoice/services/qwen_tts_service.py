@@ -13,11 +13,14 @@ Story 1.5: Startup & Bundled Voices
 """
 
 import asyncio
+import json
 import logging
 import re
 import tempfile
 import threading
 import time
+import weakref
+from collections import OrderedDict
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Dict, Any, Callable, List, Tuple, AsyncIterator
@@ -243,6 +246,15 @@ from myvoice.observability import metrics, MetricRecord
 # Story 11.4: Phase 1 D-20 — wire SessionRegistry into the generation flow.
 from myvoice.services.sessions.session_registry import SessionRegistry
 from myvoice.services.sessions.generation_session import SessionSource
+# Story 16.6: TRUE_STREAM dispatch + three-mode fallback chain (Phase ⊥).
+from myvoice.services.tts_streaming import (
+    StreamingMode,
+    effective_streaming_mode,
+    CodecTokenStreamer,
+    StreamingDecoderWorker,
+    END_OF_STREAM,
+)
+from myvoice.models.app_settings import AppSettings
 
 
 @dataclass
@@ -256,12 +268,22 @@ class AudioChunk:
         chunk_index: Index of this chunk (0-based)
         is_final: Whether this is the last chunk
         text_segment: The text that was synthesized for this chunk
+        session_id: Registry-issued session id for the generation that
+            emitted this chunk; None for legacy callers that bypass the
+            SessionRegistry. Story 18.1 code-review pass M1 added this
+            so the consumer-side instrumentation metrics
+            (``progressive_chunk_playback_arrival_ms`` /
+            ``progressive_chunk_audio_duration_ms``) carry the same
+            session_id the producer-side ``progressive_chunk_emit_ms``
+            does — keeping the Task 1.4 CSV joinable across multiple
+            generations captured in one run.
     """
     audio_data: np.ndarray
     sample_rate: int
     chunk_index: int
     is_final: bool = False
     text_segment: str = ""
+    session_id: Optional[str] = None
 
 
 @dataclass
@@ -312,6 +334,10 @@ class QwenTTSResponse:
         mode: Generation mode used (batch or streaming)
         chunks_generated: Number of chunks generated (streaming mode)
         first_chunk_latency: Time to first audio chunk in seconds (streaming mode)
+        used_fallback: True if a lower-priority mode in the three-mode
+            fallback chain handled the request (Story 16.6). Independent of
+            ``success`` — a successful BATCH fallback after TRUE_STREAM
+            failed sets both ``success=True`` and ``used_fallback=True``.
     """
     success: bool = False
     audio_data: Optional[np.ndarray] = None
@@ -322,6 +348,7 @@ class QwenTTSResponse:
     mode: GenerationMode = GenerationMode.BATCH
     chunks_generated: int = 0
     first_chunk_latency: Optional[float] = None
+    used_fallback: bool = False
 
 
 class _FirstChunkLatencyAggregator:
@@ -505,6 +532,7 @@ class QwenTTSService(BaseService):
         quality_tier: str = "quality",
         *,
         session_registry: Optional[SessionRegistry] = None,
+        app_settings: Optional[AppSettings] = None,
     ):
         """
         Initialize the Qwen TTS service.
@@ -521,6 +549,11 @@ class QwenTTSService(BaseService):
                 lifecycle wiring. When None, the service runs the legacy
                 code path unchanged (registry-disabled fallback for tests
                 or environments where Qt isn't available).
+            app_settings: Optional AppSettings carrying user preferences. Story
+                16.6 reads ``streaming_mode_override`` from this object to
+                resolve the streaming mode at dispatch time. When None, the
+                resolver behaves as if the override is None (Auto: hardware
+                probe decides) per Story 16.2's contract.
         """
         super().__init__("QwenTTSService")
 
@@ -534,13 +567,30 @@ class QwenTTSService(BaseService):
         if self._session_registry is not None:
             self.logger.info("QwenTTSService using SessionRegistry")
 
-        # Model registry for lazy loading
+        # Story 16.6: AppSettings carries streaming_mode_override; consumed by
+        # _resolve_streaming_mode at dispatch entry. None means "Auto" (the
+        # hardware probe in default_streaming_mode_for_hardware decides).
+        self._app_settings: Optional[AppSettings] = app_settings
+
+        # Story 16.5: tracked for cancel_generation's request_cancel call;
+        # set after each create_session in the streaming/batch dispatch
+        # forks and cleared on every terminal discard post. None when no
+        # generation is in flight or when no registry is wired.
+        self._current_session_id: Optional[str] = None
+
+        # Model registry for lazy loading. Story 18.3 — pass app_settings so
+        # ModelRegistry can route ``tts_precision`` through the precedence
+        # resolver (resolve_tts_precision honors the Ampere+ probe gate).
+        # The legacy ``dtype`` string is preserved as the fallback when
+        # ``app_settings`` is None or its ``tts_precision`` is None
+        # (backwards-compatible with tests / non-AppSettings call sites).
         self._model_registry = ModelRegistry(
             device=device,
             dtype=dtype,
             models_path=models_path,
             progress_callback=self._on_model_progress,
-            quality_tier=quality_tier
+            quality_tier=quality_tier,
+            app_settings=self._app_settings,
         )
 
         # Configuration
@@ -596,8 +646,52 @@ class QwenTTSService(BaseService):
         # drop the registration.
         self._latency_aggregator = _FirstChunkLatencyAggregator(self)
 
-        # Voice clone prompt cache (for reusing voice clone prompts)
-        self._voice_clone_prompts: Dict[str, Any] = {}
+        # Voice clone prompt cache (Story 17.2 — wired into generate_voice_clone;
+        # Story 17.2 review pass — H1 + H3 fixes).
+        # Key: (str(ref_audio.resolve()), tier) where tier ∈ {"quality", "small"}.
+        # Tier-locked because the 1.7B/0.6B Qwen3 models produce embeddings with
+        # different hidden dimensions; the same .pt cannot serve both.
+        # Value shape: (prompt, ref_audio_mtime, ref_audio_size, txt_mtime).
+        # The mtime/size triple is re-validated on every cache hit so that
+        # within-session changes to ref_audio (replace .wav) or .txt (fix
+        # transcription) invalidate the in-memory cache without requiring
+        # an app restart. (H1, H2 review-pass fixes.)
+        # Backed by ``OrderedDict`` with LRU eviction at
+        # ``_VOICE_CLONE_PROMPT_CACHE_MAX`` to bound memory growth on long-
+        # running sessions with large voice libraries (M3 review-pass fix).
+        self._voice_clone_prompts: "OrderedDict[Tuple[str, str], Tuple[Any, float, int, Optional[float]]]" = (
+            OrderedDict()
+        )
+        # Per-voice asyncio.Lock registry. WeakValueDictionary so locks for
+        # deleted/unloaded voices are GC'd; the registry mutation itself is
+        # guarded by `_voice_clone_prompt_locks_guard` (lazy-init under
+        # asyncio because Lock requires a running event loop).
+        self._voice_clone_prompt_locks: "weakref.WeakValueDictionary[Tuple[str, str], asyncio.Lock]" = (
+            weakref.WeakValueDictionary()
+        )
+        self._voice_clone_prompt_locks_guard: Optional[asyncio.Lock] = None
+
+        # Story 17.2 — Whisper integration for lazy CLONED-voice precompute.
+        # Wired post-construction by the orchestrator after on-demand
+        # WhisperSubprocessService init lands (app.py:_initialize_whisper_
+        # service_on_demand). When None, precompute raises so the dispatch
+        # chain falls through to SENTENCE_STREAM (NFR7 preserved).
+        self._whisper_service: Optional[Any] = None
+        # Optional fire-and-forget callback the orchestrator wires so the
+        # precompute can request on-demand Whisper init when it discovers
+        # _whisper_service is None on the very first call.
+        self._whisper_init_callback: Optional[Callable[[], None]] = None
+
+        # Story 17.2 — VoiceProfileManager handle for startup hydration of
+        # the cache. Wired post-construction; hydration is a separate explicit
+        # call, not auto-fired in start(), because the orchestrator constructs
+        # the manager AFTER tts.start() returns.
+        self._voice_profile_manager: Optional[Any] = None
+
+        # Story 17.2 — UI feedback for first-run precompute (AC #4). The
+        # orchestrator wires a callback that translates the (Optional[str])
+        # message into a ServiceStatusInfo update for the TTS indicator.
+        self._preparing_voice_callback: Optional[Callable[[Optional[str]], None]] = None
 
         self.logger.info(
             f"QwenTTSService initialized: device={device}, cache_dir={self._cache_dir}"
@@ -1005,9 +1099,13 @@ class QwenTTSService(BaseService):
             streaming=streaming,
         )
 
-        if streaming:
-            return await self._generate_streaming(request)
-        return await self._generate(request)
+        # Story 16.6: route every public entry through the three-mode dispatch
+        # fork so the streaming-mode resolver + fallback chain are the single
+        # source of truth (D-9 / FR3 / NFR7). The dispatcher honors the legacy
+        # ``request.streaming=False`` override by forcing BATCH.
+        return await self._dispatch_by_streaming_mode(
+            request, self._resolve_streaming_mode()
+        )
 
     async def generate_voice_design(
         self,
@@ -1039,9 +1137,931 @@ class QwenTTSService(BaseService):
             streaming=streaming,
         )
 
-        if streaming:
-            return await self._generate_streaming(request)
-        return await self._generate(request)
+        # Story 16.6: route through the three-mode dispatch fork.
+        return await self._dispatch_by_streaming_mode(
+            request, self._resolve_streaming_mode()
+        )
+
+    # ----- Story 17.2: lazy + persistent voice_clone_prompt precompute --- #
+
+    # qwen-tts pin per requirements.txt:23 — embedded in .pt.meta.json so a
+    # pin bump invalidates cached embeddings. Story 18.4 / D-22 Branch B bumped
+    # the pin from `1ab0dd75` (QwenLM/Qwen3-TTS upstream) to `3fdb4682`
+    # (dffdeeq/Qwen3-TTS-streaming fork) — Story 17.2 cached `.pt` files from
+    # the previous pin are invalidated on first run after this bump (Story 17.2
+    # H1+H2 cache-invalidation discipline per memory/code_review_regression_test_exact_class.md).
+    _QWEN_TTS_PIN_HASH = "3fdb4682"
+    # Whisper retry policy for the lazy-precompute (AC #2): three attempts
+    # total, with progressive backoff between. The bundled subprocess
+    # Whisper path (whisper_subprocess.py) typically completes in 1-3s
+    # cold, so 1s + 3s gives ~5s envelope before declaring FAILED.
+    _WHISPER_RETRY_BACKOFFS_SECONDS: Tuple[float, ...] = (1.0, 3.0)
+    # Story 17.2 review-pass M3 — bound the in-memory voice_clone_prompt
+    # cache so long-running sessions with large voice libraries (e.g.
+    # audiobook narration with N character voices) don't accumulate
+    # unbounded resident embedding tensors. 64 entries is comfortably above
+    # the 12 bundled CLONED voices and any realistic small/medium custom
+    # library; LRU eviction kicks in at the cap.
+    _VOICE_CLONE_PROMPT_CACHE_MAX = 64
+
+    @staticmethod
+    def _ref_audio_stat(ref_audio: Path) -> Tuple[float, int]:
+        """Return ``(mtime, size)`` for ``ref_audio``. Raises FileNotFoundError
+        if the file disappeared between caller's exists() check and now.
+        """
+        stat = ref_audio.stat()
+        return (stat.st_mtime, stat.st_size)
+
+    @staticmethod
+    def _txt_sidecar_mtime(ref_audio: Path) -> Optional[float]:
+        """Return mtime of ``ref_audio.with_suffix('.txt')`` if present, else
+        None. Used by AC #3 cache-invalidation to detect user edits of the
+        transcription sidecar that would otherwise leave the cached
+        embedding (computed against the OLD transcription) stale.
+        """
+        sidecar = ref_audio.with_suffix(".txt")
+        try:
+            return sidecar.stat().st_mtime if sidecar.exists() else None
+        except OSError:
+            return None
+
+    def _cache_lookup_validated(
+        self,
+        cache_key: Tuple[str, str],
+        ref_audio: Path,
+    ) -> Optional[Any]:
+        """Story 17.2 review-pass H1 + H2 — in-memory cache hit gated on
+        re-validation of ``ref_audio`` mtime/size AND ``.txt`` sidecar
+        mtime against the cached fingerprint. On mismatch, evict and
+        return None (caller treats as miss; precompute recomputes against
+        the current state).
+
+        Returns the prompt on hit, None on miss-or-stale.
+        Side-effects: marks the entry as recently-used on hit; evicts on
+        stale-detection.
+        """
+        entry = self._voice_clone_prompts.get(cache_key)
+        if entry is None:
+            return None
+        prompt, cached_mtime, cached_size, cached_txt_mtime = entry
+        try:
+            current_mtime, current_size = self._ref_audio_stat(ref_audio)
+        except (OSError, FileNotFoundError):
+            # ref_audio went missing — drop the stale entry.
+            self._voice_clone_prompts.pop(cache_key, None)
+            return None
+        # mtime tolerance matches _voice_clone_prompt_meta_is_valid (1ms).
+        if abs(current_mtime - cached_mtime) > 1e-3 or current_size != cached_size:
+            self._voice_clone_prompts.pop(cache_key, None)
+            self.logger.info(
+                f"Voice clone prompt in-memory cache invalidated for "
+                f"{cache_key[0]}: ref_audio mtime/size changed"
+            )
+            return None
+        # .txt sidecar mtime check (sidecar may appear / disappear / change).
+        current_txt_mtime = self._txt_sidecar_mtime(ref_audio)
+        if current_txt_mtime != cached_txt_mtime:
+            self._voice_clone_prompts.pop(cache_key, None)
+            self.logger.info(
+                f"Voice clone prompt in-memory cache invalidated for "
+                f"{cache_key[0]}: transcription sidecar changed"
+            )
+            return None
+        # Mark as recently-used for LRU eviction order.
+        self._voice_clone_prompts.move_to_end(cache_key)
+        return prompt
+
+    def _cache_store(
+        self,
+        cache_key: Tuple[str, str],
+        prompt: Any,
+        ref_audio: Path,
+    ) -> None:
+        """Store ``prompt`` in the cache with the current mtime/size/txt_mtime
+        fingerprint, evicting the oldest entry when at the LRU cap (M3)."""
+        try:
+            mtime, size = self._ref_audio_stat(ref_audio)
+        except (OSError, FileNotFoundError):
+            # If the file disappeared between compute and store, don't cache —
+            # the next request will recompute against the new state.
+            return
+        txt_mtime = self._txt_sidecar_mtime(ref_audio)
+        self._voice_clone_prompts[cache_key] = (prompt, mtime, size, txt_mtime)
+        self._voice_clone_prompts.move_to_end(cache_key)
+        # LRU eviction at the cap (M3 review-pass fix).
+        while len(self._voice_clone_prompts) > self._VOICE_CLONE_PROMPT_CACHE_MAX:
+            evicted_key, _ = self._voice_clone_prompts.popitem(last=False)
+            self.logger.debug(
+                f"Voice clone prompt cache LRU-evicted {evicted_key[0]} "
+                f"(cache at {self._VOICE_CLONE_PROMPT_CACHE_MAX} cap)"
+            )
+
+    def set_whisper_service(self, whisper_service: Any) -> None:
+        """Story 17.2 AC #2 — orchestrator-injected WhisperSubprocessService.
+
+        Wired by ``app.py:_initialize_whisper_service_on_demand`` after the
+        on-demand init flow lands. When None, the lazy CLONED-voice
+        precompute raises ``RuntimeError`` so ``_dispatch_by_streaming_mode``
+        falls through to SENTENCE_STREAM (NFR7 preserved).
+        """
+        self._whisper_service = whisper_service
+        self.logger.info("WhisperSubprocessService injected into QwenTTSService")
+
+    def set_whisper_init_callback(
+        self, callback: Optional[Callable[[], None]]
+    ) -> None:
+        """Story 17.2 — fire-and-forget hook the orchestrator wires so the
+        first cache-miss precompute can request on-demand Whisper init.
+
+        The callback is invoked synchronously from the precompute when
+        ``_whisper_service is None``; the precompute then raises so the
+        dispatch chain falls through to SENTENCE_STREAM. The next generation
+        on the same voice (after init lands) hits the populated cache.
+        """
+        self._whisper_init_callback = callback
+
+    def set_voice_profile_manager(self, voice_profile_manager: Any) -> None:
+        """Story 17.2 AC #3 — orchestrator-injected VoiceProfileManager.
+
+        Wired by ``app.py`` after ``await self._voice_manager.start()``.
+        Used by ``hydrate_voice_clone_prompt_cache()`` to enumerate CLONED
+        voices and pre-load any persisted ``.pt`` files into the in-memory
+        cache. ``generate_voice_clone`` does NOT require this manager — it
+        derives ``ref_audio.resolve()`` from its parameter directly — so a
+        None manager only disables startup hydration (lazy fallback works).
+        """
+        self._voice_profile_manager = voice_profile_manager
+
+    def set_preparing_voice_callback(
+        self, callback: Optional[Callable[[Optional[str]], None]]
+    ) -> None:
+        """Story 17.2 AC #4 — orchestrator-wired UI feedback for first-run
+        precompute. Invoked with a string message on entry (e.g. "Preparing
+        voice for streaming…") and with ``None`` on exit (success or
+        failure). Cache hits do NOT invoke this callback — only misses.
+        """
+        self._preparing_voice_callback = callback
+
+    async def _get_voice_clone_prompt_lock(
+        self, cache_key: Tuple[str, str]
+    ) -> asyncio.Lock:
+        """Lazy-allocate a per-voice asyncio.Lock keyed by ``cache_key``.
+
+        Concurrent same-key calls return the same Lock instance so the
+        precompute serializes per-voice; different keys proceed in parallel.
+        Locks for unreferenced keys are GC'd via WeakValueDictionary, so
+        long-running services don't accumulate stale Lock objects.
+
+        The registry mutation itself is guarded by a single asyncio.Lock
+        (``_voice_clone_prompt_locks_guard``) lazy-initialized here because
+        ``asyncio.Lock`` requires a running event loop. The lock instance
+        is held in a local ``hold`` variable so the WeakValueDictionary's
+        weak reference does not GC it before we return — the caller's
+        ``async with`` then takes the strong reference.
+        """
+        if self._voice_clone_prompt_locks_guard is None:
+            self._voice_clone_prompt_locks_guard = asyncio.Lock()
+        async with self._voice_clone_prompt_locks_guard:
+            existing = self._voice_clone_prompt_locks.get(cache_key)
+            if existing is not None:
+                return existing
+            new_lock = asyncio.Lock()
+            self._voice_clone_prompt_locks[cache_key] = new_lock
+            return new_lock
+
+    async def _ensure_transcription_for_clone_voice(
+        self,
+        voice_profile: Optional[Any],
+        ref_audio: Path,
+    ) -> str:
+        """Story 17.2 AC #2 — resolve a transcription for ``ref_audio``.
+
+        Resolution priority:
+          1. ``voice_profile.transcription`` if non-empty (in-memory).
+          2. ``<ref_audio>.with_suffix('.txt')`` sidecar (mirrors existing
+             auto-detect at voice_profile.py:348-355).
+          3. WhisperSubprocessService.transcribe_file with retry+backoff.
+
+        On Whisper success the result is written to the .txt sidecar AND
+        ``voice_profile.transcription`` is updated in-memory. On exhausted
+        retries the profile is marked FAILED and the helper raises so the
+        dispatch chain falls through to SENTENCE_STREAM (NFR7).
+
+        ``voice_profile`` may be None when only the audio path is known
+        (lock-only call sites); status transitions are skipped in that case
+        but the .txt sidecar is still consulted and (on Whisper success)
+        written.
+        """
+        # Priority 1: in-memory transcription
+        if voice_profile is not None:
+            existing = (voice_profile.transcription or "").strip()
+            if existing:
+                return existing
+
+        # Priority 2: .txt sidecar
+        sidecar = ref_audio.with_suffix(".txt")
+        if sidecar.exists():
+            try:
+                text = sidecar.read_text(encoding="utf-8").strip()
+                if text:
+                    if voice_profile is not None:
+                        voice_profile.transcription = text
+                        # Mark COMPLETED via the canonical helper so the rest
+                        # of the system observes a coherent transcription
+                        # status (avoids leaving FAILED stuck if a previous
+                        # attempt lost — sidecar wins).
+                        voice_profile.set_transcription_result(
+                            text, confidence=1.0, model_name="sidecar"
+                        )
+                    return text
+            except Exception as exc:
+                self.logger.warning(
+                    f"Failed reading transcription sidecar {sidecar}: {exc}"
+                )
+
+        # Priority 3: Whisper. Lazy-fail-safe: if no service, request init
+        # (fire-and-forget) and raise — dispatch chain falls through to
+        # SENTENCE_STREAM (NFR7); subsequent calls (post-init) hit cache.
+        if self._whisper_service is None:
+            if self._whisper_init_callback is not None:
+                try:
+                    self._whisper_init_callback()
+                except Exception as exc:
+                    self.logger.warning(
+                        f"Whisper init callback raised: {exc}"
+                    )
+            raise RuntimeError(
+                "WhisperSubprocessService is not initialized; cannot "
+                "compute transcription for TRUE_STREAM voice clone "
+                "precompute. Falling through to SENTENCE_STREAM."
+            )
+
+        # Status transitions for diagnostics. QUEUED on entry; PROCESSING
+        # before the first await; FAILED on exhausted retries; COMPLETED
+        # on success (via set_transcription_result).
+        from myvoice.models.voice_profile import TranscriptionStatus
+
+        if voice_profile is not None:
+            voice_profile.update_transcription_status(
+                TranscriptionStatus.QUEUED
+            )
+
+        last_error: Optional[BaseException] = None
+        for attempt_index in range(len(self._WHISPER_RETRY_BACKOFFS_SECONDS) + 1):
+            if voice_profile is not None:
+                voice_profile.update_transcription_status(
+                    TranscriptionStatus.PROCESSING
+                )
+            try:
+                self.logger.info(
+                    f"Whisper transcription started for {ref_audio.name} "
+                    f"(attempt {attempt_index + 1})"
+                )
+                result = await self._whisper_service.transcribe_file(ref_audio)
+                text = (result.text or "").strip()
+                if not text:
+                    raise RuntimeError(
+                        "Whisper returned empty transcription"
+                    )
+                # Persist sidecar (UTF-8, no BOM) before updating in-memory
+                # state so a crash mid-update can still recover.
+                try:
+                    sidecar.write_text(text, encoding="utf-8")
+                except Exception as exc:
+                    self.logger.warning(
+                        f"Failed writing transcription sidecar {sidecar}: {exc}"
+                    )
+                if voice_profile is not None:
+                    voice_profile.set_transcription_result(
+                        text,
+                        confidence=getattr(result, "confidence", 0.9),
+                        model_name="whisper-base",
+                    )
+                self.logger.info(
+                    f"Whisper transcription completed for {ref_audio.name}"
+                )
+                return text
+            except Exception as exc:
+                last_error = exc
+                self.logger.warning(
+                    f"Whisper attempt {attempt_index + 1} failed for "
+                    f"{ref_audio.name}: {exc}"
+                )
+                # If a backoff is configured for THIS attempt, sleep and
+                # retry; otherwise drop out to FAILED handling below.
+                if attempt_index < len(self._WHISPER_RETRY_BACKOFFS_SECONDS):
+                    backoff = self._WHISPER_RETRY_BACKOFFS_SECONDS[
+                        attempt_index
+                    ]
+                    await asyncio.sleep(backoff)
+                    continue
+
+        # Retries exhausted.
+        error_str = str(last_error) if last_error else "unknown"
+        if voice_profile is not None:
+            voice_profile.mark_transcription_failed(error_str)
+        raise RuntimeError(
+            f"Whisper transcription failed after retries: {error_str}"
+        )
+
+    def _voice_clone_prompt_persist_paths(
+        self, ref_audio: Path, tier: str
+    ) -> Tuple[Path, Path]:
+        """Return (pt_path, meta_path) for persisting an embedding next to
+        ``ref_audio``. Tier-locked naming: ``<voice>.<tier>.pt`` plus
+        ``<voice>.<tier>.pt.meta.json``. Spaces / parens in stem (e.g.
+        ``Base (Clone)``) are accepted by both Windows and Linux filesystems.
+        """
+        pt_path = ref_audio.with_name(f"{ref_audio.stem}.{tier}.pt")
+        meta_path = ref_audio.with_name(
+            f"{ref_audio.stem}.{tier}.pt.meta.json"
+        )
+        return pt_path, meta_path
+
+    def _voice_clone_prompt_meta_is_valid(
+        self,
+        meta_path: Path,
+        ref_audio: Path,
+        tier: str,
+    ) -> bool:
+        """Return True if ``meta_path`` matches the current ref_audio
+        (mtime + size), the current ``.txt`` sidecar mtime (H2 review-pass
+        fix), the current qwen-tts pin, AND the current tier. On any
+        mismatch (or unparseable meta), return False — caller deletes both
+        files and treats as miss.
+        """
+        if not meta_path.exists():
+            return False
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            self.logger.warning(
+                f"Voice clone prompt meta unparseable {meta_path}: {exc}"
+            )
+            return False
+        try:
+            stat = ref_audio.stat()
+        except FileNotFoundError:
+            return False
+        if meta.get("tier") != tier:
+            return False
+        if meta.get("qwen_tts_pin") != self._QWEN_TTS_PIN_HASH:
+            return False
+        # mtime is a float; allow exact equality (filesystem timestamps round-
+        # trip exactly on the platforms MyVoice ships to) but tolerate ~1ms
+        # of float drift defensively.
+        meta_mtime = meta.get("ref_audio_mtime")
+        if not isinstance(meta_mtime, (int, float)):
+            return False
+        if abs(float(meta_mtime) - stat.st_mtime) > 1e-3:
+            return False
+        if meta.get("ref_audio_size") != stat.st_size:
+            return False
+        # H2 review-pass fix — ``.txt`` sidecar invalidation. The cached
+        # embedding was computed against a specific transcription (whether
+        # from a previous Whisper run, a sidecar at hydration time, or an
+        # in-memory profile.transcription that was persisted). If the user
+        # has since edited the .txt to fix a transcription error, the
+        # cached embedding no longer matches the user's intended input —
+        # invalidate so the next generation recomputes against the
+        # corrected transcription. ``txt_mtime`` may be absent in legacy
+        # meta files (pre-review-pass); treat absent + sidecar-now-present
+        # as a mismatch, absent + sidecar-still-absent as a match.
+        meta_txt_mtime = meta.get("txt_mtime")
+        current_txt_mtime = self._txt_sidecar_mtime(ref_audio)
+        if meta_txt_mtime is None and current_txt_mtime is None:
+            pass  # neither side has a sidecar — match
+        elif (
+            meta_txt_mtime is None
+            or current_txt_mtime is None
+            or abs(float(meta_txt_mtime) - float(current_txt_mtime)) > 1e-3
+        ):
+            return False
+        return True
+
+    def _delete_voice_clone_prompt_files(
+        self, pt_path: Path, meta_path: Path
+    ) -> None:
+        """Best-effort delete of (pt_path, meta_path) — both ignored if
+        already absent. Logged at DEBUG; failures swallowed (cache miss
+        treats them as ephemeral)."""
+        for path in (pt_path, meta_path):
+            try:
+                if path.exists():
+                    path.unlink()
+                    self.logger.debug(f"Deleted stale cache file: {path}")
+            except Exception as exc:
+                self.logger.warning(
+                    f"Failed deleting stale cache file {path}: {exc}"
+                )
+
+    async def _ensure_voice_clone_prompt_for_voice(
+        self,
+        voice_profile: Optional[Any],
+        ref_audio: Path,
+        transcription: str,
+        tier: str,
+    ) -> Any:
+        """Story 17.2 AC #3 — compute or load a tier-locked voice clone
+        prompt for ``ref_audio`` and return the in-memory tensor.
+
+        Order of operations:
+          1. If a valid persisted ``.pt`` (per meta) exists, load + normalize
+             it and return — no network or compute.
+          2. Otherwise, await ``create_voice_clone_prompt_for_tier``;
+             move tensors to CPU; ``torch.save`` to ``.pt``; write meta JSON;
+             verify by re-loading; on verification failure delete both files
+             and raise.
+
+        Caller (``generate_voice_clone``) holds the per-voice asyncio.Lock,
+        so a concurrent same-voice call sees the cache hit on its turn.
+        """
+        pt_path, meta_path = self._voice_clone_prompt_persist_paths(
+            ref_audio, tier
+        )
+
+        # Fast path: persisted .pt exists with valid meta — load + normalize.
+        if pt_path.exists() and self._voice_clone_prompt_meta_is_valid(
+            meta_path, ref_audio, tier
+        ):
+            try:
+                import torch  # local to keep the cold-start surface unchanged
+                # weights_only=False is required for VoiceClonePromptItem
+                # deserialization in PyTorch 2.6+; mirrors voice_design_
+                # studio_dialog.py:1172 and scripts/validate_embedding_api.py:219.
+                loaded = torch.load(
+                    str(pt_path), map_location="cpu", weights_only=False
+                )
+                normalized = self._normalize_voice_clone_prompt(loaded)
+                self.logger.info(
+                    f"Voice clone prompt cache hit on disk: {pt_path}"
+                )
+                return normalized
+            except Exception as exc:
+                self.logger.warning(
+                    f"Voice clone prompt reload failed for {pt_path}: {exc}; "
+                    "treating as miss"
+                )
+                self._delete_voice_clone_prompt_files(pt_path, meta_path)
+        elif pt_path.exists():
+            # Stale .pt (mtime / size / pin / tier mismatch) — purge + miss.
+            self._delete_voice_clone_prompt_files(pt_path, meta_path)
+
+        # Compute path: call the tier-locked extractor (which loads the Base
+        # model under tier override). The shared sync helper at line 1286
+        # is what tests mock for fast unit coverage.
+        prompt = await self.create_voice_clone_prompt_for_tier(
+            ref_audio=ref_audio,
+            ref_text=transcription,
+            tier=tier,
+        )
+        if prompt is None:
+            raise RuntimeError(
+                "create_voice_clone_prompt_for_tier returned None"
+            )
+
+        # Move tensors to CPU before persistence (mirrors
+        # voice_design_studio_dialog.py:1154-1158).
+        try:
+            if getattr(prompt, "ref_code", None) is not None:
+                prompt.ref_code = prompt.ref_code.cpu()
+            if getattr(prompt, "ref_spk_embedding", None) is not None:
+                prompt.ref_spk_embedding = prompt.ref_spk_embedding.cpu()
+        except Exception as exc:
+            # Tensors may be plain torch.Tensor without .cpu() in mocked
+            # tests; only log and continue — the in-memory cache still
+            # works, only persistence may be skipped.
+            self.logger.warning(
+                f"CPU-move on prompt tensors failed: {exc}"
+            )
+
+        try:
+            stat = ref_audio.stat()
+            # Schema version bumped to 1.1 in the Story 17.2 review pass:
+            # adds ``txt_mtime`` so the persisted cache invalidates when
+            # the user edits the transcription sidecar (H2 review-pass
+            # fix). Older 1.0 meta files lack this field; the validator
+            # in _voice_clone_prompt_meta_is_valid treats absent
+            # txt_mtime as "no sidecar at compute time" and matches only
+            # if the current sidecar is also absent — otherwise stale.
+            meta = {
+                "schema_version": "1.1",
+                "ref_audio_mtime": stat.st_mtime,
+                "ref_audio_size": stat.st_size,
+                "txt_mtime": self._txt_sidecar_mtime(ref_audio),
+                "tier": tier,
+                "qwen_tts_pin": self._QWEN_TTS_PIN_HASH,
+            }
+        except FileNotFoundError:
+            # Caller's ref_audio went missing between dispatch entry and
+            # save — surface the underlying error instead of silently
+            # writing an unverifiable cache file.
+            raise
+
+        # Persist + verify. Delete both files on verification failure so a
+        # later attempt re-computes cleanly (no half-written state).
+        try:
+            import torch  # local for the same reason as above
+            torch.save(prompt, str(pt_path))
+            meta_path.write_text(
+                json.dumps(meta), encoding="utf-8"
+            )
+            try:
+                verify = torch.load(
+                    str(pt_path), map_location="cpu", weights_only=False
+                )
+                # Accept either the wrapper-class shape or anything
+                # _normalize_voice_clone_prompt can produce — the
+                # invariant is that ref_spk_embedding is recoverable.
+                verify_norm = self._normalize_voice_clone_prompt(verify)
+                if getattr(verify_norm, "ref_spk_embedding", None) is None:
+                    raise RuntimeError(
+                        "Verification reload produced empty embedding"
+                    )
+            except Exception as verify_exc:
+                self._delete_voice_clone_prompt_files(pt_path, meta_path)
+                raise RuntimeError(
+                    f"Voice clone prompt verification failed: "
+                    f"{verify_exc}"
+                ) from verify_exc
+            self.logger.info(
+                f"Voice clone prompt persisted to {pt_path}"
+            )
+        except Exception:
+            # Re-raise with context already logged; the outer dispatch
+            # chain catches and falls through to SENTENCE_STREAM.
+            raise
+
+        return prompt
+
+    async def hydrate_voice_clone_prompt_cache(self) -> Tuple[int, int]:
+        """Story 17.2 AC #3 — startup hydration of the in-memory cache.
+
+        Iterates CLONED voices in the wired ``_voice_profile_manager``;
+        for each one, attempts to load ``<voice>.<tier>.pt`` for the
+        currently-loaded tier per the same invalidation rules as the lazy
+        path. Hits populate ``_voice_clone_prompts[(resolved_path, tier)]``;
+        misses are silent (lazy precompute will fill them on first use).
+
+        Returns ``(hits, total)`` for caller-side telemetry/logging. Does
+        not raise — bad meta on one voice does not abort the scan.
+
+        Idempotent: re-running it is a no-op for entries already cached
+        (the on-disk fast-path in ``_ensure_voice_clone_prompt_for_voice``
+        is bypassed because the in-memory check at the gate fires first).
+        """
+        if self._voice_profile_manager is None:
+            self.logger.debug(
+                "Voice clone prompt cache hydration skipped: "
+                "no VoiceProfileManager wired"
+            )
+            return (0, 0)
+        try:
+            from myvoice.models.voice_profile import VoiceType
+            profiles = self._voice_profile_manager.get_profiles()
+        except Exception as exc:
+            self.logger.warning(
+                f"Voice clone prompt cache hydration aborted: {exc}"
+            )
+            return (0, 0)
+
+        tier = self._model_registry.quality_tier.value
+        hits = 0
+        total = 0
+        for name, profile in profiles.items():
+            if getattr(profile, "voice_type", None) != VoiceType.CLONED:
+                continue
+            ref_audio = getattr(profile, "file_path", None)
+            if ref_audio is None or not isinstance(ref_audio, Path):
+                continue
+            if not ref_audio.exists():
+                continue
+            total += 1
+            pt_path, meta_path = self._voice_clone_prompt_persist_paths(
+                ref_audio, tier
+            )
+            if not pt_path.exists():
+                continue
+            if not self._voice_clone_prompt_meta_is_valid(
+                meta_path, ref_audio, tier
+            ):
+                # Stale — let lazy path purge & recompute.
+                continue
+            try:
+                import torch
+                loaded = torch.load(
+                    str(pt_path), map_location="cpu", weights_only=False
+                )
+                normalized = self._normalize_voice_clone_prompt(loaded)
+                cache_key = (str(ref_audio.resolve()), tier)
+                # Use _cache_store so the in-memory entry carries the
+                # mtime/size/txt-mtime fingerprint and participates in
+                # H1/H2 invalidation + M3 LRU eviction.
+                self._cache_store(cache_key, normalized, ref_audio)
+                hits += 1
+            except Exception as exc:
+                self.logger.warning(
+                    f"Voice clone prompt hydration failed for {name}: "
+                    f"{exc}",
+                    exc_info=True,
+                )
+        self.logger.info(
+            f"Voice clone prompt cache: hydrated {hits}/{total} CLONED "
+            f"voices for tier {tier} from disk"
+        )
+        return (hits, total)
+
+    def _emit_preparing_voice(self, message: Optional[str]) -> None:
+        """Best-effort preparing-voice indicator update; failures swallow
+        (UI feedback is not on the critical generation path)."""
+        if self._preparing_voice_callback is None:
+            return
+        try:
+            self._preparing_voice_callback(message)
+        except Exception as exc:
+            self.logger.warning(
+                f"preparing_voice callback raised: {exc}"
+            )
+
+    # ------------------------------------------------------------------ #
+    # Story 18.4 — torch.compile warmup worker (D-23)
+    # ------------------------------------------------------------------ #
+
+    _COMPILE_PRIMING_TEXT = "Hello world."
+    _COMPILE_WARMUP_DISABLE_ENV = "MYVOICE_DISABLE_COMPILE_WARMUP"
+
+    async def warmup_compile_async(self) -> None:
+        """Story 18.4 / D-23 — background warmup for the torch.compile cache.
+
+        Fire-and-forget worker that runs ONCE per process startup. Decides
+        between two paths based on ``compile_cache.is_warm(key)``:
+
+          * Cache HIT — log the steady-state breadcrumb + emit a
+            ``cache_hit`` telemetry record; do NOT trigger a priming
+            generation (the inductor cache reloads from disk lazily on
+            first user-facing generation).
+          * Cache MISS — emit the "Preparing TTS engine…" indicator, run
+            one short synthetic priming generation through the production
+            dispatch chain (which exercises ``torch.compile``'s graph
+            capture and writes the inductor cache to the per-key directory),
+            then call ``compile_cache.mark_warm(key)`` on success and clear
+            the indicator. On priming failure, the cache stays cold (next
+            run retries) and a WARNING is logged.
+
+        Gates (fast-exit; fail-closed):
+          1. ``MYVOICE_DISABLE_COMPILE_WARMUP=1`` env var → skip entirely
+             (test surface; CI envs that should not trigger compile).
+          2. ``is_ampere_or_newer()`` False → skip (CPU / pre-Ampere hosts
+             never engage compile per D-9 / NFR12).
+          3. ``self._model_registry`` not wired → skip (no model means no
+             compile state to prime).
+
+        Telemetry contract: ``metrics.record("tts_compile_warmup_priming",
+        value, reason=..., duration_ms=...)``. The eight possible
+        ``reason`` values mirror the engage path: ``"cache_hit"`` (skip),
+        ``"primed_cold"`` (priming succeeded), ``"priming_failed"``
+        (priming raised), ``"cuda_unavailable"`` (D-9 skip),
+        ``"pre_ampere"`` (D-9 skip), ``"user_disabled"`` (env-var skip),
+        ``"no_model_registry"`` (precondition not met), and
+        ``"no_model_loaded"`` (model not yet loaded; defer to first
+        user-facing generation).
+
+        Never raises — every failure path lands in a WARNING log + a
+        telemetry record. The fire-and-forget caller in ``app.py`` does
+        not need a try/except wrapper (mirrors Story 17.2's
+        ``hydrate_voice_clone_prompt_cache`` discipline).
+        """
+        import os
+        import time
+
+        from myvoice.observability import metrics
+
+        start_ms = time.monotonic()
+
+        # Gate 1: env-var-gated skip (production behavior unchanged when
+        # env var unset). Mirrors Story 18.3's ``MYVOICE_AUTO_QUIT_ON_CLOSE``
+        # env-var precedent at memory/main_window_close_confirm_dialog_in_tests.md.
+        if os.environ.get(self._COMPILE_WARMUP_DISABLE_ENV) == "1":
+            self.logger.info(
+                "torch.compile warmup skipped: %s=1 (test mode)",
+                self._COMPILE_WARMUP_DISABLE_ENV,
+            )
+            metrics.record(
+                "tts_compile_warmup_priming",
+                0.0,
+                reason="user_disabled",
+                duration_ms=int((time.monotonic() - start_ms) * 1000),
+            )
+            return
+
+        # Gate 1b: AppSettings.tts_compile gate. If the user (or the
+        # bundled-smoke default flipped to "off" per Fix #4) has disabled
+        # compile, the warmup must NOT run a priming generation — the
+        # priming dispatches a real TRUE_STREAM utterance whose audio
+        # chunks reach the wired audio_chunk_ready_callback (the user's
+        # speakers). Without this gate, a first-launch on Ampere+ CUDA
+        # with tts_compile="off" produces audible "Hello world." spurious
+        # audio AND writes a meaningless meta.json sidecar (engage stayed
+        # eager so no inductor artifacts exist). Mirrors engage_compile_
+        # optimizations' tts_compile="off" → reason="user_disabled" branch.
+        tts_compile = getattr(self._app_settings, "tts_compile", None)
+        if tts_compile == "off":
+            self.logger.info(
+                "torch.compile warmup skipped: tts_compile='off' "
+                "(NFR7 fallback — eager-mode generation remains)"
+            )
+            metrics.record(
+                "tts_compile_warmup_priming",
+                0.0,
+                reason="user_disabled",
+                duration_ms=int((time.monotonic() - start_ms) * 1000),
+            )
+            return
+
+        # Gate 2: D-9 hardware probe.
+        try:
+            from myvoice.services.tts_streaming import is_ampere_or_newer
+            ampere_ok = is_ampere_or_newer()
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(
+                "torch.compile warmup skipped: hardware probe raised (%s: %s)",
+                type(exc).__name__,
+                exc,
+            )
+            metrics.record(
+                "tts_compile_warmup_priming",
+                0.0,
+                reason="cuda_unavailable",
+                duration_ms=int((time.monotonic() - start_ms) * 1000),
+            )
+            return
+        if not ampere_ok:
+            self.logger.info(
+                "torch.compile warmup skipped: pre-Ampere or no CUDA"
+            )
+            metrics.record(
+                "tts_compile_warmup_priming",
+                0.0,
+                reason="pre_ampere",
+                duration_ms=int((time.monotonic() - start_ms) * 1000),
+            )
+            return
+
+        # Gate 3: model_registry must be wired.
+        if self._model_registry is None:
+            self.logger.debug(
+                "torch.compile warmup skipped: no model_registry wired"
+            )
+            metrics.record(
+                "tts_compile_warmup_priming",
+                0.0,
+                reason="no_model_registry",
+                duration_ms=int((time.monotonic() - start_ms) * 1000),
+            )
+            return
+
+        # Cache-key computation (mirrors engage_compile_optimizations'
+        # construction so the warmup and the engage path share state).
+        # If the model isn't loaded yet, defer — the first user-facing
+        # generation will trigger engage + compile + lazy cache write.
+        loaded_model = self._model_registry.get_loaded_model()
+        if loaded_model is None:
+            self.logger.debug(
+                "torch.compile warmup skipped: no model loaded yet "
+                "(lazy fallback path — first generation will prime the cache)"
+            )
+            metrics.record(
+                "tts_compile_warmup_priming",
+                0.0,
+                reason="no_model_loaded",
+                duration_ms=int((time.monotonic() - start_ms) * 1000),
+            )
+            return
+
+        from myvoice.services.tts_streaming import compile_cache
+        import torch
+        try:
+            capability = torch.cuda.get_device_capability()
+            model_id = (
+                getattr(getattr(loaded_model, "model", None), "name_or_path", None)
+                or getattr(loaded_model, "name_or_path", None)
+                or "unknown"
+            )
+            model_dtype = getattr(getattr(loaded_model, "model", None), "dtype", None)
+            precision_str = "bf16" if model_dtype == torch.bfloat16 else "fp32"
+            key = compile_cache.compute_key(
+                qwen_tts_pin_hash=self._QWEN_TTS_PIN_HASH,
+                model_id=model_id,
+                precision_str=precision_str,
+                torch_version=torch.__version__,
+                decode_window_frames=30,
+                cuda_capability=capability,
+                compile_mode="reduce-overhead",
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(
+                "torch.compile warmup skipped: cache-key computation raised "
+                "(%s: %s)",
+                type(exc).__name__,
+                exc,
+            )
+            metrics.record(
+                "tts_compile_warmup_priming",
+                0.0,
+                reason="priming_failed",
+                duration_ms=int((time.monotonic() - start_ms) * 1000),
+                error=type(exc).__name__,
+            )
+            return
+
+        # Cache-hit path: short-circuit; no priming needed.
+        if compile_cache.is_warm(key):
+            self.logger.info(
+                "Compile cache hit; skipping warmup priming"
+            )
+            metrics.record(
+                "tts_compile_warmup_priming",
+                0.0,
+                reason="cache_hit",
+                duration_ms=int((time.monotonic() - start_ms) * 1000),
+            )
+            return
+
+        # Cache-miss path: emit indicator + run priming + mark_warm on success.
+        self._emit_preparing_voice("Preparing TTS engine…")
+        try:
+            await self._run_compile_priming()
+            compile_cache.mark_warm(key)
+            duration_ms = int((time.monotonic() - start_ms) * 1000)
+            self.logger.info(
+                "Compile warmup primed cache successfully (duration=%dms)",
+                duration_ms,
+            )
+            metrics.record(
+                "tts_compile_warmup_priming",
+                1.0,
+                reason="primed_cold",
+                duration_ms=duration_ms,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Cache stays cold (mark_warm not called); next run retries.
+            duration_ms = int((time.monotonic() - start_ms) * 1000)
+            self.logger.warning(
+                "Compile warmup priming failed (%s: %s); cache stays cold, "
+                "next run will retry. Eager-mode generation remains available.",
+                type(exc).__name__,
+                exc,
+            )
+            metrics.record(
+                "tts_compile_warmup_priming",
+                0.0,
+                reason="priming_failed",
+                duration_ms=duration_ms,
+                error=type(exc).__name__,
+            )
+        finally:
+            # Always clear the indicator — even on priming failure the
+            # user should not be left looking at a stuck "Preparing TTS
+            # engine…" message.
+            self._emit_preparing_voice(None)
+
+    async def _run_compile_priming(self) -> None:
+        """Story 18.4 — run one synthetic priming generation.
+
+        Separated from ``warmup_compile_async`` so the gating, cache
+        check, indicator emission, and ``mark_warm`` logic stay independently
+        testable (tests monkeypatch this method to succeed/fail without
+        spinning up a real model or audio output).
+
+        The priming flows through ``generate_custom_voice`` with a short
+        text + the canonical default speaker ("Ryan", matching the
+        ``QwenTTSCustomVoiceRequest.speaker`` default at line 219) so the
+        talker's first forward pass triggers ``torch.compile``'s graph
+        capture and the inductor compile that PyTorch's per-key cache
+        directory absorbs.
+        No audio output reaches the user (the priming runs before the
+        ``set_audio_chunk_ready_callback`` wires consumers up — and even
+        if a consumer is wired, the generation is short enough that any
+        audible artifact is bounded).
+
+        The architecture's D-23 acceptance: "warm = compile-priming
+        generation completed without error". The caller's ``mark_warm``
+        call lands on the success path. Any raised exception bubbles up
+        and the caller's ``except`` lands the ``priming_failed`` telemetry.
+        """
+        # Use a bundled CustomVoice speaker for priming. The default
+        # speaker ("Ryan") is canonical; if it's unavailable, the priming
+        # generation raises and the caller routes to priming_failed (NOT
+        # a fatal — the next run will retry; eager-mode generation stays
+        # available). The custom-voice API does NOT require a voice file;
+        # it dispatches via the same TRUE_STREAM path the user-facing
+        # generation will take, so the talker's first forward pass
+        # triggers torch.compile's graph capture.
+        await self.generate_custom_voice(
+            text=self._COMPILE_PRIMING_TEXT,
+            speaker="Ryan",
+            language="English",
+        )
 
     async def generate_voice_clone(
         self,
@@ -1056,6 +2076,12 @@ class QwenTTSService(BaseService):
         Generate speech using Base model with voice cloning.
 
         Note: Voice cloning does NOT support emotion control.
+
+        Story 17.2: When the four-condition gate passes (streaming AND
+        TRUE_STREAM resolved AND BASE model AND not x_vector_only_mode),
+        the precompute pipeline lazily produces / hydrates a voice_clone_
+        prompt and sets it on the request BEFORE dispatch. On gate-fail
+        the dispatch is unchanged from Story 16.6 behavior.
 
         Args:
             text: Text to convert to speech
@@ -1079,9 +2105,162 @@ class QwenTTSService(BaseService):
             streaming=streaming,
         )
 
-        if streaming:
-            return await self._generate_streaming(request)
-        return await self._generate(request)
+        resolved_mode = self._resolve_streaming_mode()
+
+        # Story 17.2 AC #1 — four-condition gate. All four must hold;
+        # otherwise skip precompute and let the dispatch chain handle it
+        # (BATCH-force for streaming=False, SENTENCE_STREAM for non-GPU,
+        # x-vector path that doesn't need a prompt at all).
+        gate_pass = (
+            streaming is True
+            and resolved_mode == StreamingMode.TRUE_STREAM
+            and request.model_type == QwenModelType.BASE
+            and request.x_vector_only_mode is False
+        )
+
+        if gate_pass:
+            try:
+                tier = self._model_registry.quality_tier.value
+                cache_key = (str(ref_audio.resolve()), tier)
+            except Exception as exc:
+                # Path resolve failure (extremely rare) — log and skip
+                # precompute; the dispatch chain still handles the
+                # request via fallback.
+                self.logger.warning(
+                    f"Voice clone prompt cache key derivation failed: "
+                    f"{exc}; skipping precompute"
+                )
+                cache_key = None
+
+            if cache_key is not None:
+                # Cache hit (validated against current mtime/size/txt-mtime —
+                # H1 + H2 review-pass fixes prevent stale prompts from being
+                # used after the user replaces ref_audio or fixes the .txt).
+                # IMPORTANT: wrap in a list — the qwen-tts library at
+                # `qwen_tts/inference/qwen3_tts_model.py:584-586` only
+                # converts to its dict-form (`_prompt_items_to_voice_clone_
+                # prompt`) when `voice_clone_prompt` is a `list`; a bare
+                # VoiceClonePromptItem falls into the else branch and is
+                # passed straight to `model.generate(...)` which crashes
+                # on `voice_clone_prompt['ref_spk_embedding']`. Mirrors
+                # the canonical pattern at qwen_tts_service.py:2254 used
+                # by `generate_with_embedding`.
+                cached = self._cache_lookup_validated(cache_key, ref_audio)
+                if cached is not None:
+                    request.voice_clone_prompt = [cached]
+                    self.logger.debug(
+                        f"Voice clone prompt cache hit for {cache_key[0]} "
+                        f"(tier={tier})"
+                    )
+                else:
+                    # Cache miss — serialize per-voice via DCL.
+                    voice_profile = self._lookup_voice_profile(ref_audio)
+                    lock = await self._get_voice_clone_prompt_lock(cache_key)
+                    self._emit_preparing_voice(
+                        "Preparing voice for streaming…"
+                    )
+                    try:
+                        async with lock:
+                            # Re-check inside the critical section
+                            # (double-checked locking).
+                            cached2 = self._cache_lookup_validated(
+                                cache_key, ref_audio
+                            )
+                            if cached2 is None:
+                                self.logger.info(
+                                    "Voice clone prompt cache miss for "
+                                    f"{cache_key[0]} (tier={tier}); "
+                                    "computing"
+                                )
+                                transcription = (
+                                    await self._ensure_transcription_for_clone_voice(
+                                        voice_profile, ref_audio
+                                    )
+                                )
+                                prompt = (
+                                    await self._ensure_voice_clone_prompt_for_voice(
+                                        voice_profile,
+                                        ref_audio,
+                                        transcription,
+                                        tier,
+                                    )
+                                )
+                                self._cache_store(cache_key, prompt, ref_audio)
+                                cached2 = prompt
+                            # Same list-wrapping discipline as the cache-
+                            # hit branch above.
+                            request.voice_clone_prompt = [cached2]
+                    except Exception as exc:
+                        # Precompute failed; let the dispatch chain catch
+                        # so the SENTENCE_STREAM fallback runs (NFR7).
+                        # Do NOT swallow — this is an exception bubble,
+                        # not a recovery. The indicator is cleared in
+                        # the finally block below.
+                        # M2 review-pass fix: include exc_info=True so
+                        # production logs carry the full traceback;
+                        # debugging mysterious fall-throughs no longer
+                        # requires reproducing locally.
+                        self.logger.warning(
+                            "Voice clone prompt precompute failed for "
+                            f"{cache_key[0]}: {exc}; falling through "
+                            "to dispatch (NFR7 graceful degradation)",
+                            exc_info=True,
+                        )
+                        # Return the request as-is (no voice_clone_prompt);
+                        # dispatch chain will fail TRUE_STREAM at the
+                        # voice_clone_prompt-None check and fall back.
+                    finally:
+                        self._emit_preparing_voice(None)
+
+        # Story 16.6: route through the three-mode dispatch fork.
+        return await self._dispatch_by_streaming_mode(
+            request, resolved_mode
+        )
+
+    def _lookup_voice_profile(self, ref_audio: Path) -> Optional[Any]:
+        """Best-effort VoiceProfile lookup by ref_audio path. Returns None
+        when no profile manager is wired or no profile matches — callers
+        gracefully degrade (transcription status updates skipped, but the
+        precompute itself still runs).
+
+        Story 17.2 review-pass M1 — avoid an O(N) syscall storm on each
+        cache miss. The orchestrator calls ``generate_voice_clone(ref_audio
+        =active_profile.file_path, ...)`` with the SAME Path object that's
+        stored on the profile, so a string-equality fast-path resolves
+        almost all real call sites without touching the filesystem.
+        Only fall back to the per-profile ``.resolve()`` syscall when the
+        cheap compare misses (e.g. relative-vs-absolute, symlink, or a
+        different Path instance with the same content).
+        """
+        if self._voice_profile_manager is None:
+            return None
+        try:
+            profiles = self._voice_profile_manager.get_profiles()
+        except Exception:
+            return None
+        # Cheap path: compare against the input path string directly. The
+        # typical caller (app.py) hands us active_profile.file_path
+        # verbatim, so this hits without any filesystem syscall.
+        target_str = str(ref_audio)
+        for profile in profiles.values():
+            try:
+                if str(profile.file_path) == target_str:
+                    return profile
+            except Exception:
+                continue
+        # Fallback: resolve target and per-profile paths to handle the
+        # corner cases (relative paths, symlinks, alternate path forms).
+        try:
+            target_resolved = str(ref_audio.resolve())
+        except Exception:
+            return None
+        for profile in profiles.values():
+            try:
+                if str(profile.file_path.resolve()) == target_resolved:
+                    return profile
+            except Exception:
+                continue
+        return None
 
     async def generate_optimized_voice(
         self,
@@ -1134,9 +2313,10 @@ class QwenTTSService(BaseService):
 
         self.logger.info(f"Generating with optimized voice: {speaker_name} from {checkpoint_path}")
 
-        if streaming:
-            return await self._generate_streaming(request)
-        return await self._generate(request)
+        # Story 16.6: route through the three-mode dispatch fork.
+        return await self._dispatch_by_streaming_mode(
+            request, self._resolve_streaming_mode()
+        )
 
     async def create_voice_clone_prompt(
         self,
@@ -1564,10 +2744,10 @@ class QwenTTSService(BaseService):
 
         # Try generation with embedding, fall back to source_audio.wav on tier mismatch
         try:
-            if streaming:
-                response = await self._generate_streaming(request)
-            else:
-                response = await self._generate(request)
+            # Story 16.6: route through the three-mode dispatch fork.
+            response = await self._dispatch_by_streaming_mode(
+                request, self._resolve_streaming_mode()
+            )
 
             # Check if generation failed due to embedding dimension mismatch
             if not response.success and self._is_embedding_tier_mismatch_error(response.error_message):
@@ -1791,6 +2971,9 @@ class QwenTTSService(BaseService):
                 model_type=self._resolve_model_type_label(request),
                 source=SessionSource.GENERATED,
             )
+            # Story 16.5: publish the active session id so cancel_generation
+            # can request_cancel(sid). Cleared in the outer finally below.
+            self._current_session_id = sid
 
         # Story 11.4 review fix (F1): publish the running asyncio task so
         # cancel_generation() can call task.cancel() — the only mechanism
@@ -1977,6 +3160,12 @@ class QwenTTSService(BaseService):
             # task. Set unconditionally — applies to every return path
             # above, including handler returns.
             self._current_generation_task = None
+            # Story 16.5: drop the session id alongside the task so a later
+            # cancel_generation() finds no in-flight session and the new
+            # request_cancel call short-circuits to a quiet no-op. The
+            # registry has already cleared the cancel hook via its own
+            # terminal-state cleanup (cancel/discard slots).
+            self._current_session_id = None
 
     async def _generate_streaming(self, request: QwenTTSRequest) -> QwenTTSResponse:
         """
@@ -2015,6 +3204,9 @@ class QwenTTSService(BaseService):
                 model_type=self._resolve_model_type_label(request),
                 source=SessionSource.GENERATED,
             )
+            # Story 16.5: publish the active session id so cancel_generation
+            # can request_cancel(sid). Cleared in the outer finally below.
+            self._current_session_id = sid
 
         # Story 11.4 review fix (F1): publish the running asyncio task so
         # cancel_generation() can call task.cancel(). Streaming has the
@@ -2183,6 +3375,7 @@ class QwenTTSService(BaseService):
                         chunk_index=chunk_count - 1,
                         is_final=is_final,
                         text_segment=text_chunk,
+                        session_id=sid,
                     )
 
                     if self._audio_chunk_ready_callback:
@@ -2364,6 +3557,11 @@ class QwenTTSService(BaseService):
             # task. The recursive batch-fallback _generate() also sets and
             # clears this field, but the outer clear is idempotent.
             self._current_generation_task = None
+            # Story 16.5: drop the session id alongside the task. Recursive
+            # batch-fallback _generate() set its own _current_session_id (a
+            # different sid for the fallback session) and cleared it in its
+            # own finally; the outer clear here covers the streaming sid.
+            self._current_session_id = None
 
     def _split_text_for_streaming(self, text: str) -> List[str]:
         """
@@ -2413,6 +3611,1084 @@ class QwenTTSService(BaseService):
 
         return chunks
 
+    def _build_true_stream_decode_fn(
+        self, model: Any
+    ) -> Callable[[Any], np.ndarray]:
+        """Story 16.8 — adapter wrapping the qwen-tts speech tokenizer's decode.
+
+        Returned callable conforms to ``StreamingDecoderWorker``'s P-6
+        contract: input is one chunk produced by the talker forward-hook
+        (a ``torch.Tensor`` of shape ``(N_steps, num_code_groups)``); output
+        is a float32 PCM sample array.
+
+        Two Story-16.6 bugs uncovered and fixed in 16.8 against real
+        qwen-tts 0.0.4 (RTX 5090, see Story 16.8 Change Log entry #5):
+
+          1. ``model.speech_tokenizer`` does not exist — the speech
+             tokenizer lives on the inner ``Qwen3TTSForConditionalGeneration``
+             at ``model.model.speech_tokenizer`` (set during the inner
+             wrapper's ``from_pretrained`` at modeling_qwen3_tts.py:1920).
+          2. The 12Hz tokenizer's ``decode`` expects shape
+             ``(batch_size, codes_length, num_quantizers)`` (see
+             ``modeling_qwen3_tts_tokenizer_v2.py:1004``). Passing a flat
+             tensor of single-codebook tokens silently misinterprets
+             ``codes_length`` as ``num_quantizers``. The fix is to receive
+             multi-codebook ``codec_ids`` from the forward-hook and wrap
+             in a per-sample dict ``[{"audio_codes": chunk}]`` so the
+             outer ``Qwen3TTSTokenizer.decode`` normalizer adds the batch
+             dimension correctly.
+
+        The trip-wire test at ``tests/test_qwen_tts_internals.py`` covers
+        the ``Qwen3TTSTokenizerV1Model.decode`` symbol (Story 16.4 added
+        it; Story 16.8 left it unchanged). 12Hz models use V2 not V1, so
+        the 12Hz path is not currently pinned — opportunity for a future
+        trip-wire extension if 12Hz becomes critical.
+        """
+        def _decode(chunk: Any) -> np.ndarray:
+            import torch as _torch  # lazy: keeps test envs without
+            # CUDA-bound torch DLLs viable until decode actually fires
+            # Forward-hook produces ``(N_steps, num_code_groups)`` tensors
+            # already; defensive coerce keeps us robust to upstream shape
+            # tweaks and to the residual-flush path (where the tensor may
+            # have come from torch.cat).
+            if not isinstance(chunk, _torch.Tensor):
+                chunk = _torch.as_tensor(chunk, dtype=_torch.long)
+            if chunk.dim() == 1:
+                # Defensive: a 1-D chunk would be single-codebook only;
+                # treat the lone dimension as ``codes_length`` and
+                # ``num_quantizers=1``. Decode will likely fail or
+                # produce wrong audio — the talker forward-hook should
+                # have produced 2-D — but this prevents a crash so the
+                # empty-chunks guard fires instead of an uncaught
+                # exception killing the worker thread.
+                chunk = chunk.unsqueeze(-1)
+            # ``Qwen3TTSTokenizer.decode`` accepts a list of dicts per
+            # qwen3_tts_tokenizer.py:307-311. Each dict's ``audio_codes``
+            # is the per-sample tensor of shape ``(N_steps, num_quantizers)``.
+            result = model.model.speech_tokenizer.decode(
+                [{"audio_codes": chunk}]
+            )
+            # ``decode`` returns ``(wavs: List[np.ndarray], sample_rate: int)``
+            # per qwen3_tts_tokenizer.py:281-283. We only have one sample
+            # in the per-call list above, so wavs[0] is our PCM.
+            if isinstance(result, tuple):
+                wavs = result[0]
+            else:
+                wavs = result
+            if isinstance(wavs, list) and wavs:
+                audio = wavs[0]
+            else:
+                audio = wavs
+            if hasattr(audio, "detach"):
+                audio = audio.detach().cpu().numpy()
+            return np.asarray(audio, dtype=np.float32).flatten()
+        return _decode
+
+    def _build_true_stream_talker(
+        self,
+        model: Any,
+        request: "QwenTTSRequest",
+        streamer: CodecTokenStreamer,
+    ) -> Callable[[], None]:
+        """Story 16.8 — talker callable using Path A (talker-patch variant).
+
+        Replaces Story 16.6's literal ``model.model.generate(streamer=streamer)``
+        wire-up — which Story 16.7 §3.1 measured as silently broken (50/50
+        utterances on the maintainer's RTX 5090 produced empty chunks
+        because the call passed no conditioning args) — with a patch-based
+        approach that reaches the canonical Path A target
+        (``self.talker.generate(inputs_embeds=..., streamer=streamer, ...)``)
+        without replicating the wrapper's ~250 lines of preprocessing.
+
+        Why a talker-patch rather than full preprocessing replication. The
+        Story 16.8 Dev Notes describe two paths:
+
+          - Path B: rely on the wrapper's ``**kwargs`` to forward
+            ``streamer`` through to the inner ``self.talker.generate``.
+            Source-read of ``modeling_qwen3_tts.py:2042-2278`` and the
+            ``probe_qwen_tts_streamer.py`` empirical run both confirm the
+            wrapper drops ``streamer`` before reaching the inner call — Path
+            B is structurally broken at qwen-tts 0.0.4.
+          - Path A (literal "replicate preprocessing"): hand-roll the input
+            embedding tower (~150-250 lines of codec prefill, language
+            token resolution, speaker embedding construction, role prefix,
+            attention mask, trailing-text-hidden, batch left-padding).
+            Brittle to upstream qwen-tts changes; large maintenance
+            surface; duplicate of the wrapper's body.
+
+        The talker-patch variant lands the same destination as literal
+        Path A — ``self.talker.generate(streamer=streamer, ...)`` is
+        invoked with the wrapper's correctly-constructed ``inputs_embeds``,
+        ``attention_mask``, ``trailing_text_hidden``, and ``tts_pad_embed`` —
+        but *does not* duplicate the preprocessing in MyVoice. The trade-off:
+        it depends on the wrapper calling ``self.talker.generate(...)``
+        exactly once during ``model.generate_*(...)``, which the trip-wire
+        extension (``tests/test_qwen_tts_internals.py``) pins via attribute
+        and call-site assertions so a future qwen-tts version that fans out
+        to a different talker entrypoint will fail CI before silently
+        regressing streaming.
+
+        Concurrency: the patch is installed on the shared
+        ``model.model.talker`` instance for the duration of one
+        ``model.generate_*(...)`` call. Story 16.6's session-registry P-7
+        invariant (one in-flight TRUE_STREAM dispatch per service instance)
+        ensures the patch is single-threaded with respect to itself; the
+        outer ``try/finally`` restores the bound method on every exit
+        (success, exception, sentinel).
+
+        Cancellation invariant (D-11): the talker thread MUST NOT raise on
+        cancel. The patch is transparent to HF GenerationMixin's
+        cancellation flow — when ``streamer._cancel_event`` flips,
+        ``streamer.put`` becomes a no-op, HF iterates a few more times
+        producing tokens we drop, then completes cleanly and calls
+        ``streamer.end()``. No exceptions raised through HF internals;
+        CUDA state stays clean.
+
+        Short-circuit sentinel: HF's ``GenerationMixin.generate`` calls
+        ``streamer.end()`` when token generation completes; the wrapper
+        then runs a residual non-streaming ``speech_tokenizer.decode`` to
+        build the full waveform return tuple. Since the streaming worker
+        has already decoded chunk-by-chunk, that residual decode is
+        wasted GPU compute. Raising ``_TalkerStreamComplete`` from the
+        injecting wrapper short-circuits past it, saving ~the same time
+        as one non-streaming generation per dispatch.
+        """
+        from myvoice.models.service_enums import QwenModelType
+
+        # Local sentinel so it does not leak past this dispatch.
+        class _TalkerStreamComplete(Exception):
+            """Raised by the streamer-injecting wrapper after
+            ``self.talker.generate`` returns, to skip the public wrapper's
+            residual non-streaming decode work (which the streaming worker
+            has already produced chunk-by-chunk)."""
+            pass
+
+        def _run_talker() -> None:
+            real_talker_generate = model.model.talker.generate
+            real_talker_forward = model.model.talker.forward
+            forward_invocations_box = [0]
+            chunks_pushed_box = [0]
+            # Per-step buffer of multi-codebook codec_ids tensors. Each
+            # entry is shape ``(batch=1, num_code_groups)``. We push to
+            # ``streamer.queue`` directly (not via ``streamer.put``) so
+            # the buffer is in STEPS not flat ints — required because
+            # the qwen-tts 12Hz tokenizer's ``decode`` expects
+            # ``(N_steps, num_code_groups)`` per sample.
+            step_buffer: list = []
+            chunk_size = streamer.chunk_size
+            lookahead = streamer.lookahead
+            chunk_with_lookahead = chunk_size + lookahead
+
+            # Preserve the original forward's signature on our wrapper so
+            # HF GenerationMixin's ``_validate_model_kwargs`` introspection
+            # at ``transformers/generation/utils.py:1562-1566`` sees the
+            # full parameter list (``trailing_text_hidden``, ``tts_pad_embed``,
+            # ``subtalker_*``, etc.) rather than the wrapper's bare
+            # ``*args, **kwargs``. Without this, HF raises
+            # ``ValueError("The following model_kwargs are not used by the
+            # model")`` when the wrapper passes the talker's custom kwargs
+            # at modeling_qwen3_tts.py:2272-2278 — empirically observed in
+            # Story 16.8's RTX 5090 harness re-run.
+            import inspect as _inspect_local
+            try:
+                _real_forward_sig = _inspect_local.signature(real_talker_forward)
+            except (ValueError, TypeError):  # pragma: no cover (defensive)
+                _real_forward_sig = None
+
+            def _streaming_forward(*args: Any, **kwargs: Any) -> Any:
+                """Forward-hook that captures multi-codebook ``codec_ids``
+                from each generation step and pushes chunks to the
+                streamer queue when ``chunk_size + lookahead`` STEPS have
+                accumulated.
+
+                Story 16.8 finding: HF ``GenerationMixin._sample`` calls
+                ``streamer.put(next_tokens)`` with the codec_head's
+                MAIN-codebook sample only — the other codebooks are
+                produced inside ``Qwen3TTSTalkerForConditionalGeneration.forward``
+                via ``code_predictor.generate`` (modeling_qwen3_tts.py:1671)
+                and returned in ``Qwen3TTSTalkerOutputWithPast.hidden_states[1]``
+                (line 1738). We bypass HF's per-token streamer protocol
+                entirely and capture from the forward output instead.
+                """
+                forward_invocations_box[0] += 1
+                output = real_talker_forward(*args, **kwargs)
+                # Prefill (inputs_embeds.shape[1] > 1): codec_ids is None
+                # per modeling_qwen3_tts.py:1665-1667. Skip — no codec
+                # tokens generated this step.
+                hidden_states = getattr(output, "hidden_states", None)
+                if hidden_states is None or len(hidden_states) < 2:
+                    return output
+                codec_ids = hidden_states[1]
+                if codec_ids is None:
+                    return output
+                # Cooperative cancel (D-11): stop accumulating but let
+                # HF iterate cleanly. The wrapper post-processing won't
+                # observe inconsistency because we short-circuit via
+                # _TalkerStreamComplete after generate returns.
+                if streamer._cancel_event.is_set():
+                    return output
+                step_buffer.append(codec_ids)
+                # Flush full chunks while threshold reached. ``while``
+                # because a single forward call shouldn't produce >1
+                # chunk's worth of steps, but defensive against future
+                # batch-wise generation patterns.
+                while len(step_buffer) >= chunk_with_lookahead:
+                    if streamer._cancel_event.is_set():
+                        break
+                    # Stack the first ``chunk_with_lookahead`` steps into
+                    # a (chunk_with_lookahead, num_code_groups) tensor.
+                    # Each step is shape ``(1, num_code_groups)``; cat
+                    # along dim=0 then squeeze the leading 1-batch dim.
+                    chunk_tensor = _torch_local.cat(
+                        step_buffer[:chunk_with_lookahead], dim=0
+                    )
+                    # Push to streamer.queue directly (bypass put/buffer).
+                    # Backpressure: queue.put blocks if maxsize reached;
+                    # HF generate yields the GIL between steps so the
+                    # decoder worker drains naturally.
+                    streamer.queue.put(chunk_tensor)
+                    chunks_pushed_box[0] += 1
+                    # Slide forward by chunk_size; keep the trailing
+                    # ``lookahead`` steps as left-context for next chunk.
+                    del step_buffer[:chunk_size]
+                return output
+
+            # Apply the captured signature so HF's introspection works.
+            if _real_forward_sig is not None:
+                _streaming_forward.__signature__ = _real_forward_sig
+            try:
+                _streaming_forward.__wrapped__ = real_talker_forward
+            except (AttributeError, TypeError):  # pragma: no cover (defensive)
+                pass
+
+            def _patched_talker_generate(*args: Any, **kwargs: Any) -> Any:
+                """Run the real generate (with forward-hook installed),
+                then short-circuit the wrapper's residual non-streaming
+                decode via _TalkerStreamComplete.
+
+                Do NOT inject ``streamer`` kwarg — HF's per-token streamer
+                protocol is incompatible with the qwen-tts multi-codebook
+                architecture (HF's ``streamer.put`` fires only with the
+                main codec_head's sample, but the speech_tokenizer's
+                ``decode`` requires all ``num_code_groups`` codebooks per
+                step). The forward-hook captures multi-codebook codec_ids
+                from the talker's per-step output instead.
+                """
+                real_talker_generate(*args, **kwargs)
+                raise _TalkerStreamComplete()
+
+            # Lazy-import torch here so the module-level ``import torch``
+            # in qwen_tts_service.py doesn't change. Avoids growing the
+            # import surface and keeps test environments without
+            # CUDA-bound torch DLLs viable.
+            import torch as _torch_local
+
+            def _flush_residual_and_eos(buf: list, strm: Any, torch_mod: Any) -> None:
+                """Push residual ``step_buffer`` as one final chunk (if any)
+                then push ``END_OF_STREAM`` so the worker exits cleanly. Both
+                are direct ``streamer.queue.put`` calls; the streamer's
+                int-buffer ``put()/end()`` mechanism is bypassed because
+                Story 16.8 streams whole multi-codebook tensors per step.
+
+                Logs (rather than silently swallows) failures from
+                ``torch.cat`` or ``queue.put`` so a future codebook-shape
+                regression or a closed-queue case is diagnosable post-mortem
+                instead of presenting as a 60s join-timeout stall.
+                """
+                if buf:
+                    try:
+                        residual_tensor = torch_mod.cat(buf, dim=0)
+                        strm.queue.put(residual_tensor)
+                    except Exception:
+                        self.logger.exception(
+                            "[QwenTTS] TRUE_STREAM residual flush failed; "
+                            "the final chunk will be dropped"
+                        )
+                    buf.clear()
+                try:
+                    strm.queue.put(END_OF_STREAM)
+                except Exception:
+                    self.logger.exception(
+                        "[QwenTTS] TRUE_STREAM failed to push END_OF_STREAM; "
+                        "the decoder worker may hang until the dispatch "
+                        "join-timeout fires"
+                    )
+
+            try:
+                model.model.talker.generate = _patched_talker_generate
+                model.model.talker.forward = _streaming_forward
+                try:
+                    if request.model_type == QwenModelType.CUSTOM_VOICE:
+                        model.generate_custom_voice(
+                            text=request.text,
+                            speaker=request.speaker or "",
+                            language=request.language or "Auto",
+                            instruct=request.instruct,
+                            non_streaming_mode=False,
+                        )
+                    elif request.model_type == QwenModelType.VOICE_DESIGN:
+                        model.generate_voice_design(
+                            text=request.text,
+                            instruct=request.instruct or "",
+                            language=request.language or "Auto",
+                            non_streaming_mode=False,
+                        )
+                    elif request.model_type == QwenModelType.BASE:
+                        if request.voice_clone_prompt is None:
+                            raise ValueError(
+                                "TRUE_STREAM voice-clone path requires "
+                                "request.voice_clone_prompt"
+                            )
+                        model.generate_voice_clone(
+                            text=request.text,
+                            language=request.language or "Auto",
+                            voice_clone_prompt=request.voice_clone_prompt,
+                            non_streaming_mode=False,
+                        )
+                    else:
+                        raise NotImplementedError(
+                            f"TRUE_STREAM does not support model_type "
+                            f"{request.model_type!r}"
+                        )
+                finally:
+                    # Always restore — patches must not leak past this
+                    # dispatch. Restoration order doesn't matter; both
+                    # are independent.
+                    model.model.talker.generate = real_talker_generate
+                    model.model.talker.forward = real_talker_forward
+            except _TalkerStreamComplete:
+                # Expected success path: forward-hook captured codec_ids per
+                # step and pushed chunks. Now flush residual step_buffer as
+                # the final chunk and push END_OF_STREAM to signal the worker.
+                _flush_residual_and_eos(step_buffer, streamer, _torch_local)
+                return
+            except Exception as exc:
+                self.logger.exception(
+                    f"[QwenTTS] TRUE_STREAM talker error: {exc}"
+                )
+                # Do NOT set ``streamer._cancel_event`` here. Setting it
+                # would conflate "talker raised a structural error" with
+                # "user requested cancel" — the worker's drain-on-cancel
+                # logic in ``StreamingDecoderWorker`` would then post the
+                # canonical ``('cancel', sid)`` registry transition rather
+                # than the error transition, polluting session-state
+                # telemetry. The empty-chunks guard inside
+                # ``_generate_true_stream`` (the ``if not accumulated_chunks``
+                # check) catches the empty queue and routes to the fallback
+                # chain; that is the canonical error-recovery path. Drop
+                # the residual buffer and push END_OF_STREAM so the worker
+                # exits its loop cleanly.
+                step_buffer.clear()
+                try:
+                    streamer.queue.put(END_OF_STREAM)
+                except Exception:
+                    self.logger.exception(
+                        "[QwenTTS] TRUE_STREAM error-path failed to push "
+                        "END_OF_STREAM; worker may hang until join-timeout"
+                    )
+                return
+
+            # The wrapper completed without firing the talker.generate
+            # patch — i.e., it returned before reaching
+            # ``self.talker.generate(...)``. Possible causes: an early-return
+            # in the wrapper, a validation short-circuit, or a qwen-tts
+            # version where the talker is invoked through a different
+            # entrypoint. Either way no codec_ids were captured, so signal
+            # end-of-stream and let the empty-chunks guard inside
+            # ``_generate_true_stream`` (the ``if not accumulated_chunks``
+            # check) route to the fallback chain.
+            self.logger.warning(
+                "[QwenTTS] TRUE_STREAM wrapper completed but "
+                "talker.generate was never invoked; the empty-chunks guard "
+                "will route to fallback"
+            )
+            step_buffer.clear()
+            try:
+                streamer.queue.put(END_OF_STREAM)
+            except Exception:
+                self.logger.exception(
+                    "[QwenTTS] TRUE_STREAM wrapper-empty path failed to "
+                    "push END_OF_STREAM; worker may hang until join-timeout"
+                )
+
+        return _run_talker
+
+    async def _generate_true_stream(
+        self, request: "QwenTTSRequest"
+    ) -> "QwenTTSResponse":
+        """Story 16.6 Task 3 — TRUE_STREAM dispatch path (P-5/P-6/P-7/P-8/D-9).
+
+        Composes Stories 16.1–16.5's surfaces into the production TRUE_STREAM
+        dispatch:
+
+        - 16.2 ``effective_streaming_mode`` determined this path was reached
+        - 16.3 ``CodecTokenStreamer`` is the producer plug-compatible with
+          HF's ``BaseStreamer``; the talker thread runs
+          ``model.model.generate(streamer=streamer)``
+        - 16.4 ``StreamingDecoderWorker`` is the consumer; it pulls from the
+          streamer's queue, decodes via ``decode_fn``, and posts
+          ``('append_chunk', sid, pcm)`` and ``('finalize', sid)`` to the
+          registry through the ``post_mutation`` callable
+        - 16.5 ``register_cancel_hook`` + ``request_cancel`` flip
+          ``streamer._cancel_event`` AND call
+          ``audio_coordinator.cancel_playback(sid)`` on user-cancel; the
+          worker's drain-on-cancel posts the canonical ``('cancel', sid)``
+
+        Per P-7, this method's ``asyncio.CancelledError`` handler must NOT
+        post ``('cancel', sid)`` itself — the worker is the canonical source
+        of the CANCELLED transition, and a double-post would violate Story
+        16.5 AC #1's "exactly one cancel post" assertion.
+        """
+        self._total_requests += 1
+        self._streaming_requests += 1
+        start_time = time.time()
+        first_chunk_time: Optional[float] = None
+        self._cancel_requested = False
+        self._generation_state = GenerationState.IDLE
+
+        accumulated_chunks: List[np.ndarray] = []
+        # Hard-coded for Qwen3-TTS (the only model that flows through
+        # TRUE_STREAM dispatch today). If a future model variant uses a
+        # different rate, derive from `self._model_registry` and update
+        # both this binding and the `sample_rate=` field in the
+        # `_wrapped_post` AudioChunk emissions below — the consumer
+        # (app.py:_handle_progressive_chunk_async) opens the audio
+        # device with whatever rate the chunk reports, so a mismatch
+        # here would surface as silent corruption (chipmunk/slow audio),
+        # not a crash.
+        sample_rate = 24000
+        chunk_count_box: List[int] = [0]
+
+        sid: Optional[str] = None
+        streamer: Optional[CodecTokenStreamer] = None
+        worker: Optional[StreamingDecoderWorker] = None
+        talker_thread: Optional[threading.Thread] = None
+
+        if self._session_registry is not None:
+            sid = self._session_registry.create_session(
+                text=request.text,
+                voice=self._resolve_voice_label(request),
+                model_type=self._resolve_model_type_label(request),
+                source=SessionSource.GENERATED,
+            )
+            # Story 16.5: publish the active session id so cancel_generation
+            # can request_cancel(sid) -> hook -> streamer._cancel_event.set().
+            self._current_session_id = sid
+
+        self._current_generation_task = asyncio.current_task()
+
+        try:
+            # Validate text input (FR5).
+            validation = self.validate_text(request.text)
+            if not validation.can_proceed:
+                self._failed_requests += 1
+                error_code = (
+                    TTSErrorCode.EMPTY_TEXT
+                    if validation.status in (
+                        TextValidationStatus.EMPTY,
+                        TextValidationStatus.WHITESPACE_ONLY,
+                    )
+                    else TTSErrorCode.TEXT_TOO_LONG
+                )
+                tts_error = TTSError(
+                    code=error_code,
+                    user_message=validation.message or "Invalid text input.",
+                    recovery_suggestion=(
+                        "Enter text to speak."
+                        if error_code == TTSErrorCode.EMPTY_TEXT
+                        else "Try with shorter text."
+                    ),
+                    is_recoverable=True,
+                )
+                self._last_error = tts_error
+                if sid is not None and self._session_registry is not None:
+                    self._session_registry.post_mutation('set_error', sid)
+                    self._session_registry.post_mutation('discard', sid)
+                return QwenTTSResponse(
+                    success=False,
+                    error_message=str(tts_error),
+                    mode=GenerationMode.STREAMING,
+                )
+
+            if validation.warning:
+                self.logger.warning(
+                    f"Text validation warning: {validation.warning}"
+                )
+
+            if not self.is_running():
+                self._failed_requests += 1
+                tts_error = TTSError(
+                    code=TTSErrorCode.SERVICE_NOT_RUNNING,
+                    user_message="TTS service is not running.",
+                    recovery_suggestion="Please wait for the service to start.",
+                    is_recoverable=True,
+                )
+                self._last_error = tts_error
+                if sid is not None and self._session_registry is not None:
+                    self._session_registry.post_mutation('set_error', sid)
+                    self._session_registry.post_mutation('discard', sid)
+                return QwenTTSResponse(
+                    success=False,
+                    error_message=str(tts_error),
+                    mode=GenerationMode.STREAMING,
+                )
+
+            self.logger.info(
+                f"Starting TTS generation (TRUE_STREAM): "
+                f"model={request.model_type.display_name}, "
+                f"text='{request.text[:50]}...'"
+            )
+
+            # Per AC #10: the model-load + streamer-construction critical
+            # section is guarded by the existing semaphore so concurrent
+                # TRUE_STREAM dispatches serialize.
+            async with self._request_semaphore:
+                self._generation_state = GenerationState.LOADING_MODEL
+
+                if self._model_loading_callback:
+                    self._model_loading_callback(
+                        f"Loading {request.model_type.display_name}..."
+                    )
+
+                success, error = await self._model_registry.ensure_model_loaded(
+                    request.model_type,
+                    checkpoint_path=(
+                        str(request.checkpoint_path)
+                        if request.checkpoint_path
+                        else None
+                    ),
+                )
+                if not success:
+                    self._failed_requests += 1
+                    self._generation_state = GenerationState.ERROR
+                    if sid is not None and self._session_registry is not None:
+                        self._session_registry.post_mutation('set_error', sid)
+                        self._session_registry.post_mutation('discard', sid)
+                    if self._generation_failed_callback:
+                        self._generation_failed_callback(
+                            f"Failed to load model: {error}"
+                        )
+                    return QwenTTSResponse(
+                        success=False,
+                        error_message=f"Failed to load model: {error}",
+                        mode=GenerationMode.STREAMING,
+                    )
+
+                if self._model_ready_callback:
+                    self._model_ready_callback(request.model_type.display_name)
+
+                self._generation_state = GenerationState.STREAMING
+                if sid is not None and self._session_registry is not None:
+                    self._session_registry.post_mutation('start_generation', sid)
+                if self._generation_started_callback:
+                    self._generation_started_callback()
+
+                # Build streamer + worker pair (Story 16.3 + 16.4).
+                streamer = CodecTokenStreamer()
+                model = self._model_registry.get_loaded_model()
+                decode_fn = self._build_true_stream_decode_fn(model)
+
+                hardware_label = (
+                    "gpu"
+                    if "cuda" in str(self._model_registry.device).lower()
+                    else "cpu"
+                )
+
+                # Wrap the registry's post_mutation so the dispatch path can
+                # observe append_chunk / finalize timing without a separate
+                # subscription. The registry still receives every call.
+                registry_post = (
+                    self._session_registry.post_mutation
+                    if self._session_registry is not None
+                    else None
+                )
+
+                def _wrapped_post(*args: Any, **kwargs: Any) -> None:
+                    if registry_post is not None:
+                        registry_post(*args, **kwargs)
+                    if args and args[0] == 'append_chunk' and len(args) >= 3:
+                        nonlocal first_chunk_time
+                        if first_chunk_time is None:
+                            first_chunk_time = time.time() - start_time
+                        chunk_data = np.asarray(args[2])
+                        accumulated_chunks.append(chunk_data)
+                        chunk_index = chunk_count_box[0]
+                        chunk_count_box[0] += 1
+                        # Story 18.1 Task 1.1: per-chunk emit timestamp
+                        # (wall-clock ms — joinable with the consumer-
+                        # side ``progressive_chunk_playback_arrival_ms``
+                        # by (session_id, chunk_index)). Overhead
+                        # validated ≤ 100 µs/call in evidence file §1.
+                        metrics.record(
+                            "progressive_chunk_emit_ms",
+                            time.time() * 1000.0,
+                            session_id=sid,
+                            chunk_index=chunk_index,
+                        )
+                        # Story 17.3: emit progressive-playback callback. Parallels
+                        # SENTENCE_STREAM at qwen_tts_service.py:3071-3082. Additive to
+                        # the accumulator/counter; never replaces them. Wrapped so a
+                        # buggy consumer cannot break the producer thread.
+                        if self._audio_chunk_ready_callback is not None:
+                            try:
+                                self._audio_chunk_ready_callback(
+                                    AudioChunk(
+                                        audio_data=chunk_data,
+                                        sample_rate=sample_rate,
+                                        chunk_index=chunk_index,
+                                        is_final=False,
+                                        text_segment="",
+                                        session_id=sid,
+                                    )
+                                )
+                            except Exception:
+                                self.logger.exception(
+                                    "[QwenTTS] TRUE_STREAM "
+                                    "_audio_chunk_ready_callback raised on "
+                                    "append_chunk; swallowing"
+                                )
+                    elif args and args[0] == 'finalize':
+                        # Story 17.3: synthetic terminal AudioChunk lets the
+                        # progressive-playback consumer close its open audio session
+                        # without needing a separate "stream done" channel.
+                        # Zero-length payload — consumer must skip play_audio_chunk
+                        # if audio_data.size == 0.
+                        if self._audio_chunk_ready_callback is not None:
+                            try:
+                                self._audio_chunk_ready_callback(
+                                    AudioChunk(
+                                        audio_data=np.zeros(0, dtype=np.float32),
+                                        sample_rate=sample_rate,
+                                        chunk_index=chunk_count_box[0],
+                                        is_final=True,
+                                        text_segment="",
+                                        session_id=sid,
+                                    )
+                                )
+                            except Exception:
+                                self.logger.exception(
+                                    "[QwenTTS] TRUE_STREAM terminal "
+                                    "_audio_chunk_ready_callback raised on "
+                                    "finalize; swallowing"
+                                )
+
+                worker = StreamingDecoderWorker(
+                    streamer=streamer,
+                    decode_fn=decode_fn,
+                    post_mutation=_wrapped_post,
+                    session_id=sid or "no-registry",
+                    model_type=self._resolve_model_type_label(request),
+                    hardware=hardware_label,
+                )
+
+                # Story 16.5: register the cancel hook BEFORE starting the
+                # threads so a cancel that arrives during spawn fires.
+                # ``get_running_loop()`` is the correct API inside an async
+                # def — ``get_event_loop()`` is deprecated in Py 3.10+ and
+                # has surprise semantics on Py 3.12+ (Story 16.6 review H3).
+                event_loop = asyncio.get_running_loop()
+                hook_session_id = sid
+
+                def _cancel_hook() -> None:
+                    if streamer is not None:
+                        streamer._cancel_event.set()
+                    if (
+                        self.audio_coordinator is not None
+                        and hook_session_id is not None
+                    ):
+                        try:
+                            asyncio.run_coroutine_threadsafe(
+                                self.audio_coordinator.cancel_playback(
+                                    hook_session_id
+                                ),
+                                event_loop,
+                            )
+                        except RuntimeError:
+                            # Event loop may be closed if cancel arrives
+                            # extremely late; ignore.
+                            pass
+
+                if self._session_registry is not None and sid is not None:
+                    self._session_registry.register_cancel_hook(
+                        sid, _cancel_hook
+                    )
+
+                # Spawn talker + start worker.
+                talker_fn = self._build_true_stream_talker(
+                    model, request, streamer
+                )
+                talker_thread = threading.Thread(
+                    target=talker_fn,
+                    name=f"TrueStreamTalker-{(sid or 'no-sid')[:8]}",
+                    daemon=True,
+                )
+                worker.start()
+                talker_thread.start()
+
+                # Wait for the first chunk to land (P-8 streaming exception).
+                # The dispatcher polls the locally-tracked first_chunk_time
+                # rather than subscribing to a Qt signal — keeps the dispatch
+                # path Qt-independent. Wallclock-based polling so the timeout
+                # is meaningful regardless of asyncio.sleep granularity.
+                first_chunk_timeout_s = 30.0
+                poll_s = 0.005
+                first_chunk_deadline = time.perf_counter() + first_chunk_timeout_s
+                while (
+                    first_chunk_time is None
+                    and time.perf_counter() < first_chunk_deadline
+                ):
+                    if self._cancel_requested:
+                        break
+                    if not worker.is_alive() and not talker_thread.is_alive():
+                        break
+                    await asyncio.sleep(poll_s)
+
+                # Kick playback once the first chunk is in. P-8 streaming
+                # exception: session is in GENERATING when play_dual_stream
+                # is called; mark_playing/mark_audible posts run from the
+                # coordinator's existing flow.
+                if (
+                    accumulated_chunks
+                    and self.audio_coordinator is not None
+                    and sid is not None
+                    and not self._cancel_requested
+                ):
+                    initial_audio = (
+                        accumulated_chunks[0]
+                        if len(accumulated_chunks) == 1
+                        else np.concatenate(accumulated_chunks)
+                    )
+                    try:
+                        await self.audio_coordinator.play_dual_stream(
+                            audio_data=initial_audio,
+                            session_id=sid,
+                        )
+                    except Exception as play_err:
+                        # Playback dispatch failed; treat as a structural
+                        # failure so the dispatcher falls back.
+                        self.logger.exception(
+                            f"[QwenTTS] play_dual_stream failed: {play_err}"
+                        )
+                        raise
+
+                # Wait for the worker + talker to finish. Wallclock-based
+                # deadline so asyncio.sleep granularity (~15ms on Windows)
+                # doesn't blow past a nominal short timeout.
+                join_timeout_s = 60.0
+                join_poll_s = 0.01
+                join_deadline = time.perf_counter() + join_timeout_s
+                while (
+                    (worker.is_alive() or talker_thread.is_alive())
+                    and time.perf_counter() < join_deadline
+                ):
+                    if self._cancel_requested:
+                        break
+                    await asyncio.sleep(join_poll_s)
+
+                if worker.is_alive() or talker_thread.is_alive():
+                    raise RuntimeError(
+                        "TRUE_STREAM talker/worker did not complete within "
+                        f"{join_timeout_s}s"
+                    )
+
+            # Story 16.7 empirical finding: when the talker thread silently
+            # fails (its except branch in ``_build_true_stream_talker`` swallows
+            # all exceptions and just calls ``streamer.end()``), the worker
+            # drains an empty queue and ``accumulated_chunks`` stays empty.
+            # Without this guard, the dispatch returns ``success=True`` with
+            # zero-sample audio, the fallback chain never fires, and the user
+            # hears silence on the production CUDA path. Raising here lets
+            # ``_dispatch_by_streaming_mode`` route to SENTENCE_STREAM per
+            # NFR7's graceful-degradation contract.
+            if not accumulated_chunks and not self._cancel_requested:
+                raise RuntimeError(
+                    "TRUE_STREAM produced 0 audio chunks — talker thread "
+                    "likely raised (see prior log). Routing to fallback chain."
+                )
+
+            # Build the complete audio array from accumulated chunks.
+            if accumulated_chunks:
+                complete_audio = np.concatenate(accumulated_chunks)
+            else:
+                complete_audio = np.array([], dtype=np.float32)
+            accumulated_chunks.clear()
+
+            audio_file = self._save_audio_to_cache(complete_audio, sample_rate)
+
+            generation_time = time.time() - start_time
+            self._successful_requests += 1
+            self._last_generation_time = generation_time
+            self._generation_state = GenerationState.COMPLETE
+
+            if first_chunk_time is not None:
+                metrics.record(
+                    "first_chunk_latency_ms",
+                    first_chunk_time * 1000.0,
+                    session_id=sid,
+                    model_type=(
+                        request.model_type.display_name
+                        if request.model_type is not None
+                        else "default"
+                    ),
+                    hardware=hardware_label,
+                )
+
+            self.logger.info(
+                f"TTS generation complete (TRUE_STREAM): "
+                f"{len(complete_audio)} samples, "
+                f"{chunk_count_box[0]} chunks, "
+                f"{generation_time:.2f}s total, "
+                f"{first_chunk_time:.2f}s first chunk"
+                if first_chunk_time is not None
+                else (
+                    f"TTS generation complete (TRUE_STREAM): "
+                    f"{len(complete_audio)} samples, "
+                    f"{chunk_count_box[0]} chunks, "
+                    f"{generation_time:.2f}s total"
+                )
+            )
+
+            if self._generation_complete_callback and audio_file:
+                self._generation_complete_callback(audio_file)
+
+            return QwenTTSResponse(
+                success=True,
+                audio_data=complete_audio,
+                sample_rate=sample_rate,
+                audio_file_path=audio_file,
+                generation_time_seconds=generation_time,
+                mode=GenerationMode.STREAMING,
+                chunks_generated=chunk_count_box[0],
+                first_chunk_latency=first_chunk_time,
+            )
+
+        except asyncio.CancelledError:
+            self.logger.info("TRUE_STREAM generation cancelled")
+            self._generation_state = GenerationState.CANCELLED
+            # P-7 invariant: do NOT post ('cancel', sid) here. The worker's
+            # drain-on-cancel posts the canonical CANCELLED transition.
+            if streamer is not None:
+                streamer._cancel_event.set()
+                try:
+                    streamer.end()
+                except Exception:  # pragma: no cover (defensive)
+                    pass
+            if worker is not None and worker.is_alive():
+                worker.join(timeout=2.0)
+            if talker_thread is not None and talker_thread.is_alive():
+                talker_thread.join(timeout=2.0)
+            if self._generation_cancelled_callback:
+                self._generation_cancelled_callback()
+            return QwenTTSResponse(
+                success=False,
+                error_message="Generation was cancelled",
+                mode=GenerationMode.STREAMING,
+                chunks_generated=chunk_count_box[0],
+            )
+
+        except Exception:
+            self.logger.exception("[QwenTTS] TRUE_STREAM dispatch failed")
+            if streamer is not None:
+                streamer._cancel_event.set()
+                try:
+                    streamer.end()
+                except Exception:  # pragma: no cover
+                    pass
+            if worker is not None and worker.is_alive():
+                worker.join(timeout=2.0)
+            if talker_thread is not None and talker_thread.is_alive():
+                talker_thread.join(timeout=2.0)
+            if sid is not None and self._session_registry is not None:
+                self._session_registry.post_mutation('set_error', sid)
+                self._session_registry.post_mutation('discard', sid)
+            # Surface to the dispatcher's fallback chain. NOT
+            # asyncio.CancelledError (handled above).
+            raise
+
+        finally:
+            self._current_generation_task = None
+            self._current_session_id = None
+
+    @staticmethod
+    def _fallback_chain_from(mode: StreamingMode) -> List[StreamingMode]:
+        """Story 16.6 — order of modes to attempt starting from ``mode``.
+
+        TRUE_STREAM caps the chain at all three modes; SENTENCE_STREAM caps
+        at two; BATCH has no further fallback. The chain is the
+        single-source-of-truth for FR3 + NFR7 graceful-degradation order;
+        do NOT reimplement this fork in callers.
+        """
+        if mode == StreamingMode.TRUE_STREAM:
+            return [
+                StreamingMode.TRUE_STREAM,
+                StreamingMode.SENTENCE_STREAM,
+                StreamingMode.BATCH,
+            ]
+        if mode == StreamingMode.SENTENCE_STREAM:
+            return [StreamingMode.SENTENCE_STREAM, StreamingMode.BATCH]
+        return [StreamingMode.BATCH]
+
+    async def _dispatch_by_streaming_mode(
+        self,
+        request: QwenTTSRequest,
+        mode: StreamingMode,
+    ) -> QwenTTSResponse:
+        """Story 16.6 Task 2 — three-mode fallback dispatch.
+
+        Forks on the resolved mode, calls one of three private generators
+        (_generate_true_stream / _generate_streaming / _generate), catches
+        every non-CancelledError exception, emits a
+        ``streaming_mode_fallback`` metric, and recurses into the next-lower
+        mode in the chain. On all-three-modes-failed, returns a synthetic
+        ``QwenTTSResponse(success=False, used_fallback=True,
+        mode=BATCH, error_message=<all three>)``.
+
+        Honors the legacy ``request.streaming=False`` override per AC #8 —
+        a caller that explicitly disabled streaming gets the BATCH path
+        regardless of the resolver's pick.
+
+        Per-dispatch-entry ``streaming_mode`` metric (D-19 / P-9) fires once
+        per attempt — including each fallback attempt — so Story 16.7's
+        empirical-validation harness can correlate fallback rates with
+        hardware/model-type tags.
+        """
+        # AC #8 second clause: legacy override forces BATCH.
+        if request.streaming is False:
+            mode = StreamingMode.BATCH
+
+        chain = self._fallback_chain_from(mode)
+        # Defensive ``getattr`` against ``QwenTTSService.__new__`` callers
+        # — partial-init test fixtures bypass ``__init__`` and may not set
+        # all instance attributes.
+        model_registry = getattr(self, "_model_registry", None)
+        hardware = (
+            "gpu"
+            if model_registry is not None
+            and "cuda" in str(getattr(model_registry, "device", "")).lower()
+            else "cpu"
+        )
+        model_type = (
+            request.model_type.display_name
+            if request.model_type is not None
+            else "default"
+        )
+
+        failures: List[Tuple[StreamingMode, BaseException]] = []
+        # Snapshot ``_failed_requests`` before the chain so the dispatcher's
+        # terminal-failure branch only increments if no inner method already
+        # did (Story 16.6 review M3 — AC #2: "incremented exactly once").
+        failed_requests_snapshot = getattr(self, "_failed_requests", 0)
+
+        for i, current_mode in enumerate(chain):
+            # Per-dispatch-entry metric (D-19 / P-9). session_id is the
+            # currently-active session if a generator has set it; for the
+            # initial call before any generator runs it's None.
+            metrics.record(
+                "streaming_mode",
+                current_mode.value,
+                session_id=getattr(self, "_current_session_id", None),
+                model_type=model_type,
+                hardware=hardware,
+            )
+            try:
+                if current_mode == StreamingMode.TRUE_STREAM:
+                    response = await self._generate_true_stream(request)
+                elif current_mode == StreamingMode.SENTENCE_STREAM:
+                    response = await self._generate_streaming(request)
+                else:  # BATCH
+                    response = await self._generate(request)
+                return response
+            except asyncio.CancelledError:
+                # User cancel — not a fallback trigger. Propagate.
+                raise
+            except Exception as exc:
+                failures.append((current_mode, exc))
+                reason = repr(exc)
+                # AC #6 last clause — truncate to 200 chars with an explicit
+                # ellipsis suffix so downstream telemetry can distinguish a
+                # 200-char message from a truncated one (Story 16.6 review
+                # M2). Total bounded length = 199 + len('…') = 200 chars.
+                if len(reason) > 200:
+                    reason = reason[:199] + "…"
+                if i + 1 < len(chain):
+                    next_mode = chain[i + 1]
+                    # ``getattr`` defensive against partial-init instances.
+                    self._fallback_count = (
+                        getattr(self, "_fallback_count", 0) + 1
+                    )
+                    metrics.record(
+                        "streaming_mode_fallback",
+                        next_mode.value,
+                        session_id=getattr(self, "_current_session_id", None),
+                        from_mode=current_mode.value,
+                        reason=reason,
+                        model_type=model_type,
+                        hardware=hardware,
+                    )
+                else:
+                    # Terminal failure — emit "unrecoverable" but do NOT
+                    # increment _fallback_count (no successful transition).
+                    metrics.record(
+                        "streaming_mode_fallback",
+                        "unrecoverable",
+                        session_id=getattr(self, "_current_session_id", None),
+                        from_mode=current_mode.value,
+                        reason=reason,
+                        model_type=model_type,
+                        hardware=hardware,
+                    )
+
+        # All modes failed — synthesize unrecoverable response. Only count
+        # this dispatch as a failure if no inner method already incremented
+        # the counter (Story 16.6 review M3 — AC #2 "exactly once"). When an
+        # inner method raises after its own ``_failed_requests += 1`` (real
+        # production paths), the snapshot diff is non-zero and we skip.
+        if getattr(self, "_failed_requests", 0) == failed_requests_snapshot:
+            self._failed_requests = failed_requests_snapshot + 1
+        error_lines = "; ".join(f"{m.value}: {e}" for m, e in failures)
+        return QwenTTSResponse(
+            success=False,
+            error_message=f"All streaming modes failed: {error_lines}",
+            # AC #2: response's mode reflects the LAST mode attempted.
+            mode=GenerationMode.BATCH,
+            used_fallback=True,
+        )
+
+    def _resolve_streaming_mode(self) -> StreamingMode:
+        """Story 16.6 Task 1 — resolve the streaming mode for the next dispatch.
+
+        Pure function of ``self._app_settings.streaming_mode_override`` and
+        ``torch.cuda.is_available()``. No side effects, no metric emission, no
+        registry mutation — Story 16.7's empirical-validation harness calls
+        this repeatedly without polluting metrics. The per-mode
+        ``streaming_mode`` metric (D-19 / P-9) fires from
+        ``_dispatch_by_streaming_mode`` after this resolver returns.
+
+        Reads the optional string field, converts it via
+        ``StreamingMode(value)`` (raising ``ValueError`` on bad data so any
+        ``AppSettings.from_dict`` regression surfaces loudly), and delegates
+        to Story 16.2's ``effective_streaming_mode`` so this method remains a
+        thin shim — the two surfaces stay aligned.
+
+        Returns the resolved mode. Hardware probe (CUDA -> TRUE_STREAM, else
+        SENTENCE_STREAM, NFR12 protection) only runs when the override is
+        ``None``.
+        """
+        # ``getattr`` defensive against ``QwenTTSService.__new__`` callers
+        # (existing test fixtures construct partial instances that bypass
+        # ``__init__``); when neither AppSettings nor the attribute exist,
+        # the resolver behaves as if override is None (Auto).
+        app_settings = getattr(self, "_app_settings", None)
+        override_str: Optional[str] = (
+            app_settings.streaming_mode_override
+            if app_settings is not None
+            else None
+        )
+        override: Optional[StreamingMode] = (
+            StreamingMode(override_str) if override_str is not None else None
+        )
+        return effective_streaming_mode(override)
+
     async def cancel_generation(self) -> bool:
         """
         Cancel the current generation.
@@ -2440,6 +4716,16 @@ class QwenTTSService(BaseService):
             task = self._current_generation_task
             if task is not None and not task.done():
                 task.cancel()
+
+            # Story 16.5: trigger the cooperative cancel chain. Quiet no-op
+            # if no registry is wired (legacy mode) or no session is in
+            # flight or no hook was registered (today's batch + sentence-
+            # stream sessions have no streamer event to flip; Story 16.6's
+            # TRUE_STREAM dispatch path is what registers a hook). Under
+            # that path, this call flips the streamer's _cancel_event AND
+            # asks the audio coordinator to stop playback for the session.
+            if self._session_registry is not None and self._current_session_id is not None:
+                self._session_registry.request_cancel(self._current_session_id)
 
             # Notify cancellation callback
             if self._generation_cancelled_callback:

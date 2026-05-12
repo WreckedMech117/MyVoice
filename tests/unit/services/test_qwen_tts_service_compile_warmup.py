@@ -1,0 +1,396 @@
+"""Tests for Story 18.4 AC #7 — QwenTTSService.warmup_compile_async lifecycle.
+
+Five paths covered (mirrors the AC #7 test obligations):
+
+  1. Cache-hit path: ``compile_cache.is_warm(key)`` → True. Assert no
+     priming generation runs; assert telemetry records ``reason="cache_hit"``
+     with value=0.0. The indicator must NOT fire (cache-hit is silent).
+  2. Cache-miss + priming-success path: ``is_warm`` → False; the priming
+     surface succeeds. Assert the indicator callback fires with
+     ``"Preparing TTS engine…"`` and clears with None; assert ``mark_warm``
+     is called; assert telemetry records ``reason="primed_cold"`` with
+     value=1.0.
+  3. Cache-miss + priming-failure path: ``is_warm`` → False; the priming
+     surface raises. Assert the indicator clears; assert ``mark_warm`` is
+     NOT called; assert telemetry records ``reason="priming_failed"``
+     with value=0.0; assert a WARNING log is emitted.
+  4. Lazy-fallback gate: ``MYVOICE_DISABLE_COMPILE_WARMUP=1`` in env;
+     assert ``warmup_compile_async`` returns early without calling
+     ``is_warm`` or the priming surface; assert telemetry records the
+     ``user_disabled`` skip.
+  5. Hardware-gated skip: monkeypatch ``is_ampere_or_newer`` → False;
+     assert warmup returns early; assert telemetry records
+     ``reason="pre_ampere"``.
+
+Plus two additional defensive rows: model not yet loaded (lazy fallback
+per D-23 last sentence) and model_registry not wired (defensive skip).
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from typing import List, Optional
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from myvoice.models.app_settings import AppSettings
+from myvoice.observability import metrics
+from myvoice.services.qwen_tts_service import QwenTTSService
+
+
+# -- Fixtures ---------------------------------------------------------------- #
+
+
+@pytest.fixture
+def metric_records():
+    captured: List[metrics.MetricRecord] = []
+
+    def listener(record: metrics.MetricRecord) -> None:
+        captured.append(record)
+
+    unsub = metrics.add_listener(listener)
+    try:
+        yield captured
+    finally:
+        unsub()
+
+
+@pytest.fixture
+def _restore_compile_warmup_env():
+    """Ensure the test never leaks MYVOICE_DISABLE_COMPILE_WARMUP."""
+    snapshot = os.environ.get("MYVOICE_DISABLE_COMPILE_WARMUP")
+    yield
+    if snapshot is None:
+        os.environ.pop("MYVOICE_DISABLE_COMPILE_WARMUP", None)
+    else:
+        os.environ["MYVOICE_DISABLE_COMPILE_WARMUP"] = snapshot
+
+
+def _make_service(*, with_model_registry: bool = True, with_loaded_model: bool = True) -> QwenTTSService:
+    """Construct a QwenTTSService with a mock ModelRegistry.
+
+    Defaults: a wired model_registry whose `get_loaded_model()` returns a
+    plain object so the warmup proceeds to the cache-key computation. Tests
+    that want to exercise the no-model-registry or no-model-loaded paths
+    override these flags.
+
+    The injected AppSettings overrides ``tts_compile`` to ``"auto"`` so
+    the warmup proceeds past the H1 review-fix gate (the field's
+    declared default is ``"off"`` per the Story 18.4 bundled-smoke
+    amendment; tests that want to exercise the "off" gate explicitly
+    override ``service._app_settings`` after construction).
+    """
+    service = QwenTTSService(
+        device="cpu",
+        dtype="float32",
+        app_settings=AppSettings(tts_compile="auto"),
+    )
+    if with_model_registry:
+        # Build a fake model that survives the cache-key computation.
+        fake_inner = type("FakeInner", (), {})()
+        fake_inner.name_or_path = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+        import torch
+        fake_inner.dtype = torch.bfloat16
+        fake_model = type("FakeModel", (), {})()
+        fake_model.model = fake_inner
+
+        registry = MagicMock(name="ModelRegistry")
+        registry.get_loaded_model.return_value = fake_model if with_loaded_model else None
+        service._model_registry = registry
+    else:
+        service._model_registry = None
+    return service
+
+
+def _compile_records(records: List[metrics.MetricRecord]) -> List[metrics.MetricRecord]:
+    return [r for r in records if r.name == "tts_compile_warmup_priming"]
+
+
+# -- Path 1: cache-hit ------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_warmup_cache_hit_skips_priming(
+    monkeypatch, metric_records, _restore_compile_warmup_env
+):
+    """is_warm → True; no priming generation; telemetry reason=cache_hit."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (8, 9))
+    monkeypatch.setattr(
+        "myvoice.services.tts_streaming.is_ampere_or_newer",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "myvoice.services.tts_streaming.compile_cache.is_warm",
+        lambda key: True,
+    )
+    mark_warm_mock = MagicMock()
+    monkeypatch.setattr(
+        "myvoice.services.tts_streaming.compile_cache.mark_warm",
+        mark_warm_mock,
+    )
+    service = _make_service()
+    priming_mock = MagicMock()
+    monkeypatch.setattr(service, "_run_compile_priming", priming_mock)
+    indicator_calls = []
+    service.set_preparing_voice_callback(lambda msg: indicator_calls.append(msg))
+
+    await service.warmup_compile_async()
+
+    priming_mock.assert_not_called()
+    mark_warm_mock.assert_not_called()
+    # Indicator must NOT fire on cache-hit (silent steady-state).
+    assert indicator_calls == []
+    rec = _compile_records(metric_records)
+    assert len(rec) == 1
+    assert rec[0].value == 0.0
+    assert rec[0].tags["reason"] == "cache_hit"
+
+
+# -- Path 2: cache-miss + priming-success ----------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_warmup_cache_miss_primes_and_marks_warm(
+    monkeypatch, metric_records, _restore_compile_warmup_env
+):
+    """is_warm → False; priming succeeds; mark_warm called; indicator fires + clears."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (8, 9))
+    monkeypatch.setattr(
+        "myvoice.services.tts_streaming.is_ampere_or_newer",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "myvoice.services.tts_streaming.compile_cache.is_warm",
+        lambda key: False,
+    )
+    mark_warm_mock = MagicMock()
+    monkeypatch.setattr(
+        "myvoice.services.tts_streaming.compile_cache.mark_warm",
+        mark_warm_mock,
+    )
+    service = _make_service()
+
+    async def _priming_succeeds():
+        return None
+
+    monkeypatch.setattr(service, "_run_compile_priming", _priming_succeeds)
+    indicator_calls = []
+    service.set_preparing_voice_callback(lambda msg: indicator_calls.append(msg))
+
+    await service.warmup_compile_async()
+
+    # The indicator fires with "Preparing TTS engine…" then clears with None.
+    assert indicator_calls == ["Preparing TTS engine…", None]
+    mark_warm_mock.assert_called_once()
+    rec = _compile_records(metric_records)
+    assert len(rec) == 1
+    assert rec[0].value == 1.0
+    assert rec[0].tags["reason"] == "primed_cold"
+
+
+# -- Path 3: cache-miss + priming-failure ----------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_warmup_cache_miss_priming_failure_leaves_cache_cold(
+    monkeypatch, metric_records, _restore_compile_warmup_env, caplog
+):
+    """is_warm → False; priming raises; mark_warm NOT called; indicator clears; WARNING."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (8, 9))
+    monkeypatch.setattr(
+        "myvoice.services.tts_streaming.is_ampere_or_newer",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "myvoice.services.tts_streaming.compile_cache.is_warm",
+        lambda key: False,
+    )
+    mark_warm_mock = MagicMock()
+    monkeypatch.setattr(
+        "myvoice.services.tts_streaming.compile_cache.mark_warm",
+        mark_warm_mock,
+    )
+    service = _make_service()
+
+    async def _priming_raises():
+        raise RuntimeError("simulated priming failure")
+
+    monkeypatch.setattr(service, "_run_compile_priming", _priming_raises)
+    indicator_calls = []
+    service.set_preparing_voice_callback(lambda msg: indicator_calls.append(msg))
+
+    with caplog.at_level(logging.WARNING, logger="QwenTTSService"):
+        await service.warmup_compile_async()
+
+    # Indicator must clear even on failure (final block).
+    assert indicator_calls == ["Preparing TTS engine…", None]
+    mark_warm_mock.assert_not_called()
+    rec = _compile_records(metric_records)
+    assert len(rec) == 1
+    assert rec[0].value == 0.0
+    assert rec[0].tags["reason"] == "priming_failed"
+    warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("priming failed" in r.message.lower() for r in warning_records)
+
+
+# -- Path 4: lazy-fallback env-var gate ------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_warmup_disabled_by_env_var_short_circuits(
+    monkeypatch, metric_records, _restore_compile_warmup_env
+):
+    """MYVOICE_DISABLE_COMPILE_WARMUP=1 → return early; no is_warm or priming."""
+    monkeypatch.setenv("MYVOICE_DISABLE_COMPILE_WARMUP", "1")
+    is_warm_mock = MagicMock()
+    monkeypatch.setattr(
+        "myvoice.services.tts_streaming.compile_cache.is_warm",
+        is_warm_mock,
+    )
+    service = _make_service()
+    priming_mock = MagicMock()
+    monkeypatch.setattr(service, "_run_compile_priming", priming_mock)
+
+    await service.warmup_compile_async()
+
+    is_warm_mock.assert_not_called()
+    priming_mock.assert_not_called()
+    rec = _compile_records(metric_records)
+    assert len(rec) == 1
+    assert rec[0].tags["reason"] == "user_disabled"
+
+
+# -- Path 5: hardware-gated skip --------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_warmup_pre_ampere_skips_priming(
+    monkeypatch, metric_records, _restore_compile_warmup_env
+):
+    """is_ampere_or_newer → False → return early; no is_warm or priming."""
+    monkeypatch.setattr(
+        "myvoice.services.tts_streaming.is_ampere_or_newer",
+        lambda: False,
+    )
+    is_warm_mock = MagicMock()
+    monkeypatch.setattr(
+        "myvoice.services.tts_streaming.compile_cache.is_warm",
+        is_warm_mock,
+    )
+    service = _make_service()
+    priming_mock = MagicMock()
+    monkeypatch.setattr(service, "_run_compile_priming", priming_mock)
+
+    await service.warmup_compile_async()
+
+    is_warm_mock.assert_not_called()
+    priming_mock.assert_not_called()
+    rec = _compile_records(metric_records)
+    assert len(rec) == 1
+    assert rec[0].tags["reason"] == "pre_ampere"
+
+
+# -- H1 regression: tts_compile="off" gate — code-review fix ----------------- #
+
+
+@pytest.mark.asyncio
+async def test_warmup_tts_compile_off_skips_priming_and_gate_log(
+    monkeypatch, metric_records, _restore_compile_warmup_env, caplog
+):
+    """Code-review H1 (Story 18.4 review pass): warmup must not run a
+    priming generation when ``app_settings.tts_compile == "off"``.
+
+    Without this gate, a first-launch on Ampere+ CUDA with the bundled-
+    smoke Fix #4 default (tts_compile="off") fires _run_compile_priming
+    which dispatches a real TRUE_STREAM utterance ("Hello world." in
+    Ryan's voice). The audio chunks emit to the wired
+    audio_chunk_ready_callback — the user hears the priming at app
+    startup. AND mark_warm writes a meaningless meta.json sidecar
+    (engage stayed eager so no inductor artifacts exist), poisoning the
+    cache for any later opt-in to "auto"/"on".
+
+    The gate fires BEFORE the hardware probe, BEFORE the cache-key
+    computation, BEFORE the priming dispatch. Test asserts: is_warm
+    never called, mark_warm never called, _run_compile_priming never
+    called, indicator never fires, telemetry records reason="user_disabled"
+    with value=0.0. Per `memory/code_review_regression_test_exact_class.md`,
+    this row mirrors the EXACT bug class — a future regression that
+    drops or reorders the gate fails this test loudly.
+    """
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (8, 9))
+    monkeypatch.setattr(
+        "myvoice.services.tts_streaming.is_ampere_or_newer",
+        lambda: True,
+    )
+    is_warm_mock = MagicMock()
+    monkeypatch.setattr(
+        "myvoice.services.tts_streaming.compile_cache.is_warm",
+        is_warm_mock,
+    )
+    mark_warm_mock = MagicMock()
+    monkeypatch.setattr(
+        "myvoice.services.tts_streaming.compile_cache.mark_warm",
+        mark_warm_mock,
+    )
+
+    # Build a service with tts_compile explicitly "off" so the gate fires.
+    service = _make_service()
+    service._app_settings = AppSettings(tts_compile="off")
+    priming_mock = MagicMock()
+    monkeypatch.setattr(service, "_run_compile_priming", priming_mock)
+    indicator_calls = []
+    service.set_preparing_voice_callback(lambda msg: indicator_calls.append(msg))
+
+    await service.warmup_compile_async()
+
+    # The gate must short-circuit before ANY downstream call.
+    is_warm_mock.assert_not_called()
+    mark_warm_mock.assert_not_called()
+    priming_mock.assert_not_called()
+    # Indicator must NOT fire — gate exits before _emit_preparing_voice.
+    assert indicator_calls == []
+    # Telemetry records the skip with reason="user_disabled" (matches
+    # engage_compile_optimizations' tts_compile="off" → user_disabled
+    # branch; consistent vocabulary across engage and warmup).
+    rec = _compile_records(metric_records)
+    assert len(rec) == 1
+    assert rec[0].value == 0.0
+    assert rec[0].tags["reason"] == "user_disabled"
+
+
+# -- Defensive row 1: no model loaded yet (D-23 lazy fallback) -------------- #
+
+
+@pytest.mark.asyncio
+async def test_warmup_no_model_loaded_defers_to_first_generation(
+    monkeypatch, metric_records, _restore_compile_warmup_env
+):
+    """get_loaded_model() → None: skip with reason=no_model_loaded.
+
+    The first user-facing generation triggers compile inline; this is
+    the lazy fallback path architecture D-23 names explicitly."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (8, 9))
+    monkeypatch.setattr(
+        "myvoice.services.tts_streaming.is_ampere_or_newer",
+        lambda: True,
+    )
+    is_warm_mock = MagicMock()
+    monkeypatch.setattr(
+        "myvoice.services.tts_streaming.compile_cache.is_warm",
+        is_warm_mock,
+    )
+    service = _make_service(with_loaded_model=False)
+
+    await service.warmup_compile_async()
+
+    is_warm_mock.assert_not_called()
+    rec = _compile_records(metric_records)
+    assert len(rec) == 1
+    assert rec[0].tags["reason"] == "no_model_loaded"

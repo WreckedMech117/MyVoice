@@ -17,7 +17,19 @@ import sys
 import os
 import logging
 import asyncio
+import multiprocessing
 from pathlib import Path
+
+# CRITICAL: PyInstaller multiprocessing guard. Story 18.4 / D-22 Branch B
+# engages torch.compile, whose inductor backend spawns subprocess workers
+# for parallel kernel compilation. In a PyInstaller-bundled app without
+# this guard, each spawned subprocess re-execs the bundled exe, triggering
+# the splash screen + Qt init + everything else at the top of main.py —
+# the user sees the app launch twice. `freeze_support()` makes spawned
+# subprocesses recognize themselves as workers and exit cleanly instead.
+# Documented PyInstaller best practice; harmless in dev mode (no subprocess
+# re-exec happens there).
+multiprocessing.freeze_support()
 
 # Add the src directory to Python path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -334,6 +346,30 @@ def main() -> int:
         setup_logging()
         logger = logging.getLogger(__name__)
         logger.info("Starting MyVoice V2 application with qasync event loop")
+
+        # Story 18.2: enable lossless TF32 + cuDNN benchmark autotune on
+        # Ampere+ CUDA hosts (no-op on CPU / pre-Ampere). The probe and the
+        # conditional logic live inside the helper; main.py just calls. Placed
+        # after setup_logging() so the INFO breadcrumb lands in myvoice.log
+        # rather than stderr-only, and before setup_application() so the
+        # flags are global to the process before any qwen_tts work runs.
+        # Guarded with the same (ImportError, OSError) discipline the torch
+        # import block above uses (main.py:44-49) — a partial install or a
+        # missing CUDA DLL must not abort startup; the speedup is opt-in and
+        # absence is the V2 baseline. Other exception types from the helper
+        # (e.g., a programming bug in metrics.record validation) are NOT
+        # swallowed here — they surface to main()'s outer handler so a
+        # genuine startup defect cannot hide behind this guard.
+        try:
+            from myvoice.services.tts_streaming.torch_runtime import (
+                enable_tf32_and_cudnn_benchmark,
+            )
+            enable_tf32_and_cudnn_benchmark()
+        except (ImportError, OSError) as _tf32_err:
+            logger.warning(
+                f"TF32 + cuDNN benchmark enable failed "
+                f"(continuing without speedup): {_tf32_err}"
+            )
 
         # Story 7.6: Install global exception handler early to catch all unhandled exceptions
         exception_handler = get_exception_handler()

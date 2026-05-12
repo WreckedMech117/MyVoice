@@ -1,0 +1,52 @@
+utterance_id,text,text_length_chars,text_class,is_perceptual_difficult
+s-001,Got it.,7,short,false
+s-002,Hold on.,8,short,false
+s-003,I lost my voice.,16,short,false
+s-004,"Yeah, sure.",11,short,false
+s-005,Let me check that.,18,short,false
+s-006,What did you say?,17,short,false
+s-007,Be right back.,14,short,false
+s-008,Sounds good.,12,short,false
+s-009,On my way.,10,short,false
+s-010,All set.,8,short,false
+s-011,Mic check.,10,short,false
+s-012,Joining now.,12,short,false
+s-013,Thanks again.,13,short,false
+s-014,"Bit, bat, bot, but, bet.",24,short,true
+s-015,"Tap, tip, top, tup, tep.",24,short,true
+s-016,Sip ship sap shop sup.,22,short,true
+s-017,Six sticks split.,17,short,true
+m-001,"I'm going to grab some water, give me one moment.",49,medium,false
+m-002,Can you repeat that? My audio cut out for a second.,51,medium,false
+m-003,Let me share my screen real quick so you can see.,49,medium,false
+m-004,I think we should take a break before continuing the call.,58,medium,false
+m-005,"My headset battery is dying, switching to backup right now.",59,medium,false
+m-006,"Hey team, sorry I'm a few minutes late to the meeting.",54,medium,false
+m-007,Let's circle back on that point after the demo wraps up.,56,medium,false
+m-008,"I'll send the link in chat, give it a refresh on your end.",58,medium,false
+m-009,"Looks like there's some lag, let me try reconnecting once.",58,medium,false
+m-010,"Alright, I think we've covered everything for this session.",60,medium,false
+m-011,She sells seashells by the seashore.,36,medium,true
+m-012,Sister Susie sews shirts for soldiers on Sunday.,48,medium,true
+m-013,The bell rang clear at noon and echoed across the field.,56,medium,true
+m-014,A sharp whistle pierced the silence over the still water.,57,medium,true
+m-015,Around the rugged rocks the ragged rascals ran.,47,medium,false
+m-016,Quick brown foxes jump over lazy sleeping dogs nightly.,55,medium,false
+m-017,Rapidly read the red rotors rolling round the river.,52,medium,false
+l-001,"Welcome to the team meeting everyone, hope you're all having a great morning. Today we'll go over the sprint progress, surface any blockers, and align on the next steps before lunch.",181,long,false
+l-002,I need to walk through the deployment timeline with you because we've got three releases stacked up next week and I want to make sure nothing slips through the cracks before Friday.,180,long,false
+l-003,Let me give you a quick rundown of the customer feedback we received this morning so we can decide together whether the next iteration warrants a hotfix or can wait for the regular release.,192,long,false
+l-004,"Before we dive into the agenda, I want to flag one thing about the staging environment. It went down briefly around two AM and the on-call engineer rebooted the load balancer to bring it back up.",198,long,false
+l-005,I've been thinking about how we can streamline the review process and I have a few ideas that might cut our turnaround time by roughly half if everyone agrees to try the new workflow for a sprint.,197,long,false
+l-006,The integration tests caught an interesting race condition between the audio coordinator and the session registry. It only fires when two generations land within a hundred milliseconds of each other.,200,long,false
+l-007,"Alright everyone, the demo is about to start so please mute your microphones, turn off camera if your bandwidth is shaky, and drop any questions in the chat so we can address them at the end of the recording.",212,long,false
+l-008,I want to share a quick post-mortem on the incident from last Thursday. The root cause was a stale cache entry that survived a deployment and the fix is already in main behind a feature flag.,194,long,false
+l-009,We've also been tracking improvements in our streaming latency over the past month and the numbers are encouraging. Median first-audio latency is down by about thirty percent compared to last quarter.,203,long,false
+l-010,"The plan for the next two weeks is to wrap up the optimization pass on the streaming dispatch path, then pivot to the documentation cleanup that's been sitting in the backlog since the start of the year.",207,long,false
+l-011,"Thanks for joining the standup folks, I really appreciate everyone making time for this even though half of you have other meetings stacked back to back. Let me try to keep this one tight today.",197,long,false
+l-012,"I just got off a call with the design team and they're proposing some pretty significant changes to the settings dialog. Before we commit to anything, I want to talk it through with the engineering side.",208,long,false
+l-013,"She sells seashells by the seashore, and the shells she sells are surely seashells, so if she sells shells on the seashore, I'm sure she sells seashore shells.",163,long,true
+l-014,Six slick slim sycamore saplings stood swaying silently as the soft summer storm slowly swirled across the steep slopes south of the silver stream below us.,158,long,true
+l-015,"We had a wide-ranging conversation about cross-team dependencies, what's blocking the next release, and the timeline for getting the new onboarding flow into production by end of quarter.",190,long,false
+l-016,Honestly the biggest win this month was getting the cooperative cancellation chain end to end working without any race conditions. The smoke tests caught two subtle ordering bugs we'd never have spotted.,203,long,false
+l-017,I'm pretty excited about the empirical validation gates we're rolling out this sprint because for the first time we'll have a quantitative answer to whether the streaming default actually delivers the latency win we promised in the architecture.,243,long,false

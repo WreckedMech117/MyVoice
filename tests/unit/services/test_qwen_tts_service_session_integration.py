@@ -36,6 +36,18 @@ ALLOWED_REGISTRY_ATTRS: frozenset = frozenset({
     "create_session",
     "get",
     "_sessions",
+    # Story 16.5: request_cancel is the new synchronous cancel-chain entry
+    # point — a side-effect dispatch (fires the registered hook), NOT a
+    # state-mutation slot. P-3 (worker → main thread post via post_mutation)
+    # remains the rule for state mutations; request_cancel is a peer of
+    # post_mutation, not a violation.
+    "request_cancel",
+    # Story 16.6 — TRUE_STREAM dispatch path registers a per-session
+    # cancel hook so user-cancel flips ``streamer._cancel_event`` AND
+    # asks the audio coordinator to stop playback. Like ``request_cancel``,
+    # this is a side-effect dispatch (stores a callable in the registry's
+    # cancel-hook map), NOT a state-mutation slot.
+    "register_cancel_hook",
 })
 
 

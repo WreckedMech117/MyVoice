@@ -8,6 +8,7 @@
 
 #define MyAppName "MyVoice"
 #define MyAppVersion "2.1.0"
+#define MyAppBuild "22"
 #define MyAppPublisher "MyVoice Development Team"
 #define MyAppURL "https://github.com/myvoice/myvoice"
 #define MyAppExeName "MyVoice.exe"
@@ -116,6 +117,12 @@ Source: "..\resources\readme.txt"; DestDir: "{app}"; Flags: ignoreversion isread
 Source: "..\resources\license.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 
+; NVIDIA CUDA Toolkit EULA — end-user-visible copy per NVIDIA EULA §1.1.2 #5
+; (Story 18.5 AC #2). The bundled CUDA redistributable subset at
+; _internal\cuda_redist\ is governed by this EULA; making the EULA visible at
+; install root is the redistribution-terms-consistency requirement.
+Source: "..\build_tools\dist\MyVoice\_internal\cuda_redist\EULA.txt"; DestDir: "{app}"; DestName: "NVIDIA_CUDA_EULA.txt"; Flags: ignoreversion
+
 ; Default voice files (ready-to-use samples)
 Source: "..\src\install_files\default_voices\*"; DestDir: "{app}\voice_files"; Flags: ignoreversion createallsubdirs recursesubdirs
 
@@ -153,6 +160,7 @@ Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{#MyAppName}"; Fil
 [Registry]
 ; Register application for proper uninstall
 Root: HKLM; Subkey: "Software\{#MyAppPublisher}\{#MyAppName}"; ValueType: string; ValueName: "Version"; ValueData: "{#MyAppVersion}"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "Software\{#MyAppPublisher}\{#MyAppName}"; ValueType: string; ValueName: "Build"; ValueData: "{#MyAppBuild}"; Flags: uninsdeletekey
 Root: HKLM; Subkey: "Software\{#MyAppPublisher}\{#MyAppName}"; ValueType: string; ValueName: "InstallPath"; ValueData: "{app}"; Flags: uninsdeletekey
 
 ; Add to Windows "App Paths" for command-line access (optional)

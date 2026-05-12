@@ -10,6 +10,7 @@ signal payload discipline (P-4: no `GenerationSession` across signals),
 and error propagation (P-1: no silent no-ops).
 """
 
+import ast
 import inspect
 import re
 import threading
@@ -2081,4 +2082,335 @@ class TestDebugDumpHelper:
         assert dump["previous_saveable_audio_id"] is None
         assert dump["saveable_audio_size_bytes"] > 0
         assert dump["previous_saveable_audio_size_bytes"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Story 16.5 — TestCancelHookRegistration (AC #2, #8)
+# --------------------------------------------------------------------------- #
+
+from myvoice.observability import metrics as _metrics_module  # noqa: E402
+
+
+class TestCancelHookRegistration:
+    """Story 16.5 AC #2 — register_cancel_hook stores callable by identity,
+    re-registration replaces silently, race-tolerant for unknown session_ids,
+    rejects invalid inputs, never emits signals as a side-effect.
+    """
+
+    def test_register_cancel_hook_stores_callable_by_identity(self, qapp):
+        registry = make_registry(qapp)
+        sid = registry.create_session(text="t", voice="v", model_type="m")
+        hook = lambda: None  # noqa: E731
+        registry.register_cancel_hook(sid, hook)
+        assert registry._cancel_hooks[sid] is hook
+
+    def test_register_cancel_hook_replaces_prior_hook_silently(self, qapp):
+        registry = make_registry(qapp)
+        sid = registry.create_session(text="t", voice="v", model_type="m")
+        first_hook = lambda: None  # noqa: E731
+        second_hook = lambda: None  # noqa: E731
+        registry.register_cancel_hook(sid, first_hook)
+        registry.register_cancel_hook(sid, second_hook)
+        assert registry._cancel_hooks[sid] is second_hook
+        assert registry._cancel_hooks[sid] is not first_hook
+
+    def test_register_cancel_hook_succeeds_for_unknown_session_id(self, qapp):
+        # Race-tolerance: Story 16.6's dispatcher may register the hook in
+        # a different tick than create_session. Quiet-succeed here lets that
+        # ordering work without lock-step coordination.
+        registry = make_registry(qapp)
+        hook = lambda: None  # noqa: E731
+        registry.register_cancel_hook("nonexistent-sid", hook)
+        assert registry._cancel_hooks["nonexistent-sid"] is hook
+        assert "nonexistent-sid" not in registry._sessions
+
+    @pytest.mark.parametrize("sid,hook,expected_match", [
+        ("", lambda: None, "session_id"),
+        (None, lambda: None, "session_id"),
+        ("valid-sid", None, "hook"),
+    ])
+    def test_register_cancel_hook_validates_inputs(
+        self, qapp, sid, hook, expected_match
+    ):
+        registry = make_registry(qapp)
+        with pytest.raises(ValueError, match=expected_match):
+            registry.register_cancel_hook(sid, hook)
+
+    def test_register_cancel_hook_does_not_emit_signals(self, qapp):
+        # AC #2: registration alone must not flip any of the four registry
+        # signals. Signals fire on state transitions and saveable promotion;
+        # hook registration is a pure side-effect-free dict assignment.
+        registry = make_registry(qapp)
+        sid = registry.create_session(text="t", voice="v", model_type="m")
+        state_changes = capture_state_changes(registry)
+        focal_changes = capture_focal_changes(registry)
+        saveable_changes: list = []
+        registry.saveable_session_changed.connect(saveable_changes.append)
+        # Snapshot baseline (create_session may have triggered focal recompute).
+        baseline_state = list(state_changes)
+        baseline_focal = list(focal_changes)
+        baseline_saveable = list(saveable_changes)
+        registry.register_cancel_hook(sid, lambda: None)
+        assert state_changes == baseline_state
+        assert focal_changes == baseline_focal
+        assert saveable_changes == baseline_saveable
+
+
+# --------------------------------------------------------------------------- #
+# Story 16.5 — TestRequestCancelInvocation (AC #3, #5, #6)
+# --------------------------------------------------------------------------- #
+
+
+class TestRequestCancelInvocation:
+    """Story 16.5 AC #3, #5, #6 — request_cancel synchronously fires the
+    registered hook, never transitions session state, is a quiet no-op
+    for unregistered ids, records cancel_hook_error on hook exception,
+    runs on the calling thread, and the four terminal-state slots
+    (cancel/mark_done/set_error/discard) auto-clear the hook.
+    """
+
+    def test_request_cancel_fires_registered_hook_synchronously(self, qapp):
+        registry = make_registry(qapp)
+        sid = registry.create_session(text="t", voice="v", model_type="m")
+        call_count: list[int] = []
+        registry.register_cancel_hook(sid, lambda: call_count.append(1))
+        registry.request_cancel(sid)
+        assert call_count == [1]  # synchronous: count incremented before return
+
+    def test_request_cancel_no_op_when_no_hook_registered(self, qapp):
+        # AC #3: quiet no-op for unregistered session_ids — today's batch +
+        # sentence-stream callers in cancel_generation invoke this
+        # unconditionally and correctly carry no hook.
+        registry = make_registry(qapp)
+        sid = registry.create_session(text="t", voice="v", model_type="m")
+        # No hook registered. Must not raise.
+        registry.request_cancel(sid)
+        # Also unknown session_id is a no-op.
+        registry.request_cancel("never-existed")
+
+    def test_request_cancel_does_not_transition_session_state(self, qapp):
+        # AC #6: P-7 invariant — request_cancel "sets the event"; it does
+        # NOT transition state. The decoder worker's drain-on-cancel posts
+        # the actual CANCELLED transition via post_mutation('cancel', sid).
+        registry = make_registry(qapp)
+        sid = registry.create_session(text="t", voice="v", model_type="m")
+        registry.start_generation(sid)
+        assert registry.get(sid).state == SessionState.GENERATING
+        registry.register_cancel_hook(sid, lambda: None)
+        registry.request_cancel(sid)
+        assert registry.get(sid).state == SessionState.GENERATING
+
+    def test_request_cancel_does_not_emit_session_state_changed(self, qapp):
+        # AC #6: state-changed signal fires only when the existing `cancel`
+        # slot runs (after the worker posts the mutation). request_cancel
+        # itself is signal-quiet.
+        registry = make_registry(qapp)
+        sid = registry.create_session(text="t", voice="v", model_type="m")
+        registry.start_generation(sid)
+        registry.register_cancel_hook(sid, lambda: None)
+        state_changes = capture_state_changes(registry)
+        focal_changes = capture_focal_changes(registry)
+        saveable_changes: list = []
+        registry.saveable_session_changed.connect(saveable_changes.append)
+        registry.request_cancel(sid)
+        assert state_changes == []
+        assert focal_changes == []
+        assert saveable_changes == []
+
+    def test_request_cancel_invokes_hook_on_calling_thread(self, qapp):
+        # AC #3 cross-thread clause: the hook runs on whichever thread
+        # calls request_cancel. No Qt-main hop. Verified by recording
+        # threading.get_ident() inside the hook and comparing to the
+        # worker thread that called request_cancel.
+        registry = make_registry(qapp)
+        sid = registry.create_session(text="t", voice="v", model_type="m")
+        hook_thread_ids: list[int] = []
+        registry.register_cancel_hook(
+            sid, lambda: hook_thread_ids.append(threading.get_ident())
+        )
+        worker_thread_id_holder: list[int] = []
+
+        def worker():
+            worker_thread_id_holder.append(threading.get_ident())
+            registry.request_cancel(sid)
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join(timeout=2.0)
+        assert len(hook_thread_ids) == 1
+        assert len(worker_thread_id_holder) == 1
+        assert hook_thread_ids[0] == worker_thread_id_holder[0]
+        # And NOT the qapp main thread.
+        assert hook_thread_ids[0] != threading.get_ident()
+
+    def test_request_cancel_records_metric_when_hook_raises(self, qapp):
+        # AC #3 hook-exception clause: catch, record cancel_hook_error
+        # metric (numeric value 1.0 per Story 16.4 H1 precedent), return
+        # normally. The hook is NOT auto-cleared on exception so retry
+        # paths (Story 16.6 future) can re-fire.
+        registry = make_registry(qapp)
+        sid = registry.create_session(text="t", voice="v", model_type="m")
+
+        def raising_hook():
+            raise RuntimeError("streamer was already torn down")
+
+        registry.register_cancel_hook(sid, raising_hook)
+
+        captured: list = []
+        unsub = _metrics_module.add_listener(captured.append)
+        try:
+            # Must not raise.
+            registry.request_cancel(sid)
+        finally:
+            unsub()
+
+        cancel_errors = [r for r in captured if r.name == "cancel_hook_error"]
+        assert len(cancel_errors) == 1
+        rec = cancel_errors[0]
+        # Numeric value (per Story 16.4 H1 fix — real metrics.record
+        # validates int|float at metrics.py:95-98).
+        assert isinstance(rec.value, (int, float))
+        assert rec.value == 1.0
+        assert rec.session_id == sid
+        assert "RuntimeError" in rec.tags["error_repr"]
+        # Hook NOT auto-cleared — retry against same surface still works.
+        assert sid in registry._cancel_hooks
+
+    def test_request_cancel_idempotent_when_called_repeatedly(self, qapp):
+        # AC #1 second `Given` clause: a second call after the event was
+        # already flipped is harmless — the hook fires again (it's a
+        # no-op the second time because the underlying state is already
+        # set), and no exception is raised.
+        registry = make_registry(qapp)
+        sid = registry.create_session(text="t", voice="v", model_type="m")
+        call_count: list[int] = []
+        registry.register_cancel_hook(sid, lambda: call_count.append(1))
+        registry.request_cancel(sid)
+        registry.request_cancel(sid)
+        registry.request_cancel(sid)
+        assert call_count == [1, 1, 1]
+
+    def test_cancel_slot_clears_registered_hook(self, qapp):
+        # AC #5: cancel terminal-state slot auto-clears the hook.
+        registry = make_registry(qapp)
+        sid = registry.create_session(text="t", voice="v", model_type="m")
+        registry.start_generation(sid)
+        registry.register_cancel_hook(sid, lambda: None)
+        assert sid in registry._cancel_hooks
+        registry.cancel(sid)
+        assert sid not in registry._cancel_hooks
+
+    def test_mark_done_clears_registered_hook(self, qapp):
+        # AC #5: mark_done terminal-state slot auto-clears the hook. Walk
+        # the session through the full lifecycle PENDING → GENERATING →
+        # READY_TO_PLAY → PLAYING → DONE under a registered hook.
+        registry = make_registry(qapp)
+        audio = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        sid = registry.create_session(text="t", voice="v", model_type="m")
+        registry.register_cancel_hook(sid, lambda: None)
+        registry.start_generation(sid)
+        registry.append_chunk(sid, audio)
+        registry.finalize(sid)
+        registry.mark_playing(sid)
+        registry.mark_done(sid)
+        assert sid not in registry._cancel_hooks
+
+    def test_set_error_clears_registered_hook(self, qapp):
+        # AC #5: set_error terminal-state slot auto-clears the hook.
+        registry = make_registry(qapp)
+        sid = registry.create_session(text="t", voice="v", model_type="m")
+        registry.start_generation(sid)
+        registry.register_cancel_hook(sid, lambda: None)
+        registry.set_error(sid)
+        assert sid not in registry._cancel_hooks
+
+    def test_discard_clears_registered_hook_idempotently(self, qapp):
+        # AC #5: discard is the architecturally-canonical latest cleanup
+        # point; it provides defense-in-depth even though prior CANCELLED
+        # already cleared the hook. Verify both: (a) discard alone clears
+        # the hook for a session that bypassed cancel/mark_done/set_error
+        # — by directly transitioning through state — and (b) the
+        # cancel-then-discard double-cleanup is idempotent (no exception).
+        registry = make_registry(qapp)
+        sid = registry.create_session(text="t", voice="v", model_type="m")
+        registry.register_cancel_hook(sid, lambda: None)
+        registry.start_generation(sid)
+        registry.cancel(sid)  # First terminal — clears hook.
+        assert sid not in registry._cancel_hooks
+        # Now discard — double-cleanup is idempotent (dict.pop with default).
+        registry.discard(sid)
+        assert sid not in registry._cancel_hooks
+
+
+# --------------------------------------------------------------------------- #
+# Story 16.5 — TestCancelChainModuleBoundary (AC #8)
+# --------------------------------------------------------------------------- #
+
+
+class TestCancelChainModuleBoundary:
+    """Story 16.5 AC #8 — session_registry.py must not import
+    tts_streaming.* or audio_coordinator (architecture line 662). The new
+    cancel-hook surface carries any such reference indirectly via the
+    callable's closure — the registry never imports those modules.
+    """
+
+    @pytest.fixture
+    def source_text(self) -> str:
+        path = Path(inspect.getsourcefile(SessionRegistry))
+        return path.read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("forbidden", [
+        "from myvoice.services.tts_streaming",
+        "import myvoice.services.tts_streaming",
+        "from myvoice.services.audio_coordinator",
+        "import myvoice.services.audio_coordinator",
+        "from myvoice.services.qwen_tts_service",
+        "import myvoice.services.qwen_tts_service",
+    ])
+    def test_no_forbidden_intra_project_imports(self, source_text, forbidden):
+        assert forbidden not in source_text, (
+            f"session_registry.py must not import {forbidden!r} per AC #8 / "
+            f"architecture line 662"
+        )
+
+    def test_callable_import_present(self, source_text):
+        # The new register_cancel_hook signature uses Callable[[], None].
+        assert "Callable" in source_text
+
+    def test_observability_metrics_import_present(self, source_text):
+        # request_cancel uses metrics.record('cancel_hook_error', ...) on
+        # the hook-exception path (per Story 16.4 H1 numeric-value pattern).
+        # session_registry.py is allowed to import observability.metrics
+        # per architecture line 662.
+        assert (
+            "from myvoice.observability import metrics" in source_text
+            or "from myvoice.observability.metrics" in source_text
+        )
+
+    def test_imports_via_ast_walk(self, source_text):
+        # AST-level verification (the parametrized string-in-source check
+        # above is a fast first line of defense; AST walk is the
+        # authoritative one — a code formatter or comment containing
+        # "from myvoice.services.tts_streaming" would not register here).
+        tree = ast.parse(source_text)
+        forbidden_modules = {
+            "myvoice.services.tts_streaming",
+            "myvoice.services.audio_coordinator",
+            "myvoice.services.qwen_tts_service",
+        }
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                for forbidden in forbidden_modules:
+                    assert not module.startswith(forbidden), (
+                        f"AST: ImportFrom {module!r} forbidden in "
+                        f"session_registry.py"
+                    )
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    for forbidden in forbidden_modules:
+                        assert not alias.name.startswith(forbidden), (
+                            f"AST: Import {alias.name!r} forbidden in "
+                            f"session_registry.py"
+                        )
 

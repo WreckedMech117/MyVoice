@@ -1,0 +1,188 @@
+{
+  "L1": {
+    "s-014": {
+      "trial_A_filename": "s-014-fp32_eager.wav",
+      "trial_A_actual_mode": "fp32_eager",
+      "trial_B_filename": "s-014-bf16_compile.wav",
+      "trial_B_actual_mode": "bf16_compile"
+    },
+    "s-015": {
+      "trial_A_filename": "s-015-fp32_eager.wav",
+      "trial_A_actual_mode": "fp32_eager",
+      "trial_B_filename": "s-015-bf16_compile.wav",
+      "trial_B_actual_mode": "bf16_compile"
+    },
+    "s-016": {
+      "trial_A_filename": "s-016-bf16_compile.wav",
+      "trial_A_actual_mode": "bf16_compile",
+      "trial_B_filename": "s-016-fp32_eager.wav",
+      "trial_B_actual_mode": "fp32_eager"
+    },
+    "s-017": {
+      "trial_A_filename": "s-017-bf16_compile.wav",
+      "trial_A_actual_mode": "bf16_compile",
+      "trial_B_filename": "s-017-fp32_eager.wav",
+      "trial_B_actual_mode": "fp32_eager"
+    },
+    "m-011": {
+      "trial_A_filename": "m-011-bf16_compile.wav",
+      "trial_A_actual_mode": "bf16_compile",
+      "trial_B_filename": "m-011-fp32_eager.wav",
+      "trial_B_actual_mode": "fp32_eager"
+    },
+    "m-012": {
+      "trial_A_filename": "m-012-bf16_compile.wav",
+      "trial_A_actual_mode": "bf16_compile",
+      "trial_B_filename": "m-012-fp32_eager.wav",
+      "trial_B_actual_mode": "fp32_eager"
+    },
+    "m-013": {
+      "trial_A_filename": "m-013-bf16_compile.wav",
+      "trial_A_actual_mode": "bf16_compile",
+      "trial_B_filename": "m-013-fp32_eager.wav",
+      "trial_B_actual_mode": "fp32_eager"
+    },
+    "m-014": {
+      "trial_A_filename": "m-014-fp32_eager.wav",
+      "trial_A_actual_mode": "fp32_eager",
+      "trial_B_filename": "m-014-bf16_compile.wav",
+      "trial_B_actual_mode": "bf16_compile"
+    },
+    "l-013": {
+      "trial_A_filename": "l-013-fp32_eager.wav",
+      "trial_A_actual_mode": "fp32_eager",
+      "trial_B_filename": "l-013-bf16_compile.wav",
+      "trial_B_actual_mode": "bf16_compile"
+    },
+    "l-014": {
+      "trial_A_filename": "l-014-fp32_eager.wav",
+      "trial_A_actual_mode": "fp32_eager",
+      "trial_B_filename": "l-014-bf16_compile.wav",
+      "trial_B_actual_mode": "bf16_compile"
+    }
+  },
+  "L2": {
+    "s-014": {
+      "trial_A_filename": "s-014-bf16_compile.wav",
+      "trial_A_actual_mode": "bf16_compile",
+      "trial_B_filename": "s-014-fp32_eager.wav",
+      "trial_B_actual_mode": "fp32_eager"
+    },
+    "s-015": {
+      "trial_A_filename": "s-015-bf16_compile.wav",
+      "trial_A_actual_mode": "bf16_compile",
+      "trial_B_filename": "s-015-fp32_eager.wav",
+      "trial_B_actual_mode": "fp32_eager"
+    },
+    "s-016": {
+      "trial_A_filename": "s-016-fp32_eager.wav",
+      "trial_A_actual_mode": "fp32_eager",
+      "trial_B_filename": "s-016-bf16_compile.wav",
+      "trial_B_actual_mode": "bf16_compile"
+    },
+    "s-017": {
+      "trial_A_filename": "s-017-fp32_eager.wav",
+      "trial_A_actual_mode": "fp32_eager",
+      "trial_B_filename": "s-017-bf16_compile.wav",
+      "trial_B_actual_mode": "bf16_compile"
+    },
+    "m-011": {
+      "trial_A_filename": "m-011-fp32_eager.wav",
+      "trial_A_actual_mode": "fp32_eager",
+      "trial_B_filename": "m-011-bf16_compile.wav",
+      "trial_B_actual_mode": "bf16_compile"
+    },
+    "m-012": {
+      "trial_A_filename": "m-012-bf16_compile.wav",
+      "trial_A_actual_mode": "bf16_compile",
+      "trial_B_filename": "m-012-fp32_eager.wav",
+      "trial_B_actual_mode": "fp32_eager"
+    },
+    "m-013": {
+      "trial_A_filename": "m-013-bf16_compile.wav",
+      "trial_A_actual_mode": "bf16_compile",
+      "trial_B_filename": "m-013-fp32_eager.wav",
+      "trial_B_actual_mode": "fp32_eager"
+    },
+    "m-014": {
+      "trial_A_filename": "m-014-bf16_compile.wav",
+      "trial_A_actual_mode": "bf16_compile",
+      "trial_B_filename": "m-014-fp32_eager.wav",
+      "trial_B_actual_mode": "fp32_eager"
+    },
+    "l-013": {
+      "trial_A_filename": "l-013-bf16_compile.wav",
+      "trial_A_actual_mode": "bf16_compile",
+      "trial_B_filename": "l-013-fp32_eager.wav",
+      "trial_B_actual_mode": "fp32_eager"
+    },
+    "l-014": {
+      "trial_A_filename": "l-014-fp32_eager.wav",
+      "trial_A_actual_mode": "fp32_eager",
+      "trial_B_filename": "l-014-bf16_compile.wav",
+      "trial_B_actual_mode": "bf16_compile"
+    }
+  },
+  "L3": {
+    "s-014": {
+      "trial_A_filename": "s-014-fp32_eager.wav",
+      "trial_A_actual_mode": "fp32_eager",
+      "trial_B_filename": "s-014-bf16_compile.wav",
+      "trial_B_actual_mode": "bf16_compile"
+    },
+    "s-015": {
+      "trial_A_filename": "s-015-bf16_compile.wav",
+      "trial_A_actual_mode": "bf16_compile",
+      "trial_B_filename": "s-015-fp32_eager.wav",
+      "trial_B_actual_mode": "fp32_eager"
+    },
+    "s-016": {
+      "trial_A_filename": "s-016-bf16_compile.wav",
+      "trial_A_actual_mode": "bf16_compile",
+      "trial_B_filename": "s-016-fp32_eager.wav",
+      "trial_B_actual_mode": "fp32_eager"
+    },
+    "s-017": {
+      "trial_A_filename": "s-017-bf16_compile.wav",
+      "trial_A_actual_mode": "bf16_compile",
+      "trial_B_filename": "s-017-fp32_eager.wav",
+      "trial_B_actual_mode": "fp32_eager"
+    },
+    "m-011": {
+      "trial_A_filename": "m-011-fp32_eager.wav",
+      "trial_A_actual_mode": "fp32_eager",
+      "trial_B_filename": "m-011-bf16_compile.wav",
+      "trial_B_actual_mode": "bf16_compile"
+    },
+    "m-012": {
+      "trial_A_filename": "m-012-fp32_eager.wav",
+      "trial_A_actual_mode": "fp32_eager",
+      "trial_B_filename": "m-012-bf16_compile.wav",
+      "trial_B_actual_mode": "bf16_compile"
+    },
+    "m-013": {
+      "trial_A_filename": "m-013-bf16_compile.wav",
+      "trial_A_actual_mode": "bf16_compile",
+      "trial_B_filename": "m-013-fp32_eager.wav",
+      "trial_B_actual_mode": "fp32_eager"
+    },
+    "m-014": {
+      "trial_A_filename": "m-014-fp32_eager.wav",
+      "trial_A_actual_mode": "fp32_eager",
+      "trial_B_filename": "m-014-bf16_compile.wav",
+      "trial_B_actual_mode": "bf16_compile"
+    },
+    "l-013": {
+      "trial_A_filename": "l-013-bf16_compile.wav",
+      "trial_A_actual_mode": "bf16_compile",
+      "trial_B_filename": "l-013-fp32_eager.wav",
+      "trial_B_actual_mode": "fp32_eager"
+    },
+    "l-014": {
+      "trial_A_filename": "l-014-fp32_eager.wav",
+      "trial_A_actual_mode": "fp32_eager",
+      "trial_B_filename": "l-014-bf16_compile.wav",
+      "trial_B_actual_mode": "bf16_compile"
+    }
+  }
+}

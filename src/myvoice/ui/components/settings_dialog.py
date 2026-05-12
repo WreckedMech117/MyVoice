@@ -26,7 +26,10 @@ from myvoice.ui.styles.theme_manager import get_theme_manager
 from myvoice.ui.components.quick_speak_settings_widget import QuickSpeakSettingsWidget
 from myvoice.ui.components.voice_selector import VoiceSelector
 from myvoice.ui.components.voice_library_widget import VoiceLibraryWidget
-from myvoice.ui.dialogs.settings import ClearCommsSettingsPanel  # Story 15.3
+from myvoice.ui.dialogs.settings import (
+    ClearCommsSettingsPanel,  # Story 15.3
+    StreamingSettingsPanel,  # Story 16.6
+)
 from myvoice.ui.dialogs.voice_design_studio import VoiceDesignStudioDialog
 from myvoice.services.quick_speak_service import QuickSpeakService
 from myvoice.services.voice_profile_service import VoiceProfileManager
@@ -165,6 +168,12 @@ class SettingsDialog(QDialog):
 
         # Quick Speak settings tab
         self._create_quick_speak_tab()
+
+        # Streaming settings tab (Story 16.6 — exposes
+        # ``streaming_mode_override`` so the user can pick Auto / TRUE_STREAM /
+        # SENTENCE_STREAM / BATCH per AC #5). Inserted before Clear Comms so
+        # Story 15.3's "Clear Comms is the last tab" UX invariant survives.
+        self._create_streaming_tab()
 
         # Clear Comms settings tab (Story 15.3)
         self._create_clear_comms_tab()
@@ -732,6 +741,20 @@ class SettingsDialog(QDialog):
             self.clear_comms_test_playback_requested.emit
         )
         self.tab_widget.addTab(self.clear_comms_panel, "Clear Comms")
+
+    def _create_streaming_tab(self):
+        """Create the Streaming settings tab (Story 16.6, AC #5).
+
+        Instantiates ``StreamingSettingsPanel`` bound to ``current_settings``
+        so the dropdown reads/writes ``AppSettings.streaming_mode_override``
+        directly. The staging copy is what the dialog applies on OK; on
+        Cancel the original settings are kept and the staged copy is
+        discarded — matching the existing dialog convention.
+        """
+        self.streaming_panel = StreamingSettingsPanel(
+            app_settings=self.current_settings, parent=self
+        )
+        self.tab_widget.addTab(self.streaming_panel, "Streaming")
 
     def _mark_settings_modified(self):
         """Mark settings as modified (for future save tracking)."""

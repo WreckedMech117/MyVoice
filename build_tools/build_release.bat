@@ -76,6 +76,118 @@ if not exist "installer.iss" (
 echo + Build files found
 echo.
 
+REM ----------------------------------------------------------------------------
+REM Pin verification — qwen-tts must match Story 16.1 / D-12 commit hash
+REM (tooling-2 AC #2). Halts the build at "Pre-Build Checks" on mismatch.
+REM ----------------------------------------------------------------------------
+
+echo [Pin Verification]
+echo.
+"%PYTHON_EXE%" verify_qwen_tts_pin.py
+if %ERRORLEVEL% NEQ 0 (
+    echo.
+    echo ============================================================================
+    echo ERROR: qwen-tts pin verification failed!
+    echo ============================================================================
+    echo.
+    echo See above for the expected/actual hashes and restoration commands.
+    echo.
+    pause
+    exit /b 1
+)
+echo.
+
+REM ----------------------------------------------------------------------------
+REM Bundle Prerequisites — Story 18.5 / Phase ⊥-Polish-2-Ship
+REM Halts the build if the three packaging components Story 18.5 introduces
+REM are missing on the build host. Without these, the produced bundle silently
+REM ships without triton-windows + Python dev headers + CUDA Toolkit
+REM redistributable subset; the talker forward pass falls back to eager mode
+REM at runtime (the Story 18.4 / Fix #4 failure class). Placement: after
+REM [Pin Verification], before [Version Management] — canonical "build
+REM prerequisites verified" gate per the tooling-2 pattern.
+REM ----------------------------------------------------------------------------
+
+echo [Bundle Prerequisites]
+echo.
+
+REM Probe 1 — Python 3.10.11 dev headers (Story 18.5 Task 1.4)
+if not exist "%PYTHON_DIR%\Include\Python.h" (
+    echo ERROR: Python 3.10.11 dev headers missing at %PYTHON_DIR%\Include\Python.h
+    echo.
+    echo Triton's runtime kernel compilation pipeline requires Python dev headers.
+    echo The portable embeddable-zip Python distribution does not ship these by default.
+    echo.
+    echo REMEDIATION: install Python 3.10.11 from python.org to a side location
+    echo   ^(e.g., C:\Python310-fullinstall\^), then copy:
+    echo     C:\Python310-fullinstall\Include\        -^> %PYTHON_DIR%\Include\
+    echo     C:\Python310-fullinstall\libs\python310.lib -^> %PYTHON_DIR%\libs\python310.lib
+    echo.
+    echo See _bmad-output\handoff-2026-05-11.md ^"Triton-on-Windows dev-env setup^".
+    pause
+    exit /b 1
+)
+echo + Python dev headers found
+
+REM Probe 2 — Python 3.10.11 dev libs (Story 18.5 Task 1.4)
+if not exist "%PYTHON_DIR%\libs\python310.lib" (
+    echo ERROR: Python 3.10.11 dev libs missing at %PYTHON_DIR%\libs\python310.lib
+    echo.
+    echo REMEDIATION: install Python 3.10.11 from python.org to a side location
+    echo   ^(e.g., C:\Python310-fullinstall\^), then copy:
+    echo     C:\Python310-fullinstall\libs\python310.lib -^> %PYTHON_DIR%\libs\python310.lib
+    echo.
+    echo See _bmad-output\handoff-2026-05-11.md ^"Triton-on-Windows dev-env setup^".
+    pause
+    exit /b 1
+)
+echo + Python dev libs found
+
+REM Probe 3 — triton-windows installed in bundled site-packages (Story 18.5 Task 1.6)
+if not exist "%PYTHON_DIR%\Lib\site-packages\triton\__init__.py" (
+    echo ERROR: triton-windows not installed in portable Python site-packages
+    echo Expected: %PYTHON_DIR%\Lib\site-packages\triton\__init__.py
+    echo.
+    echo REMEDIATION:
+    echo   "%PYTHON_EXE%" -m pip install --no-deps triton-windows
+    echo.
+    echo The --no-deps flag prevents pip from pulling transitive dependencies
+    echo that would silently inflate the bundle.
+    pause
+    exit /b 1
+)
+echo + triton-windows site-packages found
+
+REM Probe 4 — CUDA Toolkit redistributable subset staged (Story 18.5 Task 2.1)
+REM Probes for a load-bearing DLL match rather than the directory itself, so
+REM a partial-staging accident (empty dir, missing DLLs) also halts the build.
+REM NOTE: probes for cudart64_*.dll (legal redistributable). Does NOT probe
+REM for nvcc.exe — that path is FORBIDDEN per `stage_cuda_subset.py`'s
+REM EULA §1.1.2 #4 hard-reject.
+set CUDA_SUBSET_DIR=%~dp0cuda_toolkit_subset
+set CUDA_SUBSET_PROBE_OK=
+for %%F in ("%CUDA_SUBSET_DIR%\bin\cudart64_*.dll") do (
+    if exist "%%F" set CUDA_SUBSET_PROBE_OK=1
+)
+if not defined CUDA_SUBSET_PROBE_OK (
+    echo ERROR: CUDA Toolkit redistributable subset not staged
+    echo Expected: %CUDA_SUBSET_DIR%\bin\cudart64_*.dll ^(among others^)
+    echo.
+    echo REMEDIATION ^(one-time per build host^):
+    echo   "%PYTHON_EXE%" "%~dp0stage_cuda_subset.py"
+    echo.
+    echo The staging script copies the NVIDIA-Attachment-A-redistributable subset
+    echo from %%CUDA_PATH%% to build_tools\cuda_toolkit_subset\. The script reads
+    echo CUDA_PATH; ensure CUDA Toolkit 12.8 is installed system-wide before
+    echo running it. See Story 18.5 Task 2 for the full recipe.
+    pause
+    exit /b 1
+)
+echo + CUDA Toolkit redistributable subset staged
+
+echo + All Story 18.5 bundle prerequisites verified
+echo.
+
 REM ============================================================================
 REM Get/Update Version
 REM ============================================================================
@@ -93,6 +205,25 @@ if /i "!INCREMENT_BUILD!"=="y" (
     echo.
 )
 
+REM ----------------------------------------------------------------------------
+REM Sync version constants across files (tooling-2 AC #5). Propagates the
+REM possibly-just-incremented VERSION_MAJOR/MINOR/PATCH/BUILD from
+REM version.py into src/myvoice/__init__.py and installer.iss so the
+REM produced installer's Add/Remove Programs entry, registry Version key,
+REM registry Build key, and OutputBaseFilename all agree with version.py.
+REM Closes the gap noted in Story tooling-2 AC #5.
+REM ----------------------------------------------------------------------------
+echo [Version Sync]
+"%PYTHON_EXE%" version.py update-all
+if %ERRORLEVEL% NEQ 0 (
+    echo.
+    echo ============================================================================
+    echo ERROR: version.py update-all failed!
+    echo ============================================================================
+    echo.
+    pause
+    exit /b 1
+)
 echo.
 
 REM ============================================================================

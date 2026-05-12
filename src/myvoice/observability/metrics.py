@@ -56,17 +56,27 @@ class MetricRecord:
 
     Field assignment is frozen (``dataclasses.FrozenInstanceError`` on write),
     but the ``tags`` dict itself is mutable — only the binding is immutable.
+
+    Story 16.6 widens ``value`` to ``float | int | str`` to match architecture
+    P-9's ``"value": <number_or_string>`` schema (line 470). The original
+    Story 11.3 implementation narrowed this to numeric-only; the
+    ``streaming_mode`` and ``streaming_mode_fallback`` metrics emitted from
+    ``QwenTTSService._dispatch_by_streaming_mode`` are the first string-valued
+    consumers. Numeric listeners (e.g., ``_FirstChunkLatencyAggregator``) are
+    expected to type-check ``isinstance(record.value, (int, float))`` before
+    arithmetic; the project's existing aggregator already filters by metric
+    name so unrelated string-valued metrics never reach its averaging code.
     """
 
     name: str
-    value: float
+    value: "float | int | str"
     session_id: Optional[str]
     tags: "dict[str, Any]" = field(default_factory=dict)
 
 
 def record(
     name: str,
-    value: "float | int",
+    value: "float | int | str",
     *,
     session_id: Optional[str] = None,
     **tags: Any,
@@ -88,13 +98,15 @@ def record(
     if not isinstance(name, str) or not name.strip():
         raise ValueError("metrics.record() name must be a non-empty string")
 
-    # AC #6: value guard — int and float (and bool, since bool subclasses int)
-    # accepted; everything else rejected. ``isinstance(_, bool)`` is *not*
-    # excluded — Python's ``bool`` is a subclass of ``int`` and the AC is
-    # explicit that this is the intended behavior.
-    if not isinstance(value, (int, float)):
+    # AC #6 (Story 16.6 widening): value guard — int, float, bool (subclass of
+    # int), and str now all accepted; everything else rejected. The string
+    # branch is required for the ``streaming_mode`` / ``streaming_mode_fallback``
+    # metrics defined in Story 16.6's three-mode dispatch (D-19 / P-9 line 470:
+    # ``"value": <number_or_string>``).
+    if not isinstance(value, (int, float, str)):
         raise TypeError(
-            f"metrics.record() value must be int or float; got {type(value).__name__}"
+            f"metrics.record() value must be int, float, or str; "
+            f"got {type(value).__name__}"
         )
 
     # AC #4 / AC #5: extra payload — tags always present (even when empty),

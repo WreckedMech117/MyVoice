@@ -2309,6 +2309,47 @@ class MainWindow(QMainWindow):
         Args:
             event: Close event
         """
+        # Story 18.3 measurement-mode bypass — when MYVOICE_AUTO_QUIT_ON_CLOSE=1
+        # is set in the environment, clicking the window's X button performs
+        # an immediate clean close: no tray-minimize, no confirmation dialog.
+        # Used by the NFR1 measurement bats (03_*.bat / 04_*.bat) so a 10-launch
+        # loop can advance without manual right-click-tray-Exit + dialog
+        # confirmation per iteration. Production behavior is unchanged when
+        # the env var is unset (the memory note in
+        # `main_window_close_confirm_dialog_in_tests.md` requires NOT
+        # weakening the dialog itself — env-var-gated bypass is opt-in).
+        import os as _os_mod
+        measurement_mode = _os_mod.environ.get("MYVOICE_AUTO_QUIT_ON_CLOSE") == "1"
+        if measurement_mode:
+            self._force_quit = True
+            self.logger.debug(
+                "MYVOICE_AUTO_QUIT_ON_CLOSE=1 — bypassing tray-minimize + confirm dialog"
+            )
+
+            # Story 18.3 M2 follow-up — Commander reported hit-or-miss
+            # cut-off-at-end during NFR1 measurement runs. Root cause: when
+            # the user clicks X immediately after generation completes, the
+            # close cascade (aboutToQuit → _cleanup_services →
+            # _audio_coordinator.stop()) tears down the PyAudio streams
+            # while the chunk-handler's `await asyncio.sleep(drain_wait)`
+            # is still in flight → drain await is cancelled mid-sleep →
+            # un-played audio in the buffer is lost.
+            #
+            # Fix: in measurement mode, synchronously process Qt events
+            # for up to (drain_wait + safety_buffer) so the qasync loop
+            # can finish the in-flight drain before close proceeds. Uses
+            # QApplication.processEvents() in a brief loop — the asyncio
+            # tasks running on the qasync event loop get CPU time to
+            # complete the drain. Production behavior unchanged (only
+            # fires when AUTO_QUIT_ON_CLOSE=1).
+            try:
+                self._wait_for_pending_audio_drain()
+            except Exception:
+                self.logger.warning(
+                    "Measurement-mode drain wait raised (non-fatal)",
+                    exc_info=True,
+                )
+
         # Story 7.2: Check if we should minimize to tray instead of closing
         should_minimize_to_tray = (
             not self._force_quit and
@@ -2370,6 +2411,87 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.logger.exception(f"Error during window close: {e}")
             event.accept()  # Close anyway to prevent hanging
+
+    def _wait_for_pending_audio_drain(self) -> None:
+        """Block briefly so any in-flight audio drain can finish before close.
+
+        Story 18.3 M2 follow-up — measurement-mode close-race fix.
+
+        When ``MYVOICE_AUTO_QUIT_ON_CLOSE=1`` and the user clicks X right
+        after generation completes, the asyncio task in
+        ``app._handle_progressive_chunk_async`` may be sitting on
+        ``await asyncio.sleep(drain_wait)`` inside
+        ``audio_coordinator.stop_streaming_session(wait_for_drain=True)``.
+        If we let closeEvent return immediately, ``aboutToQuit`` fires →
+        ``_cleanup_services`` → ``_audio_coordinator.stop()`` tears down
+        the PyAudio streams while the drain is still in flight → audio
+        cuts off.
+
+        Fix: read the AudioCoordinator's drain-wait math directly and
+        spin Qt's event loop (``processEvents``) for up to that long, so
+        the qasync loop processes the drain task to completion before
+        cleanup proceeds. Bounded by the AudioCoordinator's own
+        ``_MAX_DRAIN_WAIT_S`` so we can't hang.
+
+        Production behavior is unchanged (this method is only called when
+        the env-var-gated measurement-mode bypass is engaged).
+        """
+        import time as _time
+        from PyQt6.QtCore import QCoreApplication
+
+        # MainWindow holds the AudioCoordinator via `set_audio_coordinator`
+        # (line ~2560) which stamps `self.audio_coordinator`. Walk defensively
+        # so a test harness or partially-initialized state doesn't crash
+        # the close path.
+        coord = getattr(self, "audio_coordinator", None)
+        if coord is None:
+            self.logger.debug(
+                "Measurement-mode drain wait: no AudioCoordinator reachable; skipping"
+            )
+            return
+
+        # Story 18.3 M6 — read the LAST-chunk trackers, not the FIRST. The
+        # full-stream math (expected_total - elapsed) goes negative on
+        # producer-bottleneck workloads and skipped the drain entirely;
+        # mirroring the corrected math in stop_streaming_session.
+        last_write_ts = getattr(coord, "_stream_last_write_ts", None)
+        last_chunk_bytes = getattr(coord, "_stream_last_chunk_bytes", 0)
+        sample_rate = getattr(coord, "_tts_sample_rate", None)
+        sample_width = getattr(coord, "_stream_sample_width", 2)
+        channels = getattr(coord, "_stream_channels", 1)
+
+        if last_write_ts is None or sample_rate is None or last_chunk_bytes <= 0:
+            # No active streaming session, or no chunks were written.
+            return
+
+        bytes_per_second = sample_rate * max(channels, 1) * max(sample_width, 1)
+        if bytes_per_second <= 0:
+            return
+
+        max_cap = getattr(coord, "_MAX_DRAIN_WAIT_S", 15.0)
+        safety = getattr(coord, "_DRAIN_SAFETY_BUFFER_S", 0.5)
+        last_chunk_duration_s = last_chunk_bytes / bytes_per_second
+        time_since_last_write = _time.monotonic() - last_write_ts
+        last_chunk_remaining = max(0.0, last_chunk_duration_s - time_since_last_write)
+        drain_wait = min(last_chunk_remaining + safety, max_cap)
+        self.logger.info(
+            "Measurement-mode drain wait: holding close for %.3fs "
+            "(last_chunk_remaining=%.3fs, safety=%.3fs, cap=%.3fs)",
+            drain_wait, last_chunk_remaining, safety, max_cap,
+        )
+
+        # Spin Qt's event loop so the qasync drain task gets CPU time.
+        # This processes both Qt and asyncio events because qasync
+        # interleaves them on the same loop. Sleep in 10ms chunks so we
+        # remain responsive (the user could click cancel mid-drain in
+        # principle; in measurement mode there's no cancel surface, but
+        # the chunked sleep is good practice).
+        deadline = _time.monotonic() + drain_wait
+        while _time.monotonic() < deadline:
+            QCoreApplication.processEvents()
+            _time.sleep(0.01)
+
+        self.logger.debug("Measurement-mode drain wait completed")
 
     def _cleanup_background_processes(self):
         """

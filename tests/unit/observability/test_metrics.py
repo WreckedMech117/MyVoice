@@ -174,7 +174,14 @@ class TestRecordSchema:
 
 
 class TestRecordValueValidation:
-    """``value`` must be int/float/bool; everything else raises TypeError."""
+    """``value`` must be int/float/bool/str; everything else raises TypeError.
+
+    Story 16.6 widens the accepted types to include ``str`` to match
+    architecture P-9 (``"value": <number_or_string>``); the
+    ``streaming_mode`` / ``streaming_mode_fallback`` metrics emitted from
+    ``QwenTTSService._dispatch_by_streaming_mode`` are the first
+    string-valued consumers.
+    """
 
     @pytest.mark.parametrize("value", [1, 1.5, True, False, 0, -3, 3.14e10])
     def test_accepts_python_numerics_and_bool(self, value, captured_logs):
@@ -183,10 +190,20 @@ class TestRecordValueValidation:
         assert len(captured_logs.records) == 1
 
     @pytest.mark.parametrize(
-        "bad_value",
-        ["str", None, [1], {"k": 1}, (1, 2)],
+        "value",
+        ["true_stream", "sentence_stream", "batch", "unrecoverable", ""],
     )
-    def test_rejects_non_numeric(self, bad_value, captured_logs):
+    def test_accepts_string_values_per_p9(self, value, captured_logs):
+        """Story 16.6 — string values accepted per P-9 schema."""
+        record("streaming_mode", value)
+        assert len(captured_logs.records) == 1
+        assert captured_logs.records[0].value == value
+
+    @pytest.mark.parametrize(
+        "bad_value",
+        [None, [1], {"k": 1}, (1, 2)],
+    )
+    def test_rejects_non_numeric_and_non_string(self, bad_value, captured_logs):
         with pytest.raises(TypeError) as exc:
             record("x", bad_value)
 

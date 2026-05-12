@@ -31,6 +31,12 @@ class ServiceStatusInfo:
     last_check: Optional[datetime] = None
     error_message: Optional[str] = None
     uptime_seconds: Optional[float] = None
+    # Story 17.2 AC #4 — transient message for first-run voice_clone_prompt
+    # precompute ("Preparing voice for streaming…"). When set, the indicator
+    # surfaces it in its tooltip; cleared back to None on success/failure
+    # exit. Distinct from `error_message` (which signals a sticky error)
+    # and from set_loading() (which already conflates with model loading).
+    preparing_voice_message: Optional[str] = None
 
     @property
     def is_healthy(self) -> bool:

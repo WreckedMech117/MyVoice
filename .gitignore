@@ -49,6 +49,11 @@ python310/
 # ===========================================================================
 build_tools/build/
 build_tools/dist/
+# Story 18.5 — staged CUDA Toolkit redistributable subset (NVIDIA Attachment A
+# scope ONLY; produced by build_tools/stage_cuda_subset.py). Output is binary
+# DLLs + headers + NVIDIA EULA; never commit to source control. The staging
+# script source IS tracked; only the output directory is ignored.
+build_tools/cuda_toolkit_subset/
 installer_output/
 validation_output/
 
@@ -117,6 +122,15 @@ temp/
 !voice_files/**/*.wav
 !voice_files/**/*.mp3
 !voice_files/**/*.flac
+
+# Story 17.2 lazy voice_clone_prompt precompute artifacts (per-voice runtime
+# caches at voice_files/<name>.quality.pt + .quality.pt.meta.json). Created
+# on first generation; not source data.
+voice_files/*.quality.pt
+voice_files/*.quality.pt.meta.json
+
+# build_release.bat answer-piping leftover (auto-increment Y/N response).
+build_increment_answer.txt
 
 # ===========================================================================
 # Models (downloadable — not committed; users install separately)

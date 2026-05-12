@@ -1,0 +1,143 @@
+# generated: 2026-05-03
+# project: MyVoice V2 (Optimization Pass)
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: _bmad-output/implementation-artifacts
+# scope: optimization-pass (V2 baseline + VoiceDesign archived to planning-artifacts/_archive/)
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - SM typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+#
+# SEQUENCING (from architecture-optimization-pass.md D-20):
+# ========================================================
+# - Epics 11-15 must land in order (Foundation → Indicator → Queue → Save → Clear Comms)
+# - Epic 16 (Streaming) is independent — can land before, between, or after any of 11-15
+# - Within each epic, stories are numbered in implementation order
+
+generated: 2026-05-03
+project: MyVoice V2 (Optimization Pass)
+project_key: NOKEY
+tracking_system: file-system
+story_location: "_bmad-output/implementation-artifacts"
+
+development_status:
+  # Epic 11 — Session Foundation (Phase 1) — net-zero behavior change
+  epic-11: done
+  11-1-generation-session-state-machine: done
+  11-2-session-registry-with-qt-thread-ownership: done
+  11-3-observability-metrics-helper: done
+  11-4-qwenttsservice-integration-with-sessionregistry: done
+  epic-11-retrospective: done
+
+  # Epic 12 — Indicator State Truth (Phase 2 — OFR-D)
+  epic-12: in-progress
+  12-1-servicestatusindicator-rewire-to-single-signal-source: done
+  12-2-focal-session-property-and-current-session-changed-signal: done
+  12-3-indicator-ui-test-suite-migration: done
+  epic-12-retrospective: optional
+
+  # Epic 13 — Playback Queue (Phase 3 — OFR-C)
+  epic-13: done
+  13-1-playbackqueue-with-fifo-ordering-and-depth-signal: done
+  13-2-audiocoordinator-integration-with-playbackqueue: done
+  13-3-playback-last-preservation-validation: done
+  13-4-queue-depth-indicator-badge: done
+  epic-13-retrospective: done
+
+  # Epic 14 — Save Generation (Phase 4 — OFR-A)
+  epic-14: done
+  14-1-saveable-session-lifecycle-policy: done
+  14-2-save-button-with-enablement-signal: done
+  14-3-save-dialog-with-wav-writer-and-save-during-streaming-flow: done
+  epic-14-retrospective: optional
+
+  # Epic 15 — Clear Comms (Phase 5 — OFR-B)
+  epic-15: in-progress
+  15-1-preloaded-source-audio-loader: done
+  15-2-clear-comms-button-with-interrupt-by-default: done
+  15-3-clear-comms-settings-panel: done
+  epic-15-retrospective: done
+
+  # Epic 16 — True Streaming TTS (Phase ⊥ — independent track)
+  epic-16: done
+  16-1-qwen-tts-dependency-pin-and-import-attribute-test: done
+  16-2-streaming-mode-enum-and-hardware-probe: done
+  16-3-codectokenstreamer-with-bounded-queue: done
+  16-4-streaming-decoder-worker-with-overlap-add: done
+  16-5-cooperative-cancellation-chain: done
+  16-6-true-stream-dispatch-and-three-mode-fallback-chain: done
+  16-7-empirical-validation-gates-for-streaming-default: done
+  16-8-true-stream-real-wire-up: done
+  16-9-nfr1-reconciliation-sentence-stream-latency-investigation: done
+  epic-16-retrospective: done
+
+  # Epic 17 — Streaming Default Ramp (Phase ⊥-Ramp + Phase ⊥-Polish)
+  # Added 2026-05-08 per Epic 16 retrospective's explicit handoff (epic-16-retro-2026-05-08.md §"Significant Discoveries").
+  # Originally a single-story epic (17.1 closes Story 16.7 AC #2's deferred multi-listener perceptual A/B audition).
+  # Re-opened 2026-05-08 per Story tooling-2 closure: discovered TRUE_STREAM voice_clone_prompt
+  # regression for CLONED voices in bundled UI flow (tooling-2-build-tools-audit-evidence.md §7.2).
+  # Story 17.2 precomputes the embedding lazily on first use and persists to <voice>.pt — closes
+  # the Phase ⊥-Ramp user-reach gap (Story 17.1 certified TRUE_STREAM; 17.2 makes it actually
+  # reach CLONED-voice users at install time).
+  # Re-opened 2026-05-08 (third iteration) per Story 17.2 install-mode smoke: TRUE_STREAM
+  # dispatch reaches users but audio playback fires AFTER generation completes (chunks
+  # accumulate in QwenTTSResponse.audio_data and play as one batch). Story 17.3 wires
+  # progressive chunk playback so audio is audible at first-chunk-emit time. Phase ⊥-Polish.
+  epic-17: in-progress
+  17-1-streaming-default-ramp: done
+  17-2-cloned-voice-truestream-prompt-precompute: done
+  17-3-progressive-audio-playback-during-true-stream: done
+  epic-17-retrospective: optional
+
+  # Epic 18 — Generation-Speed Optimizations (Phase ⊥-Polish-2 + Phase ⊥-Polish-2-Ship)
+  # Added 2026-05-09 — Epic was fully scoped in `epics-optimization-pass.md` (line 228 +
+  # stories at line 1322) but never registered in sprint-status.yaml. Logged retroactively
+  # so create-story / sprint-status workflows pick it up. Phase ⊥-Polish-2 of D-20;
+  # successor to Phase ⊥-Polish (Story 17.3). Independent of Epics 11–15; depends only on
+  # Epic 16 (TRUE_STREAM dispatch path) + Story 17.3 (progressive playback) — both done.
+  # Recommended sequencing: 18.1 + 18.2 in either order or parallel; 18.3 third (settles
+  # precision question); 18.4 last (compiles whatever precision 18.3 selected). 18.3 + 18.4
+  # may amortize a single NFR3 audition if shipped close together.
+  #
+  # Re-opened 2026-05-11 (done → in-progress) per Story 18.4 closure handoff
+  # (`_bmad-output/handoff-2026-05-11.md`) + `memory/build_tools_phase_perp_state.md` HIGH
+  # follow-up: Story 18.4 shipped with `AppSettings.tts_compile="off"` because the
+  # production bundle is missing CUDA Toolkit + Python 3.10.11 headers/libs +
+  # triton-windows. Story 18.5 (Phase ⊥-Polish-2-Ship) bundles those three components so
+  # users can flip the default back to `"auto"` and reach the source-tree compile machinery
+  # Stories 18.2 + 18.3 + 18.4 collectively landed. Audition pre-cleared by Story 18.4's
+  # joint A/B (FULL PASS 2026-05-11); 18.5 is a packaging+default-flip story, not a
+  # perceptual story.
+  epic-18: done
+  18-1-underrun-gap-mitigation: done
+  18-2-tf32-cudnn-benchmark-enable: done
+  18-3-bf16-precision-on-talker-decoder: done
+  18-4-torch-compile-decoder-persistent-cache: done
+  18-5-cuda-toolkit-triton-bundling: done
+  epic-18-retrospective: done
