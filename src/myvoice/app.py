@@ -766,6 +766,26 @@ class MyVoiceApp(QObject):
         self.logger.info("Starting async cleanup - stopping services...")
 
         try:
+            # Story 18.1 Task 1.4: flush + close the progressive-playback CSV
+            # capture FIRST (before service cleanup) so the last metric records
+            # land on disk even if a downstream cleanup step raises. Moved
+            # here from `_on_about_to_quit` (2026-05-12 shutdown-bug fix):
+            # under the lastWindowClosed-driven shutdown path, aboutToQuit
+            # may not fire under normal close, so the flush has to live in
+            # the path that ALWAYS runs at exit. The stop callable is
+            # idempotent (see progressive_playback_csv_capture.py) so a
+            # redundant call from `_on_about_to_quit`'s defensive backstop
+            # is safe.
+            if self._progressive_metric_capture_stop is not None:
+                try:
+                    self._progressive_metric_capture_stop()
+                except Exception:
+                    self.logger.exception(
+                        "Story 18.1: progressive-playback CSV capture stop "
+                        "raised (non-fatal; partial CSV may already be on disk)"
+                    )
+                self._progressive_metric_capture_stop = None
+
             # Stop services in SAME loop they were started in
             if hasattr(self, '_tts_service') and self._tts_service:
                 try:

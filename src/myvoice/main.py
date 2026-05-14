@@ -245,9 +245,25 @@ async def async_main(qt_app: QApplication, logger: logging.Logger) -> int:
     Returns:
         int: Application exit code (0 for success, non-zero for error)
     """
-    # Setup shutdown event
+    # Setup shutdown event.
+    #
+    # We wake on `lastWindowClosed`, NOT `aboutToQuit`. Reason: qasync's
+    # QEventLoop also connects to `aboutToQuit` and calls `loop.stop()`
+    # there. If we use `aboutToQuit` to set the asyncio Event, async_main
+    # races qasync's loop teardown — by the time async_main resumes from
+    # `app_close.wait()` and reaches `asyncio.wait_for(cleanup_async(), …)`
+    # the qasync loop is already stopped and `wait_for` raises
+    # `RuntimeError: no running event loop`. The traceback was visible
+    # on every exit (exit code 1) and `cleanup_async` never actually ran.
+    #
+    # Fix: `lastWindowClosed` fires BEFORE Qt's auto-quit cascade. Combined
+    # with `setQuitOnLastWindowClosed(False)`, Qt does NOT auto-fire
+    # `quit()` (and therefore not `aboutToQuit`/qasync's loop.stop) — so
+    # async_main wakes with the loop fully healthy, completes cleanup_async,
+    # returns; main() then proceeds to `_os._exit(0)` which terminates Qt.
     app_close = asyncio.Event()
-    qt_app.aboutToQuit.connect(app_close.set)
+    qt_app.setQuitOnLastWindowClosed(False)
+    qt_app.lastWindowClosed.connect(app_close.set)
 
     try:
         # Create and show splash screen
@@ -319,6 +335,20 @@ async def async_main(qt_app: QApplication, logger: logging.Logger) -> int:
         except asyncio.TimeoutError:
             logger.warning("Cleanup timed out after 8 seconds, forcing exit")
             _os._exit(0)
+        except RuntimeError as runtime_err:
+            # Belt-and-suspenders: if any unexpected shutdown path causes the
+            # qasync loop to be torn down before this wait_for runs (the bug
+            # the lastWindowClosed switch above already fixes for the normal
+            # close path), surface a clear log line and force-exit cleanly
+            # rather than letting `Fatal error in async_main: no running
+            # event loop` escape with exit code 1.
+            if "no running event loop" in str(runtime_err):
+                logger.warning(
+                    "Cleanup wait_for hit a torn-down event loop — forcing "
+                    "clean exit. Some service-level cleanup did not run."
+                )
+                _os._exit(0)
+            raise
 
         # Cancel the timer if we got here naturally
         exit_timer.cancel()
