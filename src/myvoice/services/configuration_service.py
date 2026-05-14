@@ -246,9 +246,32 @@ class ConfigurationManager(BaseService):
                     if self.auto_save:
                         await self.save_settings()
             else:
-                # No file exists, create defaults
+                # No file exists, create defaults — TRUE first launch on this
+                # install. Auto-detect a recommended model_quality_tier from
+                # CUDA VRAM here (NOT in the AppSettings field default — keeps
+                # tests, recovery paths, and the dataclass synchronous-and-
+                # safe). RTX 30xx cards <16GB struggle with the 1.7B 'quality'
+                # tier (RTX 3060 12GB → ~0.5× realtime, audibly stuttery),
+                # so the probe defaults them to 'small'. The probe is
+                # fail-safe: any error path returns the existing 'quality'
+                # default. See myvoice.utils.hardware_probe for the heuristic.
                 self.logger.info(f"No config file found at {load_file}, creating defaults")
                 self._settings = AppSettings()
+                try:
+                    from myvoice.utils.hardware_probe import detect_recommended_tier
+                    detected_tier = detect_recommended_tier()
+                    if detected_tier != self._settings.model_quality_tier:
+                        self.logger.info(
+                            f"First-launch tier auto-default: "
+                            f"model_quality_tier='{self._settings.model_quality_tier}' → "
+                            f"'{detected_tier}'"
+                        )
+                        self._settings.model_quality_tier = detected_tier
+                except Exception as probe_err:
+                    self.logger.warning(
+                        f"First-launch tier auto-detect failed (non-fatal, "
+                        f"keeping 'quality' default): {probe_err}"
+                    )
                 # Save defaults to file
                 if self.auto_save:
                     await self.save_settings(load_file)
