@@ -586,7 +586,14 @@ class TestStopStreamingSessionDrain:
         """play_audio_chunk MUST stamp BOTH _stream_first_write_ts (once)
         and _stream_last_write_ts + _stream_last_chunk_bytes (per write),
         and accumulate _stream_total_bytes. The first/last split is the
-        Story 18.3 M6 fix — drain math reads the last-chunk trackers."""
+        Story 18.3 M6 fix — drain math reads the last-chunk trackers.
+
+        Note (consumer-side smoothing buffer added 2026-05-12): trackers
+        record DISPATCHED bytes (post-buffer), not input bytes. Chunks
+        below the 500ms watermark threshold are held back. This test
+        uses chunk sizes ≥ watermark so each push dispatches in one
+        flush, preserving the original first/last-tracker contract.
+        """
         coord, _monitor, _virtual = _coord_with_drain_services()
         await coord.start_streaming_session(sample_rate=24000, channels=1, sample_width=2)
         assert coord._stream_first_write_ts is None
@@ -594,22 +601,56 @@ class TestStopStreamingSessionDrain:
         assert coord._stream_last_chunk_bytes == 0
         assert coord._stream_total_bytes == 0
 
-        await coord.play_audio_chunk(b"\x00" * 1000, is_final=False)
+        # 30000 bytes @ 24kHz mono int16 = 625ms — crosses 500ms watermark
+        # in one push, so the buffer flushes immediately.
+        await coord.play_audio_chunk(b"\x00" * 30000, is_final=False)
         first_ts = coord._stream_first_write_ts
         last_ts_after_chunk1 = coord._stream_last_write_ts
         assert first_ts is not None
         assert last_ts_after_chunk1 is not None
-        assert coord._stream_total_bytes == 1000
-        assert coord._stream_last_chunk_bytes == 1000
+        assert coord._stream_total_bytes == 30000
+        assert coord._stream_last_chunk_bytes == 30000
 
         await coord.play_audio_chunk(b"\x00" * 2500, is_final=True)
         # First-write timestamp must NOT be reset on subsequent writes.
         assert coord._stream_first_write_ts == first_ts
         # Last-write timestamp MUST advance to chunk 2's write time.
         assert coord._stream_last_write_ts >= last_ts_after_chunk1
-        assert coord._stream_total_bytes == 3500
+        assert coord._stream_total_bytes == 32500
         # Last-chunk bytes MUST reflect chunk 2's size only (not cumulative).
         assert coord._stream_last_chunk_bytes == 2500
+
+    async def test_play_audio_chunk_holds_below_watermark_then_dispatches(self):
+        """Consumer-side smoothing buffer (2026-05-12 RTX 3060 fix):
+        chunks below the 500ms watermark threshold are held in the
+        buffer and NOT dispatched to the services until either the
+        threshold is crossed or is_final is set. Drain trackers must
+        not stamp during the buffering phase — the tracking measures
+        what PyAudio actually got, not what the producer fed in.
+        """
+        coord, monitor, virtual = _coord_with_drain_services()
+        await coord.start_streaming_session(sample_rate=24000, channels=1, sample_width=2)
+
+        # 4000 bytes ≈ 83ms — well below the 500ms watermark.
+        await coord.play_audio_chunk(b"\x00" * 4000, is_final=False)
+        assert coord._stream_first_write_ts is None, (
+            "Drain trackers must NOT fire while audio is buffered — they "
+            "track dispatched bytes, not input bytes."
+        )
+        assert coord._stream_total_bytes == 0
+        # Service-level dispatch must not have happened yet.
+        monitor.play_audio_chunk.assert_not_called()
+        virtual.play_audio_chunk.assert_not_called()
+
+        # is_final flushes regardless of watermark.
+        await coord.play_audio_chunk(b"\x00" * 2000, is_final=True)
+        assert coord._stream_first_write_ts is not None
+        # Trackers reflect the merged-and-dispatched payload size.
+        assert coord._stream_total_bytes == 6000
+        # Dispatched once with the combined payload.
+        assert monitor.play_audio_chunk.call_count == 1
+        dispatched_bytes = monitor.play_audio_chunk.call_args.args[0]
+        assert len(dispatched_bytes) == 6000
 
     async def test_stop_resets_drain_trackers_for_next_session(self):
         """After stop_streaming_session, the trackers must be cleared so the

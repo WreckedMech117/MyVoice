@@ -48,7 +48,18 @@ from myvoice.services.device_resilience_manager import (
 )
 from myvoice.services.microphone_capture_service import MicrophoneCaptureService, MicrophoneCaptureConfig
 from myvoice.services.audio_mixer_service import AudioMixerService, MixerConfig
+from myvoice.services.streaming_chunk_buffer import StreamingChunkBuffer
 from myvoice.services.core.base_service import BaseService, ServiceStatus
+
+
+# Defaults for the streaming consumer-side smoothing layer (RTX 3060 +
+# 0.6B small tier surfaced underrun-induced silences and chunk-boundary
+# clicks 2026-05-12). Watermark is the symmetric start-of-stream fix to
+# Story 18.3's end-of-stream drain. Crossfade of 64 samples ≈ 2.7 ms at
+# 24 kHz — small enough to be imperceptible, large enough to mask DC
+# discontinuity at chunk boundaries.
+_DEFAULT_STREAMING_WATERMARK_MS = 500
+_DEFAULT_STREAMING_CROSSFADE_SAMPLES = 64
 
 
 @dataclass
@@ -234,6 +245,14 @@ class AudioCoordinator(BaseService):
         self._stream_last_chunk_bytes: int = 0
         self._stream_sample_width: int = 2  # int16 (set authoritatively in start_streaming_session)
         self._stream_channels: int = 1      # mono (set authoritatively in start_streaming_session)
+
+        # Consumer-side smoothing buffer (watermark + chunk crossfade). Created
+        # per session in start_streaming_session; drained in
+        # stop_streaming_session. The drain-tracking timestamps and byte
+        # counters above record DISPATCHED bytes (post-buffer), not input
+        # bytes — so the Story 18.3/18.4 drain math sees what PyAudio
+        # actually got, not what the producer fed in.
+        self._streaming_buffer: Optional[StreamingChunkBuffer] = None
 
         # Mic monitor state (for "Monitor Mic to Speakers" feature)
         self._mic_monitor_running = False
@@ -1079,6 +1098,15 @@ class AudioCoordinator(BaseService):
             self._stream_sample_width = sample_width
             self._stream_channels = channels
 
+            # Per-session consumer-side smoothing buffer.
+            self._streaming_buffer = StreamingChunkBuffer(
+                watermark_ms=_DEFAULT_STREAMING_WATERMARK_MS,
+                crossfade_samples=_DEFAULT_STREAMING_CROSSFADE_SAMPLES,
+                sample_rate=sample_rate,
+                channels=channels,
+                sample_width=sample_width,
+            )
+
             # Start streaming on monitor service
             if self.monitor_service and await self._is_monitor_service_healthy():
                 monitor_session = await self.monitor_service.start_streaming_session(
@@ -1129,52 +1157,87 @@ class AudioCoordinator(BaseService):
         result = {"monitor": False, "virtual": False, "mic_mixed": False}
 
         try:
-            # Story 17.3 finalization-drain follow-up — record the first-write
-            # timestamp + accumulate total bytes streamed so stop_streaming_session
-            # can wait for the PyAudio output buffer to drain on `is_final`.
-            # Latency-sensitive: do this BEFORE the dispatch so the timestamp
-            # records the moment the producer started filling the output buffer,
-            # not the moment after the (blocking) write completed.
-            if audio_data:
-                now_ts = time.monotonic()
-                if self._stream_first_write_ts is None:
-                    self._stream_first_write_ts = now_ts
-                # Story 18.3 M6 — also stamp the LAST-write timestamp + last
-                # chunk bytes so the drain math can compute when THIS chunk
-                # finishes playing (the producer-bottleneck case where
-                # elapsed >> expected_total leaves the last-chunk audio still
-                # in PyAudio's buffer when stop is called).
-                self._stream_last_write_ts = now_ts
-                self._stream_last_chunk_bytes = len(audio_data)
-            self._stream_total_bytes += len(audio_data)
+            # Push through the consumer-side smoothing buffer. The buffer
+            # holds chunks during initial watermark fill (returns []) and
+            # then passes through with chunk-boundary crossfade applied.
+            # On is_final or watermark threshold cross, returns the
+            # combined buffered payload as a single chunk.
+            if self._streaming_buffer is None:
+                # Defensive: a play_audio_chunk before start_streaming_session
+                # is a programming error in the caller, but historically the
+                # service paths handled it as a no-op. Preserve that.
+                return result
 
-            # Play TTS on monitor service (unaffected by mic mixing)
-            if self.monitor_service and self.monitor_service.is_streaming_active():
-                result["monitor"] = await self.monitor_service.play_audio_chunk(
-                    audio_data, is_final
+            ready_chunks = self._streaming_buffer.push(audio_data, is_final=is_final)
+            if not ready_chunks:
+                # Still buffering — nothing dispatched yet. Mark monitor +
+                # virtual as True so the caller sees no failure during the
+                # watermark fill phase.
+                result["monitor"] = True
+                result["virtual"] = True
+                return result
+
+            for idx, dispatched in enumerate(ready_chunks):
+                chunk_is_final = is_final and (idx == len(ready_chunks) - 1)
+
+                # Story 17.3/18.3/18.4 drain-tracking — track DISPATCHED bytes
+                # (post-buffer), not input bytes. The drain math at
+                # stop_streaming_session needs to know what PyAudio
+                # actually got, not what the producer fed in. Latency-
+                # sensitive: stamp BEFORE the (blocking) write so the
+                # timestamp records the start of buffer-fill.
+                if dispatched:
+                    now_ts = time.monotonic()
+                    if self._stream_first_write_ts is None:
+                        self._stream_first_write_ts = now_ts
+                    self._stream_last_write_ts = now_ts
+                    self._stream_last_chunk_bytes = len(dispatched)
+                    self._stream_total_bytes += len(dispatched)
+
+                chunk_result = await self._dispatch_chunk_to_services(
+                    dispatched, chunk_is_final
                 )
-
-            # Handle virtual mic output (possibly with mic mixing)
-            if self.virtual_service:
-                if hasattr(self.virtual_service, 'is_streaming_active') and \
-                   self.virtual_service.is_streaming_active():
-
-                    # Determine what audio to send to virtual mic
-                    self.logger.debug(f"[MIC_MIX] Virtual mic active, _mic_mixing_enabled={self._mic_mixing_enabled}")
-                    virtual_audio = await self._get_virtual_mic_audio(audio_data)
-                    if virtual_audio != audio_data:
-                        result["mic_mixed"] = True
-                        self.logger.debug(f"[MIC_MIX] Audio was mixed! Original: {len(audio_data)}, Mixed: {len(virtual_audio)}")
-
-                    result["virtual"] = await self.virtual_service.play_audio_chunk(
-                        virtual_audio, is_final
-                    )
+                # Combine: True if any dispatch in this batch succeeded.
+                result["monitor"] = result["monitor"] or chunk_result["monitor"]
+                result["virtual"] = result["virtual"] or chunk_result["virtual"]
+                result["mic_mixed"] = result["mic_mixed"] or chunk_result["mic_mixed"]
 
             return result
 
         except Exception as e:
             self.logger.error(f"Failed to play audio chunk: {e}")
             return result
+
+    async def _dispatch_chunk_to_services(
+        self,
+        audio_data: bytes,
+        is_final: bool,
+    ) -> Dict[str, bool]:
+        """Send one already-buffered chunk to the monitor + virtual services."""
+        result = {"monitor": False, "virtual": False, "mic_mixed": False}
+
+        # Play TTS on monitor service (unaffected by mic mixing)
+        if self.monitor_service and self.monitor_service.is_streaming_active():
+            result["monitor"] = await self.monitor_service.play_audio_chunk(
+                audio_data, is_final
+            )
+
+        # Handle virtual mic output (possibly with mic mixing)
+        if self.virtual_service:
+            if hasattr(self.virtual_service, 'is_streaming_active') and \
+               self.virtual_service.is_streaming_active():
+
+                self.logger.debug(f"[MIC_MIX] Virtual mic active, _mic_mixing_enabled={self._mic_mixing_enabled}")
+                virtual_audio = await self._get_virtual_mic_audio(audio_data)
+                if virtual_audio != audio_data:
+                    result["mic_mixed"] = True
+                    self.logger.debug(f"[MIC_MIX] Audio was mixed! Original: {len(audio_data)}, Mixed: {len(virtual_audio)}")
+
+                result["virtual"] = await self.virtual_service.play_audio_chunk(
+                    virtual_audio, is_final
+                )
+
+        return result
 
     async def _get_virtual_mic_audio(self, tts_audio: bytes) -> bytes:
         """
@@ -1337,6 +1400,25 @@ class AudioCoordinator(BaseService):
         result = {"monitor": False, "virtual": False}
 
         try:
+            # Flush any audio still held in the consumer-side smoothing
+            # buffer (short-utterance case where stop is called before the
+            # watermark threshold was reached, OR an abort path on
+            # wait_for_drain=False that should still ship what was
+            # buffered so the user hears it). The flushed payload still
+            # honors the chunk-boundary crossfade rules. Dispatched bytes
+            # update the drain-tracking counters so the wait-for-drain
+            # math below sees them.
+            if self._streaming_buffer is not None:
+                for dispatched in self._streaming_buffer.flush_remaining():
+                    if dispatched:
+                        now_ts = time.monotonic()
+                        if self._stream_first_write_ts is None:
+                            self._stream_first_write_ts = now_ts
+                        self._stream_last_write_ts = now_ts
+                        self._stream_last_chunk_bytes = len(dispatched)
+                        self._stream_total_bytes += len(dispatched)
+                    await self._dispatch_chunk_to_services(dispatched, is_final=True)
+
             # Story 17.3 finalization-drain follow-up — wait for the output
             # buffer to drain before tearing down. The producer can outpace
             # PyAudio's playback (notably with bf16 + TF32 + cuDNN engaged
@@ -1433,6 +1515,7 @@ class AudioCoordinator(BaseService):
             self._stream_total_bytes = 0
             self._stream_last_write_ts = None
             self._stream_last_chunk_bytes = 0
+            self._streaming_buffer = None
 
             # Stop monitor streaming
             if self.monitor_service:
