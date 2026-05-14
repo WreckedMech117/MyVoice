@@ -1302,6 +1302,31 @@ class QwenTTSService(BaseService):
         """
         self._preparing_voice_callback = callback
 
+    def set_app_settings(self, app_settings: AppSettings) -> None:
+        """Replace the AppSettings reference consulted at dispatch time.
+
+        ``SettingsDialog`` constructs a deep-copy ``AppSettings`` on open
+        (``settings_dialog.py:92`` — ``AppSettings.from_dict(settings.to_dict())``)
+        and returns the mutated copy on OK. ``_handle_settings_changed``
+        in ``app.py`` swaps the orchestrator + main-window + audio-
+        coordinator references but historically did NOT swap the TTS
+        service's — leaving ``_resolve_streaming_mode`` reading the
+        constructor-time settings forever. Symptom: changing the
+        ``Streaming Mode`` dropdown in Settings had no observable effect
+        on subsequent generations (RTX 3060 smoke 2026-05-13: dropdown
+        set to ``sentence_stream``; next generation still ran TRUE_STREAM).
+
+        Only ``streaming_mode_override`` is read at runtime
+        (``_resolve_streaming_mode``); ``tts_precision`` and
+        ``tts_compile`` are load-time fields that the ``ModelRegistry``
+        already snapshotted, so a runtime swap does NOT retroactively
+        change the loaded model's precision or compile state. Those
+        settings still require a restart to take effect. The setter
+        documents the bound — callers should not expect compile/precision
+        to flip mid-session.
+        """
+        self._app_settings = app_settings
+
     async def _get_voice_clone_prompt_lock(
         self, cache_key: Tuple[str, str]
     ) -> asyncio.Lock:

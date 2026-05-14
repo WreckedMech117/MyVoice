@@ -3721,6 +3721,16 @@ class MyVoiceApp(QObject):
             # Update stored settings
             self._app_settings = new_settings
 
+            # Propagate the new AppSettings reference to the TTS service so
+            # `_resolve_streaming_mode` reads the user's freshly-saved
+            # `streaming_mode_override`. SettingsDialog returns a DEEP COPY
+            # of AppSettings (settings_dialog.py:92), not a mutation of the
+            # original — so without this swap the TTS service keeps reading
+            # the constructor-time reference and the dropdown is a no-op.
+            # RTX 3060 smoke 2026-05-13 confirmed the bug.
+            if hasattr(self, '_tts_service') and self._tts_service:
+                self._tts_service.set_app_settings(new_settings)
+
             # Handle model quality tier change (no restart required)
             if old_tier != new_tier and hasattr(self, '_tts_service') and self._tts_service:
                 self.logger.info(f"Model quality tier changed from '{old_tier}' to '{new_tier}'")

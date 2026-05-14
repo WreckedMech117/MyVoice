@@ -172,6 +172,41 @@ class TestResolveStreamingMode:
                 == StreamingMode.SENTENCE_STREAM
             )
 
+    def test_set_app_settings_swaps_reference_so_resolve_sees_new_override(
+        self, monkeypatch
+    ):
+        """RTX 3060 smoke 2026-05-13: changing the Streaming Mode dropdown
+        in Settings had no effect on subsequent generations because
+        SettingsDialog returns a deep-copy AppSettings (settings_dialog.py:92)
+        and _handle_settings_changed updated the app/main-window/audio-
+        coordinator references but NOT the TTS service's. The fix is
+        ``set_app_settings`` + a corresponding call from
+        ``_handle_settings_changed``. This test pins the swap.
+
+        Construct with override="true_stream", then swap in a new
+        AppSettings with override="sentence_stream" — _resolve_streaming_mode
+        must return SENTENCE_STREAM after the swap. Hardware probe is
+        irrelevant when override is set (purity test above covers that
+        branch).
+        """
+        original_settings = AppSettings(streaming_mode_override="true_stream")
+        service = _make_service(app_settings=original_settings)
+        monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+        assert service._resolve_streaming_mode() == StreamingMode.TRUE_STREAM
+
+        # Deep-copy mirrors what SettingsDialog actually does (line 92):
+        # the new object is NOT the same reference, so reference-equality
+        # is the right surface to test.
+        new_settings = AppSettings.from_dict(original_settings.to_dict())
+        new_settings.streaming_mode_override = "sentence_stream"
+        assert new_settings is not original_settings
+
+        service.set_app_settings(new_settings)
+        assert (
+            service._resolve_streaming_mode()
+            == StreamingMode.SENTENCE_STREAM
+        )
+
     def test_app_settings_tts_precision_flows_through_to_model_registry(self):
         """Story 18.3 AC #4 — wire-up integration test.
 
