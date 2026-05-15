@@ -858,14 +858,28 @@ class MonitorAudioService(BaseService):
                 else:
                     audio_format = pyaudio.paInt16
 
-                # Open streaming output
+                # Open streaming output.
+                #
+                # frames_per_buffer = 4096 (≈ 170 ms @ 24 kHz) — bumped from
+                # the legacy 1024 (~43 ms) per RTX 3060 smoke 2026-05-14
+                # diagnosis: single-chunk SENTENCE_STREAM dispatch showed
+                # 12.46 s wall-clock for 5.99 s of audio, meaning PyAudio's
+                # playback callback was starving even WITHIN a single write.
+                # Deeper callback period gives the device callback more
+                # headroom against Windows audio-engine scheduling jitter
+                # on the standard PyAudio + MME / DirectSound paths the 3060
+                # smoke used. The other PyAudio sessions (batch playback,
+                # mic monitor) intentionally keep the 1024 chunk size from
+                # `self.config.chunk_size` — they have stable playback
+                # behavior across many epics and the change is scoped to
+                # the streaming-output path only.
                 self._streaming_stream = self._pyaudio.open(
                     format=audio_format,
                     channels=channels,
                     rate=sample_rate,
                     output=True,
                     output_device_index=device_index,
-                    frames_per_buffer=self.config.chunk_size,
+                    frames_per_buffer=4096,
                 )
 
                 # Generate session ID
