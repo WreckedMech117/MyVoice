@@ -309,6 +309,71 @@ def _configure_triton_backend_discovery():
     log("=== Triton Backend Discovery Configuration Complete ===")
 
 
+def _hide_subprocess_windows():
+    """Inject CREATE_NO_WINDOW into every subprocess.Popen so triton's
+    tcc.exe / ptxas.exe (and any other helper exes) don't flash visible
+    console windows during torch.compile cold compile.
+
+    RTX 3060 smoke 2026-05-14: first-generation cold compile (80.88 s on
+    that hardware per the log line at `19:53:30 → 19:55:36`) spawned
+    multiple visible console windows that popped up and disappeared in
+    quick succession. The windows are tcc / ptxas / nvcc-style helpers
+    invoked by triton's codegen pipeline; the visual effect is alarming
+    to first-time users even though the underlying compile is healthy.
+
+    Fix: monkey-patch ``subprocess.Popen.__init__`` to OR ``CREATE_NO_WINDOW``
+    into the ``creationflags`` argument if it isn't already set. This is
+    a frozen GUI app — no subprocess should ever inherit a visible
+    console. The patch is idempotent (subprocess calls that already pass
+    CREATE_NO_WINDOW are unaffected) and gated on ``sys.frozen`` so the
+    dev-tree pytest run is not affected.
+
+    Side effect: every subprocess spawned by the frozen app gets
+    CREATE_NO_WINDOW. Currently the only deliberate subprocess
+    invocations are triton's compiler chain and (transitively) any tool
+    qwen_tts may spawn — all internal helpers. ffmpeg is invoked via
+    pydub/imageio-ffmpeg which already redirect stdio and don't need a
+    console. If a future feature needs a visible console subprocess, the
+    caller must pass ``creationflags=0`` explicitly (or any value with
+    bit 0x08000000 cleared) to opt out.
+
+    Reference: Python subprocess docs §17.5.1.1 — CREATE_NO_WINDOW
+    (0x08000000) suppresses console allocation; safe on all Windows
+    versions PyInstaller supports.
+    """
+    if not getattr(sys, 'frozen', False):
+        return
+    if sys.platform != 'win32':
+        return
+
+    import subprocess
+
+    base_path = sys._MEIPASS
+    debug_log = _ensure_logs_dir(base_path)
+
+    def log(msg):
+        try:
+            with open(debug_log, 'a') as f:
+                f.write(msg + '\n')
+        except Exception:
+            pass
+
+    log("=== Subprocess CREATE_NO_WINDOW Injection ===")
+
+    _CREATE_NO_WINDOW = 0x08000000
+    _original_popen_init = subprocess.Popen.__init__
+
+    def _patched_popen_init(self, *args, **kwargs):
+        creationflags = kwargs.get('creationflags', 0)
+        if not (creationflags & _CREATE_NO_WINDOW):
+            kwargs['creationflags'] = creationflags | _CREATE_NO_WINDOW
+        return _original_popen_init(self, *args, **kwargs)
+
+    subprocess.Popen.__init__ = _patched_popen_init
+    log("Patched subprocess.Popen.__init__ to OR CREATE_NO_WINDOW (0x08000000)")
+    log("=== Subprocess CREATE_NO_WINDOW Injection Complete ===")
+
+
 def _probe_triton_availability():
     """Log triton-windows version (if importable) for runtime observability.
 
@@ -366,9 +431,12 @@ def _probe_triton_availability():
 # tooling-2 + V2 baseline), THEN CUDA redistributable path injection
 # (precondition for triton's NVRTC), THEN triton backend-discovery
 # configuration (env var must be set BEFORE first `import triton`), THEN
-# triton availability probe (observability log; does the first import).
+# subprocess window-hiding (must run BEFORE triton import so the patched
+# Popen is in place by the time the codegen pipeline spawns tcc/ptxas),
+# THEN triton availability probe (observability log; does the first import).
 # Each function is independently gated on sys.frozen.
 _preload_torch_dlls()
 _inject_cuda_redist_paths()
 _configure_triton_backend_discovery()
+_hide_subprocess_windows()
 _probe_triton_availability()
