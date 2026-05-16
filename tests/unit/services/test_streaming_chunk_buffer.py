@@ -243,6 +243,231 @@ class TestCrossfade:
 # --------------------------------------------------------------------------- #
 
 
+class TestAdaptivePreBufferConstruction:
+    """Adaptive mode parameter validation."""
+
+    def test_adaptive_requires_target_audio_seconds(self):
+        with pytest.raises(ValueError, match="target_audio_seconds"):
+            StreamingChunkBuffer(
+                enable_adaptive_pre_buffer=True,
+                target_audio_seconds=None,
+            )
+
+    def test_rejects_negative_target_audio_seconds(self):
+        with pytest.raises(ValueError, match="target_audio_seconds"):
+            StreamingChunkBuffer(target_audio_seconds=-1.0)
+
+    def test_rejects_negative_max_pre_delay(self):
+        with pytest.raises(ValueError, match="max_pre_delay_seconds"):
+            StreamingChunkBuffer(max_pre_delay_seconds=-0.1)
+
+    def test_rejects_zero_max_hold_chunks(self):
+        with pytest.raises(ValueError, match="max_hold_chunks"):
+            StreamingChunkBuffer(max_hold_chunks=0)
+
+    def test_is_adaptive_reflects_setting(self):
+        buf_off = StreamingChunkBuffer(watermark_ms=500)
+        assert buf_off.is_adaptive is False
+        buf_on = StreamingChunkBuffer(
+            target_audio_seconds=5.0,
+            enable_adaptive_pre_buffer=True,
+        )
+        assert buf_on.is_adaptive is True
+
+
+class _FakeClock:
+    """Test clock that returns the value of ``.now`` and supports advance().
+
+    Lets the adaptive-mode tests pin elapsed time deterministically without
+    sleeping. Mirrors the time.monotonic() signature StreamingChunkBuffer's
+    constructor accepts via the ``clock`` parameter.
+    """
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class TestAdaptivePreBufferBehavior:
+    """Adaptive mode: τ = T_a × (1/P − 1), clamped to [0, max_pre_delay]."""
+
+    def test_static_mode_unchanged_when_adaptive_disabled(self):
+        # Backward-compat regression: adaptive_pre_buffer=False (default)
+        # preserves the original 500ms watermark behavior. Test uses the
+        # exact same fixtures as TestWatermark.test_chunks_below_threshold_held_back
+        # to pin that the static path is byte-identical to pre-adaptive.
+        buf = StreamingChunkBuffer(
+            watermark_ms=500,
+            crossfade_samples=0,
+            sample_rate=24000,
+            channels=1,
+            enable_adaptive_pre_buffer=False,
+        )
+        out = buf.push(_make_chunk(_SAMPLES_PER_100MS_24K))
+        assert out == []
+        assert not buf.is_watermark_filled
+
+    def test_first_chunk_alone_does_not_dispatch_yet(self):
+        # Adaptive mode needs at least one post-first chunk to measure
+        # producer rate (first chunk includes prefill latency which is a
+        # one-time cost). First chunk alone → still holding.
+        clock = _FakeClock()
+        buf = StreamingChunkBuffer(
+            watermark_ms=500,
+            crossfade_samples=0,
+            sample_rate=24000,
+            channels=1,
+            target_audio_seconds=5.0,
+            enable_adaptive_pre_buffer=True,
+            clock=clock,
+        )
+        c1 = _make_chunk(_SAMPLES_PER_100MS_24K)  # 100ms
+        out = buf.push(c1, is_final=False)
+        assert out == []
+        assert not buf.is_watermark_filled
+
+    def test_fast_producer_dispatches_after_chunk_2(self):
+        # P >= 1.0 → cushion_required = 0 → dispatch immediately on the
+        # first push that yields a measurable rate. Simulates a fast card
+        # producing audio faster than playback consumes.
+        clock = _FakeClock()
+        buf = StreamingChunkBuffer(
+            watermark_ms=500,
+            crossfade_samples=0,
+            sample_rate=24000,
+            channels=1,
+            target_audio_seconds=5.0,
+            enable_adaptive_pre_buffer=True,
+            clock=clock,
+        )
+        # Chunk 1: 1s of audio at t=0
+        c1 = _make_chunk(24000)
+        out1 = buf.push(c1, is_final=False)
+        assert out1 == []
+
+        # Chunk 2: another 1s of audio, arrives only 0.5s of wall-clock
+        # later → producer rate = 1.0 / 0.5 = 2.0 (fast).
+        clock.advance(0.5)
+        c2 = _make_chunk(24000)
+        out2 = buf.push(c2, is_final=False)
+        assert len(out2) == 1
+        # Combined payload = c1 + c2 (no crossfade configured).
+        assert out2[0] == c1 + c2
+        assert buf.is_watermark_filled
+
+    def test_slow_producer_holds_until_cushion_met(self):
+        # 3060 regime: P ≈ 0.5, T_a = 5.0s → τ_min = 5.0 × (1/0.5 − 1) = 5.0s
+        # Need 5.0s of audio buffered before dispatch.
+        clock = _FakeClock()
+        buf = StreamingChunkBuffer(
+            watermark_ms=500,
+            crossfade_samples=0,
+            sample_rate=24000,
+            channels=1,
+            target_audio_seconds=5.0,
+            enable_adaptive_pre_buffer=True,
+            max_pre_delay_seconds=30.0,  # don't let cap kick in
+            clock=clock,
+        )
+        # Chunk 1: 1s of audio at t=0
+        out = buf.push(_make_chunk(24000), is_final=False)
+        assert out == []
+
+        # Chunk 2: another 1s at t=2.0 → post-first rate = 1.0/2.0 = 0.5
+        # Cushion required = 5.0 × (1/0.5 − 1) = 5.0s
+        # Audio buffered = 2.0s < 5.0s → still hold.
+        clock.advance(2.0)
+        out = buf.push(_make_chunk(24000), is_final=False)
+        assert out == []
+        assert not buf.is_watermark_filled
+
+        # Chunks 3-5: add 3 more seconds. Now buffered = 5.0s, hits cushion.
+        clock.advance(2.0)
+        buf.push(_make_chunk(24000), is_final=False)
+        clock.advance(2.0)
+        buf.push(_make_chunk(24000), is_final=False)
+        clock.advance(2.0)
+        out = buf.push(_make_chunk(24000), is_final=False)
+        assert len(out) == 1
+        # 5 × 1s chunks combined.
+        assert len(out[0]) == 24000 * 2 * 5  # samples × sample_width × count
+        assert buf.is_watermark_filled
+
+    def test_is_final_flushes_regardless_of_cushion(self):
+        # is_final must always dispatch — short utterances that would
+        # never satisfy a 5s cushion must still produce audio.
+        clock = _FakeClock()
+        buf = StreamingChunkBuffer(
+            watermark_ms=500,
+            crossfade_samples=0,
+            sample_rate=24000,
+            channels=1,
+            target_audio_seconds=5.0,
+            enable_adaptive_pre_buffer=True,
+            clock=clock,
+        )
+        c1 = _make_chunk(_SAMPLES_PER_100MS_24K)  # 100ms — way below cushion
+        out = buf.push(c1, is_final=True)
+        assert len(out) == 1
+        assert out[0] == c1
+        assert buf.is_watermark_filled
+
+    def test_max_pre_delay_cap_kicks_in(self):
+        # Cold-compile case: P measured near zero would compute infinite
+        # cushion. The cap prevents an unbounded wait.
+        clock = _FakeClock()
+        buf = StreamingChunkBuffer(
+            watermark_ms=500,
+            crossfade_samples=0,
+            sample_rate=24000,
+            channels=1,
+            target_audio_seconds=5.0,
+            enable_adaptive_pre_buffer=True,
+            max_pre_delay_seconds=3.0,
+            clock=clock,
+        )
+        # Two chunks far apart in time → very slow producer rate.
+        buf.push(_make_chunk(24000), is_final=False)
+        clock.advance(10.0)
+        buf.push(_make_chunk(24000), is_final=False)
+        # Elapsed since first chunk = 10s, which exceeds max_pre_delay=3s.
+        # Even though buffered audio is only 2s, the elapsed cap fires.
+        # Next push triggers re-eval.
+        clock.advance(0.1)
+        out = buf.push(_make_chunk(_SAMPLES_PER_100MS_24K), is_final=False)
+        assert len(out) == 1
+        assert buf.is_watermark_filled
+
+    def test_max_hold_chunks_safety_bound(self):
+        # If producer rate sensor reads zero indefinitely (pathological),
+        # the chunk-count cap forces dispatch. 16 chunks at 100ms each =
+        # 1.6s of audio — we'd rather play 1.6s than wait forever.
+        clock = _FakeClock()
+        buf = StreamingChunkBuffer(
+            watermark_ms=500,
+            crossfade_samples=0,
+            sample_rate=24000,
+            channels=1,
+            target_audio_seconds=5.0,
+            enable_adaptive_pre_buffer=True,
+            max_pre_delay_seconds=100.0,
+            max_hold_chunks=3,
+            clock=clock,
+        )
+        # Push 3 chunks with no time advance → P appears as inf, but
+        # max_hold_chunks=3 forces dispatch on the 3rd push.
+        buf.push(_make_chunk(_SAMPLES_PER_100MS_24K), is_final=False)
+        buf.push(_make_chunk(_SAMPLES_PER_100MS_24K), is_final=False)
+        out = buf.push(_make_chunk(_SAMPLES_PER_100MS_24K), is_final=False)
+        assert len(out) == 1
+        assert buf.is_watermark_filled
+
+
 class TestFlushAndReset:
     def test_flush_remaining_drains_unfilled_watermark(self):
         buf = StreamingChunkBuffer(watermark_ms=500, crossfade_samples=0)

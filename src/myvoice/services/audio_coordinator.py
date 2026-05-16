@@ -61,6 +61,56 @@ from myvoice.services.core.base_service import BaseService, ServiceStatus
 _DEFAULT_STREAMING_WATERMARK_MS = 500
 _DEFAULT_STREAMING_CROSSFADE_SAMPLES = 64
 
+# Adaptive pre-buffer mode tuning. Activated for slow-producer hardware
+# (RTX 3060 / <16GB VRAM) where the static 500ms watermark cannot mask
+# inter-chunk gaps that grow as the generation continues. The formula
+# τ_min = T_a × (1/P − 1) computes the minimum cushion needed to finish
+# playback by gen_complete; on fast hardware (P ≥ 1) τ_min collapses
+# to 0 so this code path is a no-op there. See
+# `streaming_chunk_buffer.py` module docstring for the math.
+#
+# CHARS_TO_AUDIO_SECONDS = 0.08 — calibrated from 3060 smoke 2026-05-15
+# log (gen 1: "First Generation..." = 19 chars → 1.42 s audio → 0.075
+# s/char; round up to 0.08 for safety margin). This is a coarse heuristic
+# — pauses, punctuation, and language affect actual rate — but it is
+# cheap, available before generation starts, and only needs to estimate
+# T_a within ~25% to land in the cushion's safe range.
+#
+# MAX_PRE_DELAY_SECONDS = 10.0 — hard upper bound on adaptive wait. If
+# the producer is so slow (e.g. cold-compile gen, CPU-only) that the
+# math wants 30+ s of cushion, we cap at 10 s and accept that the rest
+# of the generation will have gaps. The cold-compile case is a one-time
+# cost; we never want a user to wait > 10 s for first audio.
+#
+# LOW_VRAM_THRESHOLD_BYTES = 16 GiB — matches the existing tier auto-
+# default in `hardware_probe.detect_recommended_tier`. RTX 30xx Ampere
+# line ≤ 12 GiB triggers adaptive mode; RTX 3090 / 4080+ / 5090 stay
+# on the static-watermark fast path.
+_DEFAULT_STREAMING_CHARS_TO_AUDIO_SECONDS = 0.08
+_DEFAULT_STREAMING_MAX_PRE_DELAY_SECONDS = 10.0
+_DEFAULT_STREAMING_LOW_VRAM_THRESHOLD_BYTES = 16 * 1024 ** 3
+
+
+def _detect_total_vram_bytes() -> Optional[int]:
+    """Return primary CUDA device's total VRAM in bytes, or None on failure.
+
+    Pure probe; same fail-safe pattern as
+    `myvoice.utils.hardware_probe.detect_recommended_tier`. Returns None
+    on no-CUDA, no-torch, or query exception — caller treats that as
+    "don't enable adaptive mode" (= preserve current behavior).
+    """
+    try:
+        import torch  # type: ignore[import]
+    except (ImportError, OSError):
+        return None
+    try:
+        if not torch.cuda.is_available():
+            return None
+        props = torch.cuda.get_device_properties(0)
+        return int(props.total_memory)
+    except Exception:
+        return None
+
 
 @dataclass
 class DualStreamResult:
@@ -1065,6 +1115,7 @@ class AudioCoordinator(BaseService):
         sample_rate: int = 24000,
         channels: int = 1,
         sample_width: int = 2,
+        text_length: Optional[int] = None,
     ) -> Dict[str, Optional[str]]:
         """
         Start streaming sessions on both audio services for immediate chunk playback.
@@ -1076,6 +1127,15 @@ class AudioCoordinator(BaseService):
             sample_rate: Audio sample rate (default 24000 for Qwen3-TTS)
             channels: Number of audio channels
             sample_width: Bytes per sample (2 for 16-bit)
+            text_length: Optional character count of the input text. When
+                provided AND the primary CUDA device reports < 16 GiB VRAM,
+                the consumer-side buffer enables adaptive pre-buffer mode:
+                playback start is delayed until enough audio is buffered
+                to bridge the producer-side deficit for the entire
+                generation. See module-level docstring on
+                `streaming_chunk_buffer.py` for the τ = T_a × (1/P − 1)
+                math. When None or VRAM ≥ 16 GiB, the buffer falls back
+                to the static 500 ms watermark.
 
         Returns:
             Dict with session IDs: {"monitor": id_or_none, "virtual": id_or_none}
@@ -1098,6 +1158,33 @@ class AudioCoordinator(BaseService):
             self._stream_sample_width = sample_width
             self._stream_channels = channels
 
+            # Adaptive-mode gate. Only engages when the caller supplied a
+            # text_length AND the primary CUDA device's total VRAM is below
+            # the LOW_VRAM threshold (mirrors `hardware_probe.detect_
+            # recommended_tier`'s 16 GiB cutoff). On any failure path
+            # (no torch / no CUDA / probe exception) we fall through to
+            # the static-watermark behavior — the adaptive path is purely
+            # additive for slow hardware.
+            target_audio_seconds: Optional[float] = None
+            enable_adaptive = False
+            if text_length is not None and text_length > 0:
+                vram_bytes = _detect_total_vram_bytes()
+                if (
+                    vram_bytes is not None
+                    and vram_bytes < _DEFAULT_STREAMING_LOW_VRAM_THRESHOLD_BYTES
+                ):
+                    target_audio_seconds = (
+                        text_length * _DEFAULT_STREAMING_CHARS_TO_AUDIO_SECONDS
+                    )
+                    enable_adaptive = True
+                    self.logger.info(
+                        f"Streaming buffer: adaptive pre-buffer ENABLED — "
+                        f"text_length={text_length} chars, "
+                        f"T_a_estimate={target_audio_seconds:.2f}s, "
+                        f"detected_vram={vram_bytes / (1024 ** 3):.1f} GiB "
+                        f"(< {_DEFAULT_STREAMING_LOW_VRAM_THRESHOLD_BYTES / (1024 ** 3):.0f} GiB threshold)"
+                    )
+
             # Per-session consumer-side smoothing buffer.
             self._streaming_buffer = StreamingChunkBuffer(
                 watermark_ms=_DEFAULT_STREAMING_WATERMARK_MS,
@@ -1105,6 +1192,9 @@ class AudioCoordinator(BaseService):
                 sample_rate=sample_rate,
                 channels=channels,
                 sample_width=sample_width,
+                target_audio_seconds=target_audio_seconds,
+                enable_adaptive_pre_buffer=enable_adaptive,
+                max_pre_delay_seconds=_DEFAULT_STREAMING_MAX_PRE_DELAY_SECONDS,
             )
 
             # Start streaming on monitor service

@@ -954,6 +954,17 @@ class MyVoiceApp(QObject):
         """
         self.logger.info(f"TTS generation requested for text: {text[:50]}...")
 
+        # Stash the text length for the progressive-playback session opener
+        # (adaptive pre-buffer mode in `audio_coordinator.start_streaming_session`
+        # uses this to estimate T_a). Captured before the model dispatch so
+        # `_handle_progressive_chunk_async` can read it when chunk 0 arrives.
+        # Set to None on entry so a generation that never opens a streaming
+        # session (e.g. fallback-to-batch path) doesn't leave a stale value
+        # for the next gen.
+        self._pending_progressive_text_length: Optional[int] = (
+            len(text) if text else None
+        )
+
         try:
             # Import VoiceType early for use throughout this method
             from myvoice.models.voice_profile import VoiceType
@@ -2640,6 +2651,9 @@ class MyVoiceApp(QObject):
                             sample_rate=chunk.sample_rate,
                             channels=1,
                             sample_width=2,
+                            text_length=getattr(
+                                self, "_pending_progressive_text_length", None
+                            ),
                         )
                     )
                 except Exception:

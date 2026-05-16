@@ -2,21 +2,36 @@
 
 Sits between QwenTTSService chunk producers and the per-service PyAudio
 output streams (MonitorAudioService + VirtualMicrophoneService) inside
-AudioCoordinator. Solves two consumer-side glitches that surface on
-producer-near-realtime hardware (RTX 3060 + 0.6B small tier observed
-2026-05-12):
+AudioCoordinator. Two operating modes:
 
-1. Watermark — chunks during the early stream phase are accumulated in
-   an internal queue until ``watermark_ms`` of audio is buffered, then
-   flushed in one write. Gives the PyAudio output buffer headroom
-   against producer jitter so brief producer pauses do not underrun
-   the device callback. Story 18.3 fixed end-of-stream drain; this is
-   the symmetric start-of-stream fix.
+1. **Static watermark mode** (default; backward-compatible): chunks during
+   the early stream phase are accumulated until ``watermark_ms`` of audio
+   is buffered, then flushed in one write. Originally added 2026-05-12
+   for RTX 3060 + 0.6B small tier producer jitter. Crossfade always
+   applies on top: last K samples of chunk N blend with first K of
+   chunk N+1 to mask DC discontinuities at chunk boundaries.
 
-2. Crossfade — last K samples of dispatched chunk N are linearly
-   blended with first K samples of chunk N+1. Masks DC discontinuities
-   at chunk boundaries that present as audible clicks on raw concat.
-   Default K=64 samples ≈ 2.7 ms at 24 kHz.
+2. **Adaptive pre-buffer mode** (opt-in, 2026-05-15): for slow-producer
+   hardware where TRUE_STREAM playback fundamentally cannot sustain
+   1.0× realtime (e.g. RTX 3060 12GB, observed producer ratio ~0.5×),
+   the static watermark is insufficient because inter-chunk gaps add
+   up faster than the cushion drains. Instead, compute the minimum
+   pre-start delay that lets playback finish exactly when (or after)
+   generation finishes:
+
+       τ_min = T_a × (1/P − 1)
+
+   where T_a is the estimated total audio duration and P is the observed
+   producer rate (audio_seconds / wall_clock_seconds). For P ≥ 1.0 (fast
+   hardware), τ_min ≤ 0 → no extra delay → TRUE_STREAM benefit preserved.
+   For P < 1.0, τ_min grows to cover the deficit; for P near zero
+   (CPU-only), τ_min is clamped to ``max_pre_delay_seconds`` so we never
+   wait forever.
+
+   The math holds because the minimum buffer level during playback is at
+   t_gen_complete (producer stops feeding). Solving for buffer ≥ 0 at
+   that point yields the τ_min formula. Verified against 3060 smoke data
+   2026-05-15.
 
 State is per-session. Caller is responsible for thread-safety;
 AudioCoordinator's existing per-call locking around play_audio_chunk
@@ -25,8 +40,9 @@ is sufficient.
 
 from __future__ import annotations
 
+import time
 from collections import deque
-from typing import List
+from typing import Callable, List, Optional
 
 import numpy as np
 
@@ -46,6 +62,11 @@ class StreamingChunkBuffer:
         sample_rate: int = 24000,
         channels: int = 1,
         sample_width: int = 2,
+        target_audio_seconds: Optional[float] = None,
+        enable_adaptive_pre_buffer: bool = False,
+        max_pre_delay_seconds: float = 10.0,
+        max_hold_chunks: int = 16,
+        clock: Optional[Callable[[], float]] = None,
     ) -> None:
         if watermark_ms < 0:
             raise ValueError("watermark_ms must be >= 0")
@@ -59,14 +80,31 @@ class StreamingChunkBuffer:
             raise ValueError("channels must be >= 1")
         if sample_rate <= 0:
             raise ValueError("sample_rate must be > 0")
+        if max_pre_delay_seconds < 0:
+            raise ValueError("max_pre_delay_seconds must be >= 0")
+        if max_hold_chunks < 1:
+            raise ValueError("max_hold_chunks must be >= 1")
+        if enable_adaptive_pre_buffer and target_audio_seconds is None:
+            raise ValueError(
+                "enable_adaptive_pre_buffer=True requires target_audio_seconds"
+            )
+        if target_audio_seconds is not None and target_audio_seconds < 0:
+            raise ValueError("target_audio_seconds must be >= 0")
 
         self._watermark_ms = watermark_ms
         self._crossfade_samples = crossfade_samples
         self._sample_rate = sample_rate
         self._channels = channels
         self._sample_width = sample_width
+        self._target_audio_seconds = target_audio_seconds
+        self._enable_adaptive_pre_buffer = enable_adaptive_pre_buffer
+        self._max_pre_delay_seconds = max_pre_delay_seconds
+        self._max_hold_chunks = max_hold_chunks
+        self._clock = clock or time.monotonic
 
         bytes_per_frame = channels * sample_width
+        self._bytes_per_frame = bytes_per_frame
+        self._bytes_per_second = sample_rate * bytes_per_frame
         self._watermark_bytes = int(
             watermark_ms / 1000.0 * sample_rate * bytes_per_frame
         )
@@ -75,6 +113,13 @@ class StreamingChunkBuffer:
         self._watermark_buffered_bytes: int = 0
         self._watermark_filled: bool = False
         self._prev_tail: np.ndarray = np.empty(0, dtype=np.int16)
+
+        # Adaptive-mode state. ``_t_first_chunk`` is None until the first
+        # non-empty push; subsequent pushes use it as the time origin for
+        # producer-rate observation.
+        self._t_first_chunk: Optional[float] = None
+        self._first_chunk_bytes: int = 0
+        self._chunks_held: int = 0
 
     @property
     def watermark_ms(self) -> int:
@@ -88,31 +133,90 @@ class StreamingChunkBuffer:
     def is_watermark_filled(self) -> bool:
         return self._watermark_filled
 
+    @property
+    def is_adaptive(self) -> bool:
+        return self._enable_adaptive_pre_buffer
+
+    def _audio_seconds_from_bytes(self, n_bytes: int) -> float:
+        return n_bytes / self._bytes_per_second
+
+    def _observed_producer_rate(self) -> Optional[float]:
+        """Steady-state producer rate (audio_seconds / wall_clock_seconds).
+
+        Returns None when not enough data has been collected yet (need at
+        least one chunk after the first to measure the inter-chunk producer
+        rate). The first chunk is excluded from the rate calculation
+        because it bundles the model's startup/prefill latency, which
+        is a one-time cost rather than a steady-state property.
+        """
+        if self._t_first_chunk is None:
+            return None
+        elapsed = self._clock() - self._t_first_chunk
+        if elapsed <= 0:
+            return None
+        post_first_bytes = self._watermark_buffered_bytes - self._first_chunk_bytes
+        if post_first_bytes <= 0:
+            return None
+        return self._audio_seconds_from_bytes(post_first_bytes) / elapsed
+
+    def _required_cushion_seconds(self, p_observed: float) -> float:
+        """τ_min = T_a × (1/P − 1), clamped to [0, max_pre_delay_seconds].
+
+        Called only when adaptive mode is enabled and target_audio_seconds
+        is set (checked in __init__).
+        """
+        if p_observed >= 1.0:
+            return 0.0
+        if p_observed <= 0.0:
+            return self._max_pre_delay_seconds
+        cushion = self._target_audio_seconds * (1.0 / p_observed - 1.0)
+        return max(0.0, min(cushion, self._max_pre_delay_seconds))
+
     def reset(self) -> None:
         """Clear all per-session state — safe to call between sessions."""
         self._watermark_queue.clear()
         self._watermark_buffered_bytes = 0
         self._watermark_filled = False
         self._prev_tail = np.empty(0, dtype=np.int16)
+        self._t_first_chunk = None
+        self._first_chunk_bytes = 0
+        self._chunks_held = 0
 
     def push(self, chunk: bytes, is_final: bool = False) -> List[bytes]:
         """Push a chunk through the buffer.
 
         Returns the list of chunks ready to dispatch downstream. May be
-        empty during initial watermark fill, may contain one entry on
-        normal pass-through, or one merged entry on the watermark-cross
-        flush. Empty input + ``is_final=False`` returns ``[]``.
+        empty while holding for the pre-buffer threshold, may contain one
+        entry on normal pass-through, or one merged entry on the threshold-
+        cross flush. Empty input + ``is_final=False`` returns ``[]``.
+
+        In adaptive mode, the threshold is τ_min × producer_rate of audio
+        rather than a fixed watermark — recomputed on every push as more
+        timing data accumulates.
         """
         if not chunk and not is_final:
             return []
 
         if not self._watermark_filled:
             if chunk:
+                if self._t_first_chunk is None:
+                    self._t_first_chunk = self._clock()
+                    self._first_chunk_bytes = len(chunk)
                 self._watermark_queue.append(chunk)
                 self._watermark_buffered_bytes += len(chunk)
-            crossed = self._watermark_buffered_bytes >= self._watermark_bytes
-            if not (crossed or is_final):
+                self._chunks_held += 1
+
+            if self._enable_adaptive_pre_buffer:
+                ready_to_dispatch = self._adaptive_ready_to_dispatch(is_final)
+            else:
+                ready_to_dispatch = (
+                    self._watermark_buffered_bytes >= self._watermark_bytes
+                    or is_final
+                )
+
+            if not ready_to_dispatch:
                 return []
+
             flushed = b"".join(self._watermark_queue)
             self._watermark_queue.clear()
             self._watermark_buffered_bytes = 0
@@ -122,6 +226,54 @@ class StreamingChunkBuffer:
 
         ready = self._apply_crossfade_and_update_tail(chunk)
         return [ready] if ready else []
+
+    def _adaptive_ready_to_dispatch(self, is_final: bool) -> bool:
+        """Return True when adaptive mode says it's safe to start playback.
+
+        Decision priority (any True → dispatch):
+          1. ``is_final`` — the stream is ending; ship whatever we have so
+             the user hears the audio rather than losing it.
+          2. ``_chunks_held >= max_hold_chunks`` — safety bound against
+             pathological cases (e.g. producer rate sensor reads zero
+             forever). 16 chunks at ~2 s each ≈ 32 s of audio buffered;
+             at that point we've held longer than max_pre_delay anyway.
+          3. ``elapsed >= max_pre_delay_seconds`` — hard time cap. Past
+             this point we play whatever we have, even if math says we
+             should wait longer (gen failure or cold-compile would
+             otherwise trigger an unbounded wait).
+          4. ``observed rate ≥ 1.0`` — producer keeps up with playback;
+             no extra delay needed (fast hardware path).
+          5. ``audio_buffered_seconds ≥ τ_min`` — math says we have
+             enough cushion to bridge the rest of the generation.
+
+        Returns False when none of the above hold — caller continues to
+        accumulate chunks.
+        """
+        if is_final:
+            return True
+        if self._chunks_held >= self._max_hold_chunks:
+            return True
+
+        elapsed = (
+            self._clock() - self._t_first_chunk
+            if self._t_first_chunk is not None
+            else 0.0
+        )
+        if elapsed >= self._max_pre_delay_seconds:
+            return True
+
+        p_observed = self._observed_producer_rate()
+        if p_observed is None:
+            return False
+
+        if p_observed >= 1.0:
+            return True
+
+        cushion_required = self._required_cushion_seconds(p_observed)
+        audio_buffered_seconds = self._audio_seconds_from_bytes(
+            self._watermark_buffered_bytes
+        )
+        return audio_buffered_seconds >= cushion_required
 
     def flush_remaining(self) -> List[bytes]:
         """Drain any audio still held in the watermark queue.
