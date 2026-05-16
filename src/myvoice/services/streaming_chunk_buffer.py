@@ -116,10 +116,15 @@ class StreamingChunkBuffer:
 
         # Adaptive-mode state. ``_t_first_chunk`` is None until the first
         # non-empty push; subsequent pushes use it as the time origin for
-        # producer-rate observation.
+        # producer-rate observation. ``_min_observed_producer_rate`` tracks
+        # the worst (lowest) P seen so far so a mid-generation producer
+        # slowdown (e.g. GPU contention from a game starting up partway
+        # through gen) grows the cushion before PyAudio underruns — never
+        # shrinks it back even if a later sample reads faster.
         self._t_first_chunk: Optional[float] = None
         self._first_chunk_bytes: int = 0
         self._chunks_held: int = 0
+        self._min_observed_producer_rate: Optional[float] = None
 
     @property
     def watermark_ms(self) -> int:
@@ -159,6 +164,31 @@ class StreamingChunkBuffer:
             return None
         return self._audio_seconds_from_bytes(post_first_bytes) / elapsed
 
+    def _worst_observed_producer_rate(self) -> Optional[float]:
+        """Return the lowest P observed so far in this session.
+
+        The cushion math is monotone in P (lower P → larger cushion). If
+        the producer slows down mid-generation (gaming load spike, GPU
+        contention, thermal throttle), a single point-in-time observation
+        from chunks 1+2 under-estimates the cushion required for chunks
+        3+. Tracking the WORST rate seen so far makes the cushion grow as
+        evidence of slowdown accumulates — never shrinks it back. The
+        consequence: a transient slow chunk anchors the cushion at the
+        slow rate for the rest of the generation. We accept that mild
+        over-buffering as the cost of robustness — the alternative
+        (using the latest observation) is what surfaced the residual
+        gaps on 3060 smoke 2026-05-16.
+        """
+        current = self._observed_producer_rate()
+        if current is None:
+            return self._min_observed_producer_rate
+        if (
+            self._min_observed_producer_rate is None
+            or current < self._min_observed_producer_rate
+        ):
+            self._min_observed_producer_rate = current
+        return self._min_observed_producer_rate
+
     def _required_cushion_seconds(self, p_observed: float) -> float:
         """τ_min = T_a × (1/P − 1), clamped to [0, max_pre_delay_seconds].
 
@@ -181,6 +211,7 @@ class StreamingChunkBuffer:
         self._t_first_chunk = None
         self._first_chunk_bytes = 0
         self._chunks_held = 0
+        self._min_observed_producer_rate = None
 
     def push(self, chunk: bytes, is_final: bool = False) -> List[bytes]:
         """Push a chunk through the buffer.
@@ -262,7 +293,7 @@ class StreamingChunkBuffer:
         if elapsed >= self._max_pre_delay_seconds:
             return True
 
-        p_observed = self._observed_producer_rate()
+        p_observed = self._worst_observed_producer_rate()
         if p_observed is None:
             return False
 
