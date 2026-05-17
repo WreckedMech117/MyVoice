@@ -1337,6 +1337,16 @@ class AudioCoordinator(BaseService):
         the floor set by the slower of the two devices. PyAudio's own
         per-stream lock is independent across stream instances, so the
         two writes don't contend at the PortAudio layer.
+
+        NOTE 2026-05-17 follow-up: asyncio.gather here alone is not
+        sufficient — the service `play_audio_chunk` methods are
+        async-in-name-only and historically called `stream.write` on the
+        event-loop thread, so a single-threaded asyncio loop serialized
+        the writes regardless. The actual fix lives at the service layer:
+        both `MonitorAudioService.play_audio_chunk` and
+        `VirtualMicrophoneService.play_audio_chunk` now wrap the blocking
+        PyAudio write in `asyncio.to_thread`, releasing the event loop
+        so this gather can interleave them on the asyncio scheduler.
         """
         result = {"monitor": False, "virtual": False, "mic_mixed": False}
 

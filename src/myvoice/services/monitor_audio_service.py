@@ -914,23 +914,33 @@ class MonitorAudioService(BaseService):
         Returns:
             bool: True if chunk was played successfully
         """
+        # Snapshot the stream under the lock, then perform the (blocking)
+        # PyAudio write OUTSIDE the lock and on a worker thread so the
+        # asyncio event loop can interleave the virtual-mic write. On MME
+        # / DirectSound, stream.write blocks until the device-internal
+        # buffer accepts the data (paced by playback wall-clock); holding
+        # the asyncio loop here serializes monitor + virtual writes and
+        # makes each dispatch take ≈ 2× audio_duration. Pushing the write
+        # to a thread via asyncio.to_thread lets asyncio.gather in
+        # AudioCoordinator._dispatch_chunk_to_services actually run the
+        # two writes concurrently (≈ 1× audio_duration per dispatch).
         with self._streaming_lock:
-            if not self._streaming_stream:
+            stream = self._streaming_stream
+            if not stream:
                 self.logger.error("No active streaming session")
                 return False
 
-            try:
-                # Write chunk directly to stream (non-blocking)
-                self._streaming_stream.write(audio_data)
+        try:
+            await asyncio.to_thread(stream.write, audio_data)
 
-                if is_final:
-                    self.logger.debug("Played final audio chunk")
+            if is_final:
+                self.logger.debug("Played final audio chunk")
 
-                return True
+            return True
 
-            except Exception as e:
-                self.logger.error(f"Failed to play audio chunk: {e}")
-                return False
+        except Exception as e:
+            self.logger.error(f"Failed to play audio chunk: {e}")
+            return False
 
     async def stop_streaming_session(self) -> bool:
         """

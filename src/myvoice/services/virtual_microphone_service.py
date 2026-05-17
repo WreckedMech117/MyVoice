@@ -972,23 +972,32 @@ class VirtualMicrophoneService(BaseService):
         Returns:
             bool: True if chunk was streamed successfully
         """
+        # Mirror MonitorAudioService.play_audio_chunk: snapshot the
+        # stream under the lock, then push the blocking PyAudio write to
+        # a worker thread via asyncio.to_thread so the coordinator's
+        # asyncio.gather(monitor_write, virtual_write) actually runs the
+        # two writes concurrently. Without this, the asyncio.gather is a
+        # no-op (single-threaded event loop blocks on the first write)
+        # and each dispatch costs ≈ 2× audio_duration — observed on
+        # 3060 smoke 2026-05-17 (gen 3 dispatch deltas 7.57 s / 3.46 s
+        # for 3.96 s / 1.98 s audio).
         with self._streaming_lock:
-            if not self._streaming_stream:
+            stream = self._streaming_stream
+            if not stream:
                 self.logger.error("No active virtual mic streaming session")
                 return False
 
-            try:
-                # Write chunk directly to stream
-                self._streaming_stream.write(audio_data)
+        try:
+            await asyncio.to_thread(stream.write, audio_data)
 
-                if is_final:
-                    self.logger.debug("Streamed final audio chunk to virtual mic")
+            if is_final:
+                self.logger.debug("Streamed final audio chunk to virtual mic")
 
-                return True
+            return True
 
-            except Exception as e:
-                self.logger.error(f"Failed to stream audio chunk to virtual mic: {e}")
-                return False
+        except Exception as e:
+            self.logger.error(f"Failed to stream audio chunk to virtual mic: {e}")
+            return False
 
     async def stop_streaming_session(self) -> bool:
         """
