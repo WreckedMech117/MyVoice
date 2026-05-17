@@ -722,6 +722,55 @@ class TestSetErrorIdempotency:
         assert excinfo.value.method == "set_error"
 
 
+class TestTrySetErrorTerminalAbsorption:
+    """Race-safe variant for error-cleanup paths that may fire after the
+    worker's drain-on-cancel posts ('cancel', sid). Behaviour is unchanged
+    for active sessions; terminal-state calls absorb silently rather than
+    surface InvalidSessionStateError to the global exception handler.
+    """
+
+    def test_try_set_error_transitions_active_session(self, qapp):
+        registry = make_registry(qapp)
+        sid = registry.create_session(text="hi", voice="v", model_type="m")
+        captured = capture_state_changes(registry)
+        registry.try_set_error(sid)
+        assert registry.get(sid).state == SessionState.ERROR
+        assert captured == [(sid, SessionState.ERROR)]
+
+    def test_try_set_error_absorbs_cancelled_silently(self, qapp):
+        registry = make_registry(qapp)
+        sid = make_session_in(registry, SessionState.CANCELLED)
+        captured = capture_state_changes(registry)
+        registry.try_set_error(sid)  # must not raise, must not emit
+        assert captured == []
+        assert registry.get(sid).state == SessionState.CANCELLED
+
+    def test_try_set_error_absorbs_done(self, qapp):
+        registry = make_registry(qapp)
+        sid = make_session_in(registry, SessionState.DONE)
+        captured = capture_state_changes(registry)
+        registry.try_set_error(sid)
+        assert captured == []
+        assert registry.get(sid).state == SessionState.DONE
+
+    def test_try_set_error_absorbs_already_errored(self, qapp):
+        registry = make_registry(qapp)
+        sid = make_session_in(registry, SessionState.ERROR)
+        captured = capture_state_changes(registry)
+        registry.try_set_error(sid)
+        assert captured == []
+        assert registry.get(sid).state == SessionState.ERROR
+
+    def test_try_set_error_is_registered_for_post_mutation(self, qapp):
+        # post_mutation rejects unregistered slot names; this guards
+        # against future refactors that drop try_set_error from the
+        # MUTATION_SLOT_NAMES set.
+        registry = make_registry(qapp)
+        sid = registry.create_session(text="hi", voice="v", model_type="m")
+        # Must not raise — would raise RuntimeError if unregistered.
+        registry.post_mutation('try_set_error', sid)
+
+
 class TestMarkAudibleDuplicateSuppression:
     """11.2 M3: mark_audible re-emits on the False→True flip but absorbs
     duplicates when is_audible was already True."""

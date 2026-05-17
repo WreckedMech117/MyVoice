@@ -316,6 +316,7 @@ _MUTATION_SLOT_NAMES: frozenset[str] = frozenset({
     "cancel",
     "discard",
     "set_error",
+    "try_set_error",
 })
 
 
@@ -538,6 +539,47 @@ class SessionRegistry(QObject):
         # double-invalidation on repeated set_error calls.
         self._invalidate_saveable_slot_for(session)
         # Story 16.5: terminal-state cleanup — idempotent.
+        self._maybe_clear_cancel_hook(session_id)
+
+    @pyqtSlot(str)
+    def try_set_error(self, session_id: str) -> None:
+        """Race-safe variant of `set_error` for error-cleanup paths.
+
+        Behaves identically to `set_error` for active sessions (PENDING,
+        GENERATING, READY_TO_PLAY, PLAYING) but silently absorbs sessions
+        that have already settled into any terminal state — ERROR,
+        CANCELLED, DONE, or DISCARDED. The strict `set_error` contract is
+        preserved separately (see `test_set_error_propagates_from_other_terminals`).
+
+        Why this exists: when TRUE_STREAM raises mid-dispatch
+        (`qwen_tts_service._generate_true_stream`'s 0-chunks-on-cold-compile
+        path), the cleanup posts `cancel_event.set()` → joins the worker,
+        which in turn posts ('cancel', sid) per the worker's drain-on-cancel
+        contract. By the time the dispatch's own ('set_error', sid) reaches
+        the Qt event loop, the session is already CANCELLED — and strict
+        `set_error` raises InvalidSessionStateError, which the global
+        exception handler surfaces as an "Unexpected Error" dialog. The
+        fallback chain has already succeeded by then, so the dialog is
+        purely cosmetic noise. `try_set_error` absorbs the race.
+
+        Side effects (saveable slot invalidation, cancel hook cleanup) are
+        unchanged from `set_error`'s contract — they only run when an
+        actual transition occurs. Terminal-state absorption is a true
+        no-op.
+        """
+        session = self._guard_and_lookup("try_set_error", session_id)
+        if session.state in (
+            SessionState.ERROR,
+            SessionState.CANCELLED,
+            SessionState.DONE,
+            SessionState.DISCARDED,
+        ):
+            return
+        old_state = session.state
+        self._transition_for_slot(session, "try_set_error", SessionState.ERROR)
+        self._maybe_emit_state_changed(session_id, session, old_state)
+        self._recompute_focal_and_maybe_emit()
+        self._invalidate_saveable_slot_for(session)
         self._maybe_clear_cancel_hook(session_id)
 
     # ----- AC #8 — cross-thread helper (P-3) ---------------------------- #

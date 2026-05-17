@@ -4524,7 +4524,17 @@ class QwenTTSService(BaseService):
             if talker_thread is not None and talker_thread.is_alive():
                 talker_thread.join(timeout=2.0)
             if sid is not None and self._session_registry is not None:
-                self._session_registry.post_mutation('set_error', sid)
+                # try_set_error rather than set_error: setting the
+                # streamer cancel_event above causes the worker's drain-
+                # on-cancel logic to post ('cancel', sid) before this
+                # error-cleanup mutation reaches the Qt event loop. The
+                # session is already CANCELLED by the time set_error
+                # fires, which strict set_error would surface as an
+                # "Unexpected Error" dialog via the global exception
+                # handler — even though the dispatcher's fallback chain
+                # has already routed to SENTENCE_STREAM and the user
+                # hears audio. try_set_error absorbs the race.
+                self._session_registry.post_mutation('try_set_error', sid)
                 self._session_registry.post_mutation('discard', sid)
             # Surface to the dispatcher's fallback chain. NOT
             # asyncio.CancelledError (handled above).
