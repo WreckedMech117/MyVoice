@@ -1318,30 +1318,70 @@ class AudioCoordinator(BaseService):
         audio_data: bytes,
         is_final: bool,
     ) -> Dict[str, bool]:
-        """Send one already-buffered chunk to the monitor + virtual services."""
+        """Send one already-buffered chunk to the monitor + virtual services.
+
+        Monitor and virtual writes run CONCURRENTLY via asyncio.gather. On
+        MME / DirectSound host APIs, PyAudio's blocking `stream.write` stalls
+        until the device-internal buffer can accept the data — effectively
+        paced by playback wall-clock. With the previous sequential dispatch
+        (monitor first, then virtual), each chunk's total dispatch time was
+        ≈ 2 × audio_duration. The audible consequence: the monitor's PyAudio
+        queue drained to silence during the virtual.write blocking phase,
+        producing the "gap after GPU drops" symptom the 3060 smoke
+        2026-05-16 pinned (gen 3: dispatch-to-dispatch deltas of 7.57 s and
+        3.46 s for 3.96 s / 1.98 s audio chunks respectively — almost
+        exactly 2× the audio duration).
+
+        Running the two writes concurrently brings the per-dispatch time
+        down to ≈ max(monitor_write, virtual_write) ≈ 1× audio_duration —
+        the floor set by the slower of the two devices. PyAudio's own
+        per-stream lock is independent across stream instances, so the
+        two writes don't contend at the PortAudio layer.
+        """
         result = {"monitor": False, "virtual": False, "mic_mixed": False}
 
-        # Play TTS on monitor service (unaffected by mic mixing)
-        if self.monitor_service and self.monitor_service.is_streaming_active():
-            result["monitor"] = await self.monitor_service.play_audio_chunk(
+        async def _write_monitor() -> bool:
+            if not (
+                self.monitor_service and self.monitor_service.is_streaming_active()
+            ):
+                return False
+            return await self.monitor_service.play_audio_chunk(
                 audio_data, is_final
             )
 
-        # Handle virtual mic output (possibly with mic mixing)
-        if self.virtual_service:
-            if hasattr(self.virtual_service, 'is_streaming_active') and \
-               self.virtual_service.is_streaming_active():
-
-                self.logger.debug(f"[MIC_MIX] Virtual mic active, _mic_mixing_enabled={self._mic_mixing_enabled}")
-                virtual_audio = await self._get_virtual_mic_audio(audio_data)
-                if virtual_audio != audio_data:
-                    result["mic_mixed"] = True
-                    self.logger.debug(f"[MIC_MIX] Audio was mixed! Original: {len(audio_data)}, Mixed: {len(virtual_audio)}")
-
-                result["virtual"] = await self.virtual_service.play_audio_chunk(
-                    virtual_audio, is_final
+        async def _write_virtual() -> bool:
+            if not self.virtual_service:
+                return False
+            if not (
+                hasattr(self.virtual_service, 'is_streaming_active')
+                and self.virtual_service.is_streaming_active()
+            ):
+                return False
+            self.logger.debug(
+                f"[MIC_MIX] Virtual mic active, "
+                f"_mic_mixing_enabled={self._mic_mixing_enabled}"
+            )
+            virtual_audio = await self._get_virtual_mic_audio(audio_data)
+            if virtual_audio != audio_data:
+                result["mic_mixed"] = True
+                self.logger.debug(
+                    f"[MIC_MIX] Audio was mixed! "
+                    f"Original: {len(audio_data)}, Mixed: {len(virtual_audio)}"
                 )
+            return await self.virtual_service.play_audio_chunk(
+                virtual_audio, is_final
+            )
 
+        # asyncio.gather with return_exceptions=False: an exception in either
+        # branch propagates up, matching the prior behavior where a service
+        # write that raised would surface to the play_audio_chunk caller.
+        # Both writes are awaited fully even if one returns False — neither
+        # short-circuits the other.
+        monitor_ok, virtual_ok = await asyncio.gather(
+            _write_monitor(), _write_virtual()
+        )
+        result["monitor"] = monitor_ok
+        result["virtual"] = virtual_ok
         return result
 
     async def _get_virtual_mic_audio(self, tts_audio: bytes) -> bytes:
