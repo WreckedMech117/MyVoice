@@ -1284,6 +1284,21 @@ class AudioCoordinator(BaseService):
                     self._stream_last_chunk_bytes = len(dispatched)
                     self._stream_total_bytes += len(dispatched)
 
+                # 2026-05-16 diagnostic — per-dispatch INFO log for the
+                # chunks-repeated bug investigation. If chunks are being
+                # double-dispatched somewhere, two dispatches with the
+                # SAME byte-count back-to-back will be visible in the log.
+                # input_bytes vs dispatched_bytes split surfaces any
+                # buffer-merge accounting issues.
+                self.logger.info(
+                    "Dispatch chunk: input_bytes=%d dispatched_bytes=%d "
+                    "is_final=%s batch_idx=%d/%d total_bytes_so_far=%d",
+                    len(audio_data) if audio_data else 0,
+                    len(dispatched) if dispatched else 0,
+                    chunk_is_final, idx, len(ready_chunks),
+                    self._stream_total_bytes,
+                )
+
                 chunk_result = await self._dispatch_chunk_to_services(
                     dispatched, chunk_is_final
                 )
@@ -1489,6 +1504,22 @@ class AudioCoordinator(BaseService):
         """
         result = {"monitor": False, "virtual": False}
 
+        # 2026-05-16 diagnostic — pin which call site initiated the stop
+        # and whether wait_for_drain was set. If two stops fire back-to-
+        # back (one True from chunk handler, one False from elsewhere
+        # racing it), the second clobbers the first's drain wait — that's
+        # one hypothesis for the gen 2 drain-truncation observation.
+        self.logger.info(
+            "stop_streaming_session called: wait_for_drain=%s "
+            "_streaming_buffer=%s _stream_total_bytes=%d "
+            "_stream_first_write_ts=%s _stream_last_chunk_bytes=%d",
+            wait_for_drain,
+            "set" if self._streaming_buffer is not None else "None",
+            self._stream_total_bytes,
+            "set" if self._stream_first_write_ts is not None else "None",
+            self._stream_last_chunk_bytes,
+        )
+
         try:
             # Flush any audio still held in the consumer-side smoothing
             # buffer (short-utterance case where stop is called before the
@@ -1590,14 +1621,46 @@ class AudioCoordinator(BaseService):
                         remaining_s + self._DRAIN_SAFETY_BUFFER_S,
                         self._MAX_DRAIN_WAIT_S,
                     )
-                    self.logger.debug(
-                        "Draining output buffer before close: "
-                        "last_chunk_duration=%.3fs time_since_last_write=%.3fs "
-                        "last_chunk_remaining=%.3fs total_queued=%.3fs waiting=%.3fs",
+                    # 2026-05-16 diagnostic — promoted from DEBUG to INFO so
+                    # the drain-truncation investigation (3060 smoke gen 2:
+                    # expected ~6.98 s of drain math, observed ~4.85 s of
+                    # actual elapsed before "Streaming session stopped"
+                    # fires) can pin which variable diverges. Includes
+                    # absolute total_bytes + last_chunk_bytes so the
+                    # arithmetic can be re-derived from the log without
+                    # needing process state.
+                    self.logger.info(
+                        "Drain calc: last_chunk_bytes=%d total_bytes=%d "
+                        "bytes_per_sec=%d last_chunk_dur=%.3fs "
+                        "time_since_last_write=%.3fs last_chunk_remaining=%.3fs "
+                        "total_audio_dur=%.3fs playback_elapsed=%.3fs "
+                        "total_queued=%.3fs drain_wait=%.3fs",
+                        self._stream_last_chunk_bytes,
+                        self._stream_total_bytes,
+                        bytes_per_second,
                         last_chunk_duration_s, time_since_last_write,
-                        last_chunk_remaining, total_queued_audio_s, drain_wait,
+                        last_chunk_remaining,
+                        total_audio_duration_s if self._stream_first_write_ts is not None else -1.0,
+                        playback_elapsed_s if self._stream_first_write_ts is not None else -1.0,
+                        total_queued_audio_s, drain_wait,
                     )
+                    drain_start = time.monotonic()
                     await asyncio.sleep(drain_wait)
+                    drain_actual = time.monotonic() - drain_start
+                    if drain_actual < drain_wait - 0.1:
+                        # asyncio.sleep should never return early under
+                        # normal scheduling — if it does, surface loudly
+                        # so the drain-truncation cause is visible.
+                        self.logger.warning(
+                            "Drain wait completed early: planned=%.3fs "
+                            "actual=%.3fs (sleep returned %.3fs early)",
+                            drain_wait, drain_actual, drain_wait - drain_actual,
+                        )
+                    else:
+                        self.logger.info(
+                            "Drain wait complete: planned=%.3fs actual=%.3fs",
+                            drain_wait, drain_actual,
+                        )
 
             # Reset drain-tracking counters and TTS sample rate.
             self._tts_sample_rate = None
