@@ -8,7 +8,7 @@
 
 #define MyAppName "MyVoice"
 #define MyAppVersion "2.1.0"
-#define MyAppBuild "22"
+#define MyAppBuild "30"
 #define MyAppPublisher "MyVoice Development Team"
 #define MyAppURL "https://github.com/myvoice/myvoice"
 #define MyAppExeName "MyVoice.exe"
@@ -193,7 +193,7 @@ Type: filesandordirs; Name: "{userappdata}\{#MyAppName}"
 [Messages]
 ; Customize installation messages
 WelcomeLabel1=Welcome to the [name] Setup Wizard
-WelcomeLabel2=This will install [name/ver] on your computer.%n%nMyVoice is a desktop text-to-speech application with embedded Qwen3-TTS for high-quality voice cloning, emotion control, and voice design.%n%nIMPORTANT: This installation requires approximately 3 GB of disk space. TTS models (~1.2-3.4 GB depending on quality tier selected) are downloaded on first use.%n%nPlease be patient during the extraction process.%n%nIt is recommended that you close all other applications before continuing.
+WelcomeLabel2=This will install [name/ver] on your computer.%n%nMyVoice is a desktop text-to-speech application with embedded Qwen3-TTS for high-quality voice cloning, emotion control, and voice design.%n%nIMPORTANT: This installation requires approximately 3 GB of disk space PLUS the TTS model files (~1.2 GB for Small tier, ~3.4 GB for Quality tier). The model files are downloaded during installation so your first generation is instant — an internet connection is required.%n%nPlease be patient during the extraction and download process.%n%nIt is recommended that you close all other applications before continuing.
 FinishedHeadingLabel=Completing the [name] Setup Wizard
 FinishedLabelNoIcons=Setup has finished installing [name] on your computer.
 FinishedLabel=Setup has finished installing [name] on your computer. The application may be launched by selecting the installed shortcuts.
@@ -217,6 +217,7 @@ function IsVirtualCableInstalled(): Boolean; forward;
 function ShouldAllowLaunch(): Boolean; forward;
 procedure RunVirtualCableCheck(); forward;
 procedure WriteModelQualitySettings(); forward;
+procedure PredownloadModels(); forward;
 
 // Perform the actual VB-Cable detection with progress indicator
 procedure RunVirtualCableCheck();
@@ -368,6 +369,97 @@ begin
   end;
 end;
 
+// Pre-download the selected tier's TTS models so the first generation
+// doesn't trigger a multi-GB HuggingFace download. Routed to
+// `MyVoice.exe --predownload-models --tier=<small|quality>` which exits
+// BEFORE the torch + PyQt6 imports run (see src\myvoice\main.py).
+// Non-fatal on failure: if the network drops or HF is unreachable, we
+// warn the user but allow install to complete — the app will fall back
+// to downloading on first launch.
+procedure PredownloadModels();
+var
+  ResultCode: Integer;
+  QualityTier: String;
+  PredownloadProgressPage: TOutputProgressWizardPage;
+  ModelExeName: String;
+  CmdLine: String;
+  EstimatedSize: String;
+begin
+  // Determine which tier was selected (mirrors WriteModelQualitySettings)
+  if WizardIsTaskSelected('modelquality_small') then
+  begin
+    QualityTier := 'small';
+    EstimatedSize := '~1.2 GB';
+  end
+  else
+  begin
+    QualityTier := 'quality';
+    EstimatedSize := '~3.4 GB';
+  end;
+
+  Log('Pre-downloading TTS models for tier: ' + QualityTier);
+
+  PredownloadProgressPage := CreateOutputProgressPage(
+    'Downloading TTS Models',
+    'Pre-downloading the selected Qwen3-TTS model so the first ' +
+    'generation is instant. This requires an internet connection.');
+  PredownloadProgressPage.SetText(
+    'Downloading model files (' + EstimatedSize + ')...',
+    'This may take several minutes depending on your connection. ' +
+    'The window will not appear to update during the download; ' +
+    'please wait for it to complete.');
+  PredownloadProgressPage.SetProgress(20, 100);
+  PredownloadProgressPage.Show;
+
+  try
+    ModelExeName := ExpandConstant('{app}\{#MyAppExeName}');
+    CmdLine := '--predownload-models --tier=' + QualityTier;
+
+    if Exec(ModelExeName, CmdLine, '', SW_HIDE,
+            ewWaitUntilTerminated, ResultCode) then
+    begin
+      PredownloadProgressPage.SetProgress(100, 100);
+      if ResultCode = 0 then
+      begin
+        Log('Model pre-download successful (tier: ' + QualityTier + ')');
+      end
+      else if ResultCode = 2 then
+      begin
+        Log('Model pre-download partially failed (exit code 2). ' +
+            'Remaining models will be fetched on first launch.');
+        MsgBox(
+          'Some TTS model files could not be downloaded. The ' +
+          'application will fetch the missing files automatically on ' +
+          'first generation.' + #13#10 + #13#10 +
+          'Most common cause: temporary network interruption. ' +
+          'This is not a fatal error — installation will complete normally.',
+          mbInformation, MB_OK);
+      end
+      else
+      begin
+        Log('Model pre-download failed with code: ' + IntToStr(ResultCode));
+        MsgBox(
+          'TTS model pre-download failed (exit code: ' +
+          IntToStr(ResultCode) + ').' + #13#10 + #13#10 +
+          'The application will download the model on first launch instead. ' +
+          'Installation will continue normally.',
+          mbInformation, MB_OK);
+      end;
+    end
+    else
+    begin
+      Log('Failed to launch MyVoice.exe for model pre-download');
+      MsgBox(
+        'Could not start the model pre-download. ' +
+        'The application will download the model on first launch instead.' +
+        #13#10 + #13#10 + 'Installation will continue normally.',
+        mbInformation, MB_OK);
+    end;
+  finally
+    PredownloadProgressPage.Hide;
+  end;
+end;
+
 // Handle optional component installation after file extraction
 procedure CurStepChanged(CurStep: TSetupStep);
 var
@@ -394,6 +486,14 @@ begin
     // Write initial settings.json with selected model quality tier
     // ============================================================================
     WriteModelQualitySettings();
+
+    // ============================================================================
+    // Pre-download the selected tier's TTS models into the HuggingFace cache
+    // so the first user-facing generation doesn't have to wait for the
+    // multi-GB download. UAC elevation runs in the same user session, so
+    // the cache populated here is the same one the runtime app reads from.
+    // ============================================================================
+    PredownloadModels();
 
     if WizardIsTaskSelected('vbcable') then
     begin

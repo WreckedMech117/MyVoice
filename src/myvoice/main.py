@@ -34,6 +34,17 @@ multiprocessing.freeze_support()
 # Add the src directory to Python path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Install-time model pre-download path (2026-05-17). Invoked from the
+# Inno Setup installer's post-extraction phase via
+# `MyVoice.exe --predownload-models --tier=<small|quality>` so the
+# first user-facing generation doesn't have to wait for the multi-GB
+# HuggingFace download. Routed BEFORE the heavy torch + PyQt6 + qasync
+# imports below — pre-download only needs `huggingface_hub.snapshot_download`,
+# not the full app graph. Exits immediately when done.
+if "--predownload-models" in sys.argv:
+    from myvoice.utils.predownload_models import run_predownload
+    sys.exit(run_predownload(sys.argv))
+
 # CRITICAL: Register DLL directories BEFORE importing torch (Python 3.8+ Windows requirement)
 # This is required for portable Python environments where DLL paths aren't in system PATH
 if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
