@@ -1518,6 +1518,11 @@ class AudioCoordinator(BaseService):
     # longer than any single TTS utterance.
     _DRAIN_SAFETY_BUFFER_S = 0.5
     _MAX_DRAIN_WAIT_S = 15.0
+    # Tail-silence pad written after the final audio chunk so PyAudio's
+    # stop_stream + close truncate silence (in the OS audio mixer / driver
+    # buffer) rather than the last syllable. Added 2026-05-17 after 3060
+    # smoke showed residual last-syllable chop even with correct drain math.
+    _TAIL_SILENCE_PAD_S = 0.3
 
     async def stop_streaming_session(
         self,
@@ -1589,6 +1594,55 @@ class AudioCoordinator(BaseService):
                         self._stream_last_chunk_bytes = len(dispatched)
                         self._stream_total_bytes += len(dispatched)
                     await self._dispatch_chunk_to_services(dispatched, is_final=True)
+
+            # Tail-silence pad — 2026-05-17 RTX 3060 smoke surfaced a
+            # residual "last syllable chop" on TRUE_STREAM playback even
+            # after the parallel-dispatch + drain-math fixes. Math says
+            # the PortAudio queue is empty by the time `drain_wait`
+            # completes, but PyAudio's `stream.stop_stream` + `close`
+            # still appear to truncate the last ~100ms in the OS audio
+            # mixer / driver buffer on MME + DirectSound host APIs.
+            # Writing 300ms of int16 silence after the last audio chunk
+            # ensures that whatever the host API truncates is silence,
+            # not the syllable.
+            #
+            # The pad is dispatched DIRECTLY via _dispatch_chunk_to_services
+            # so the drain-tracking counters (_stream_last_chunk_bytes,
+            # _stream_last_write_ts) keep pointing at the actual final
+            # audio chunk. This matters for the producer-slower regime
+            # (Story 18.3 M6): when the last audio chunk is small but the
+            # last chunk's playback is still in flight, last_chunk_remaining
+            # is what the drain math relies on — overwriting it with the
+            # silence pad's tiny duration would lose that timing info.
+            # The pad duration is added explicitly to `drain_wait` below.
+            silence_pad_added = False
+            silence_pad_duration_s = 0.0
+            if (
+                wait_for_drain
+                and self._tts_sample_rate
+                and self._stream_first_write_ts is not None
+                and (
+                    (self.monitor_service and self.monitor_service.is_streaming_active())
+                    or (
+                        self.virtual_service
+                        and hasattr(self.virtual_service, 'is_streaming_active')
+                        and self.virtual_service.is_streaming_active()
+                    )
+                )
+            ):
+                silence_pad_duration_s = self._TAIL_SILENCE_PAD_S
+                silence_bytes = int(
+                    silence_pad_duration_s
+                    * self._tts_sample_rate
+                    * max(self._stream_channels, 1)
+                    * max(self._stream_sample_width, 1)
+                )
+                if silence_bytes > 0:
+                    silence_data = b'\x00' * silence_bytes
+                    await self._dispatch_chunk_to_services(
+                        silence_data, is_final=True
+                    )
+                    silence_pad_added = True
 
             # Story 17.3 finalization-drain follow-up — wait for the output
             # buffer to drain before tearing down. The producer can outpace
@@ -1667,8 +1721,15 @@ class AudioCoordinator(BaseService):
                     else:
                         total_queued_audio_s = 0.0
                     remaining_s = max(last_chunk_remaining, total_queued_audio_s)
+                    # Add the tail-silence pad's duration explicitly. Under
+                    # the producer-slower regime, total_queued_audio_s
+                    # clamps to 0 because playback_elapsed >> total_audio_dur,
+                    # which would hide the 300ms of just-dispatched silence
+                    # from the math. Adding it here ensures the drain wait
+                    # always covers the silence playback regardless of
+                    # producer regime.
                     drain_wait = min(
-                        remaining_s + self._DRAIN_SAFETY_BUFFER_S,
+                        remaining_s + silence_pad_duration_s + self._DRAIN_SAFETY_BUFFER_S,
                         self._MAX_DRAIN_WAIT_S,
                     )
                     # 2026-05-16 diagnostic — promoted from DEBUG to INFO so

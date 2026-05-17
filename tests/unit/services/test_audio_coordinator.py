@@ -368,7 +368,8 @@ class TestStopStreamingSessionDrain:
         coord._stream_last_chunk_bytes = 19200
         remaining_s = 0.3
         safety_s = AudioCoordinator._DRAIN_SAFETY_BUFFER_S
-        expected_wait = remaining_s + safety_s
+        silence_s = AudioCoordinator._TAIL_SILENCE_PAD_S
+        expected_wait = remaining_s + silence_s + safety_s
 
         t0 = _time.monotonic()
         await coord.stop_streaming_session(wait_for_drain=True)
@@ -378,8 +379,8 @@ class TestStopStreamingSessionDrain:
         # lower bound = expected - 200ms; upper bound = expected + 400ms.
         assert (expected_wait - 0.2) <= elapsed <= (expected_wait + 0.4), (
             f"Expected drain wait ~{expected_wait:.3f}s "
-            f"(last_chunk_remaining {remaining_s}s + safety {safety_s}s); "
-            f"got elapsed={elapsed:.3f}s"
+            f"(last_chunk_remaining {remaining_s}s + silence_pad {silence_s}s "
+            f"+ safety {safety_s}s); got elapsed={elapsed:.3f}s"
         )
         monitor.stop_streaming_session.assert_awaited_once()
         virtual.stop_streaming_session.assert_awaited_once()
@@ -401,15 +402,17 @@ class TestStopStreamingSessionDrain:
         coord._stream_last_write_ts = _time.monotonic() - 5.0
         coord._stream_last_chunk_bytes = 19200
         safety_s = AudioCoordinator._DRAIN_SAFETY_BUFFER_S
+        silence_s = AudioCoordinator._TAIL_SILENCE_PAD_S
+        expected_wait = silence_s + safety_s
 
         t0 = _time.monotonic()
         await coord.stop_streaming_session(wait_for_drain=True)
         elapsed = _time.monotonic() - t0
 
-        # Last-chunk remaining = 0; total wait = safety only.
-        assert (safety_s - 0.1) <= elapsed <= (safety_s + 0.3), (
-            f"Already-drained last chunk must STILL wait safety buffer "
-            f"(~{safety_s:.3f}s); got elapsed={elapsed:.3f}s"
+        # Last-chunk remaining = 0; total wait = silence_pad + safety.
+        assert (expected_wait - 0.1) <= elapsed <= (expected_wait + 0.3), (
+            f"Already-drained last chunk must STILL wait silence pad + "
+            f"safety buffer (~{expected_wait:.3f}s); got elapsed={elapsed:.3f}s"
         )
 
     async def test_wait_for_drain_caps_at_max_drain_wait(self):
@@ -552,9 +555,10 @@ class TestStopStreamingSessionDrain:
         coord._stream_last_write_ts = now - 0.1
         coord._stream_last_chunk_bytes = 24000 * 2 * 2  # 2 s chunk
         safety_s = AudioCoordinator._DRAIN_SAFETY_BUFFER_S
+        silence_s = AudioCoordinator._TAIL_SILENCE_PAD_S
         # last_chunk_remaining = 1.9 s; total_queued clamped to 0
-        # → wait ≈ 1.9 + safety
-        expected_wait = 1.9 + safety_s
+        # → wait ≈ 1.9 + silence_pad + safety
+        expected_wait = 1.9 + silence_s + safety_s
 
         t0 = _time.monotonic()
         await coord.stop_streaming_session(wait_for_drain=True)
@@ -706,9 +710,11 @@ class TestStopStreamingSessionDrain:
 
         # Original buggy math: remaining = 19.8 - 32 = -12.2 → drain SKIPPED.
         # Corrected math: last_chunk_remaining = 1.98 - 0.05 ≈ 1.93s; drain
-        # waits 1.93 + safety. With safety=0.5, expected ≈ 2.43s.
-        expected_min = 1.93  # last_chunk_remaining alone, no safety
-        expected_max = 1.98 + safety_s + 0.5  # generous upper bound
+        # waits 1.93 + silence_pad + safety. With safety=0.5 and
+        # silence_pad=0.3, expected ≈ 2.73s.
+        silence_s = AudioCoordinator._TAIL_SILENCE_PAD_S
+        expected_min = 1.93 + silence_s  # last_chunk_remaining + silence pad, no safety
+        expected_max = 1.98 + silence_s + safety_s + 0.5  # generous upper bound
 
         t0 = _time.monotonic()
         await coord.stop_streaming_session(wait_for_drain=True)
@@ -722,3 +728,71 @@ class TestStopStreamingSessionDrain:
             f"({{if remaining > 0}}) has regressed and the cut-off-at-end is "
             f"back."
         )
+
+    async def test_tail_silence_pad_dispatches_through_services_before_drain(self):
+        """2026-05-17 RTX 3060 smoke fix: stop_streaming_session writes a
+        300ms silence pad through monitor + virtual services before the
+        drain wait, so PyAudio's stop_stream + close truncate silence
+        rather than the last syllable. The pad MUST be dispatched (not
+        just accounted for in math) and MUST NOT overwrite the
+        last-chunk drain trackers — preserving Story 18.3 M6's
+        last_chunk_remaining math under producer-slower workloads.
+        """
+        coord, monitor, virtual = _coord_with_drain_services()
+        await coord.start_streaming_session(sample_rate=24000, channels=1, sample_width=2)
+        # Pretend a real audio chunk was just dispatched.
+        coord._stream_first_write_ts = _time.monotonic() - 0.1
+        coord._stream_total_bytes = 19200  # 0.4s of audio
+        coord._stream_last_write_ts = _time.monotonic() - 0.1
+        coord._stream_last_chunk_bytes = 19200
+
+        await coord.stop_streaming_session(wait_for_drain=True)
+
+        # Exactly one extra dispatch beyond the original audio chunk:
+        # the silence pad. play_audio_chunk on services was not called
+        # for the original audio in this test (state was set directly),
+        # so the silence pad is the sole dispatch we should see.
+        assert monitor.play_audio_chunk.call_count == 1, (
+            f"Expected 1 silence-pad dispatch to monitor; got "
+            f"{monitor.play_audio_chunk.call_count}"
+        )
+        assert virtual.play_audio_chunk.call_count == 1, (
+            f"Expected 1 silence-pad dispatch to virtual; got "
+            f"{virtual.play_audio_chunk.call_count}"
+        )
+
+        # The pad payload is the right size (300ms × 24000Hz × 1ch × 2 bytes).
+        expected_pad_bytes = int(
+            AudioCoordinator._TAIL_SILENCE_PAD_S * 24000 * 1 * 2
+        )
+        monitor_payload = monitor.play_audio_chunk.call_args.args[0]
+        virtual_payload = virtual.play_audio_chunk.call_args.args[0]
+        assert len(monitor_payload) == expected_pad_bytes
+        assert len(virtual_payload) == expected_pad_bytes
+        # All zeros — silence, not audio.
+        assert monitor_payload == b'\x00' * expected_pad_bytes
+        assert virtual_payload == b'\x00' * expected_pad_bytes
+        # is_final must be set so consumers know it's the tail.
+        assert monitor.play_audio_chunk.call_args.args[1] is True
+        assert virtual.play_audio_chunk.call_args.args[1] is True
+
+    async def test_tail_silence_pad_skipped_when_no_streaming_session_active(self):
+        """The silence pad guards on at-least-one service being streaming.
+        If both services are inactive (no session was opened), the pad
+        is a no-op — we don't open dead streams just to write silence.
+        """
+        coord, monitor, virtual = _coord_with_drain_services()
+        await coord.start_streaming_session(sample_rate=24000, channels=1, sample_width=2)
+        # Force both services to report not-streaming.
+        monitor.is_streaming_active = MagicMock(return_value=False)
+        virtual.is_streaming_active = MagicMock(return_value=False)
+        coord._stream_first_write_ts = _time.monotonic() - 0.1
+        coord._stream_total_bytes = 19200
+        coord._stream_last_write_ts = _time.monotonic() - 0.1
+        coord._stream_last_chunk_bytes = 19200
+
+        await coord.stop_streaming_session(wait_for_drain=True)
+
+        # No silence pad dispatched because both services were inactive.
+        monitor.play_audio_chunk.assert_not_called()
+        virtual.play_audio_chunk.assert_not_called()
