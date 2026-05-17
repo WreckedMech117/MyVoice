@@ -8,7 +8,7 @@
 
 #define MyAppName "MyVoice"
 #define MyAppVersion "2.1.0"
-#define MyAppBuild "30"
+#define MyAppBuild "32"
 #define MyAppPublisher "MyVoice Development Team"
 #define MyAppURL "https://github.com/myvoice/myvoice"
 #define MyAppExeName "MyVoice.exe"
@@ -451,8 +451,8 @@ begin
       Log('Failed to launch MyVoice.exe for model pre-download');
       MsgBox(
         'Could not start the model pre-download. ' +
-        'The application will download the model on first launch instead.' +
-        #13#10 + #13#10 + 'Installation will continue normally.',
+        'The application will download the model on first launch instead.' + #13#10 + #13#10 +
+        'Installation will continue normally.',
         mbInformation, MB_OK);
     end;
   finally
