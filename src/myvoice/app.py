@@ -14,7 +14,7 @@ import asyncio
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Tuple
 from datetime import datetime
 
 import numpy as np
@@ -243,6 +243,20 @@ class MyVoiceApp(QObject):
 
         # Connect application signals
         self.qt_app.aboutToQuit.connect(self._on_about_to_quit)
+
+        # Auto-pipeline gating state. When the user selects a CLONED voice
+        # that needs Whisper transcription and/or voice_clone_prompt
+        # precompute (_ensure_voice_clone_pipeline), we add the voice name
+        # to _voice_pipeline_in_flight while the background work runs. A
+        # Generate click during that window is parked in
+        # _pending_generation_text (single-slot, most-recent-wins) and
+        # fires automatically when the pipeline completes — so the user
+        # sees a delayed first generation instead of a "no transcription"
+        # x_vector fallback. Both fields live on the orchestrator (not the
+        # services) because the pipeline spans Whisper + voice-profile
+        # rescan + TTS-service precompute, which are coordinated here.
+        self._voice_pipeline_in_flight: set[str] = set()
+        self._pending_generation_text: Optional[Tuple[str, str]] = None
 
         self.logger.debug("MyVoiceApp controller initialized")
 
@@ -954,6 +968,36 @@ class MyVoiceApp(QObject):
         """
         self.logger.info(f"TTS generation requested for text: {text[:50]}...")
 
+        # Auto-pipeline gate: if the active voice is mid-prepare (Whisper
+        # transcription and/or voice_clone_prompt precompute is still
+        # running from _ensure_voice_clone_pipeline), park the text and
+        # return. _fire_pending_generation will replay this method when
+        # the pipeline's terminal callback (_on_voice_clone_prompt_prepared
+        # or _on_transcription_failed) runs. Single-slot (most-recent-wins)
+        # — a second Generate click while waiting overwrites the parked
+        # text, which matches the existing UI's "last submit wins" feel.
+        if getattr(self, "_voice_pipeline_in_flight", None) and hasattr(
+            self, "_voice_manager"
+        ):
+            try:
+                active = self._voice_manager.get_active_profile()
+            except Exception:
+                active = None
+            if active and active.name in self._voice_pipeline_in_flight:
+                self._pending_generation_text = (active.name, text)
+                self.logger.info(
+                    f"Auto-pipeline: deferring generation for "
+                    f"'{active.name}' — pipeline still in flight; text "
+                    f"will fire when prep completes"
+                )
+                if self._main_window:
+                    self._main_window.set_generation_status(
+                        "Preparing voice (transcribe + cache)… generation "
+                        "starts when ready",
+                        True,
+                    )
+                return
+
         # Stash the text length for the progressive-playback session opener
         # (adaptive pre-buffer mode in `audio_coordinator.start_streaming_session`
         # uses this to estimate T_a). Captured before the model dispatch so
@@ -1236,6 +1280,20 @@ class MyVoiceApp(QObject):
         stops complete in the background.
         """
         self.logger.info("Cancel/stop requested")
+
+        # A pending auto-pipeline generation should also be dropped on
+        # explicit Stop — the user is signalling "don't speak right now,"
+        # so firing the parked text once the pipeline catches up would
+        # surprise them.
+        if getattr(self, "_pending_generation_text", None) is not None:
+            self.logger.info(
+                f"Auto-pipeline: dropping deferred generation for "
+                f"'{self._pending_generation_text[0]}' on Stop"
+            )
+            self._pending_generation_text = None
+            if self._main_window:
+                self._main_window.set_generation_status("", False)
+
         try:
             try:
                 loop = asyncio.get_event_loop()
@@ -1768,6 +1826,20 @@ class MyVoiceApp(QObject):
         """
         self.logger.info(f"Voice changed to: {voice_name}")
 
+        # A voice switch invalidates any text parked under the previous
+        # voice's auto-pipeline — that generation was meant for a different
+        # voice, so drop it rather than firing it under the new selection.
+        if (
+            getattr(self, "_pending_generation_text", None) is not None
+            and self._pending_generation_text[0] != voice_name
+        ):
+            self.logger.info(
+                f"Auto-pipeline: dropping deferred generation for "
+                f"'{self._pending_generation_text[0]}' — user switched to "
+                f"'{voice_name}'"
+            )
+            self._pending_generation_text = None
+
         # Update active profile in voice manager
         if hasattr(self, '_voice_manager') and voice_name:
             self._run_async_task(
@@ -1882,6 +1954,10 @@ class MyVoiceApp(QObject):
           - Transcription present, embedding cache cold -> embedding
             precompute fires directly.
 
+        Adds the voice name to ``_voice_pipeline_in_flight`` so a concurrent
+        Generate click is deferred until the pipeline completes (see
+        ``_on_text_generate_requested`` and ``_fire_pending_generation``).
+
         No-op for non-CLONED voices, missing files, or voices already cached.
         """
         if not voice_profile:
@@ -1889,22 +1965,46 @@ class MyVoiceApp(QObject):
         from myvoice.models.voice_profile import VoiceType
         if voice_profile.voice_type != VoiceType.CLONED:
             return
+        # Re-entry guard: don't kick off a duplicate Whisper/precompute run
+        # if the same voice's pipeline is still mid-flight from a previous
+        # selection. The existing run will fire any deferred generation
+        # when it terminates.
+        if voice_profile.name in self._voice_pipeline_in_flight:
+            self.logger.debug(
+                f"Auto-pipeline: '{voice_profile.name}' already in flight; "
+                f"skipping re-entry"
+            )
+            return
         if not getattr(voice_profile, "transcription", None):
             self.logger.info(
                 f"Auto-pipeline: '{voice_profile.name}' lacks a "
                 f"transcription; firing Whisper now (embedding precompute "
                 f"will chain when transcription completes)"
             )
+            self._voice_pipeline_in_flight.add(voice_profile.name)
             self._on_transcription_requested(voice_profile.name)
             return
+        self._voice_pipeline_in_flight.add(voice_profile.name)
         self._trigger_voice_clone_prompt_prepare(voice_profile)
 
     def _trigger_voice_clone_prompt_prepare(self, voice_profile) -> None:
         """Background-prepare the voice_clone_prompt .pt for a CLONED voice
         that already has a transcription. Failure modes (no .wav, no
         ref_text, model load error) are logged but never user-fatal — the
-        next generation still runs through the lazy precompute path."""
+        next generation still runs through the lazy precompute path.
+
+        ``_on_voice_clone_prompt_prepared`` (success) and the on_error
+        lambda (failure) are responsible for clearing the in-flight marker
+        and firing any deferred generation; this method only handles the
+        synchronous "TTS service not wired" early-return path itself.
+        """
         if not getattr(self, "_tts_service", None):
+            self.logger.warning(
+                f"Auto-pipeline: TTS service not available; cannot prepare "
+                f"voice_clone_prompt for '{voice_profile.name}'"
+            )
+            self._voice_pipeline_in_flight.discard(voice_profile.name)
+            self._fire_pending_generation(voice_profile.name)
             return
         self.logger.info(
             f"Auto-pipeline: preparing voice_clone_prompt cache for "
@@ -1915,14 +2015,29 @@ class MyVoiceApp(QObject):
             on_success=lambda result: self._on_voice_clone_prompt_prepared(
                 voice_profile.name, result
             ),
-            on_error=lambda error: self.logger.warning(
-                f"Auto-pipeline: voice_clone_prompt prepare raised for "
-                f"'{voice_profile.name}': {error}"
+            on_error=lambda error: self._on_voice_clone_prompt_prepare_error(
+                voice_profile.name, error
             ),
         )
 
+    def _on_voice_clone_prompt_prepare_error(self, voice_name: str, error) -> None:
+        """Async raise from prepare_voice_clone_prompt. Clear the in-flight
+        marker and fire any deferred generation so the user isn't stranded."""
+        self.logger.warning(
+            f"Auto-pipeline: voice_clone_prompt prepare raised for "
+            f"'{voice_name}': {error}"
+        )
+        self._voice_pipeline_in_flight.discard(voice_name)
+        self._fire_pending_generation(voice_name)
+
     def _on_voice_clone_prompt_prepared(self, voice_name: str, result) -> None:
-        """Log the auto-precompute outcome. result == (success, error_msg)."""
+        """Log the auto-precompute outcome. result == (success, error_msg).
+
+        Always clears the in-flight marker (even on failure) so a deferred
+        Generate click can fire — the SENTENCE_STREAM downgrade in
+        ``generate_voice_clone`` handles the no-prompt case gracefully, so
+        even a failed precompute should not strand the user's Generate.
+        """
         try:
             success, error_msg = result if isinstance(result, tuple) else (bool(result), None)
         except Exception:
@@ -1936,15 +2051,41 @@ class MyVoiceApp(QObject):
                 f"Auto-pipeline: voice_clone_prompt prepare for "
                 f"'{voice_name}' did not cache: {error_msg}"
             )
+        self._voice_pipeline_in_flight.discard(voice_name)
+        self._fire_pending_generation(voice_name)
+
+    def _fire_pending_generation(self, voice_name: str) -> None:
+        """Fire a deferred Generate click that was parked while the
+        auto-pipeline ran for ``voice_name``. No-op if there's no pending
+        text or if the pending text was queued under a different voice
+        (the user switched voices mid-pipeline)."""
+        pending = self._pending_generation_text
+        if not pending or pending[0] != voice_name:
+            return
+        self._pending_generation_text = None
+        _, pending_text = pending
+        self.logger.info(
+            f"Auto-pipeline: firing deferred generation for '{voice_name}'"
+        )
+        self._on_text_generate_requested(pending_text)
 
     def _after_transcription_rescan(self, voice_name: str) -> None:
         """After Whisper transcription saved + voice_manager rescan, kick off
         the embedding precompute so the freshly-transcribed voice is fully
-        warmed up before the user hits Generate."""
+        warmed up before the user hits Generate.
+
+        On any branch that doesn't reach the embedding precompute (manager
+        missing, profile gone, transcription still absent), we clear the
+        in-flight marker here so any deferred generation can fire — the
+        downstream x_vector + SENTENCE_STREAM path handles the degraded
+        case without an error dialog.
+        """
         self.logger.debug(
             f"Voice profiles refreshed after transcription for '{voice_name}'"
         )
         if not getattr(self, "_voice_manager", None):
+            self._voice_pipeline_in_flight.discard(voice_name)
+            self._fire_pending_generation(voice_name)
             return
         try:
             profiles = self._voice_manager.get_valid_profiles()
@@ -1953,6 +2094,8 @@ class MyVoiceApp(QObject):
                 f"Auto-pipeline: could not look up '{voice_name}' after "
                 f"rescan: {exc}"
             )
+            self._voice_pipeline_in_flight.discard(voice_name)
+            self._fire_pending_generation(voice_name)
             return
         profile = profiles.get(voice_name)
         if profile is None:
@@ -1960,14 +2103,30 @@ class MyVoiceApp(QObject):
                 f"Auto-pipeline: '{voice_name}' missing after rescan; "
                 f"skipping embedding precompute"
             )
+            self._voice_pipeline_in_flight.discard(voice_name)
+            self._fire_pending_generation(voice_name)
             return
         if not getattr(profile, "transcription", None):
             self.logger.warning(
                 f"Auto-pipeline: '{voice_name}' rescan completed but the "
                 f"profile still has no transcription; skipping precompute"
             )
+            self._voice_pipeline_in_flight.discard(voice_name)
+            self._fire_pending_generation(voice_name)
             return
         self._trigger_voice_clone_prompt_prepare(profile)
+
+    def _on_transcription_rescan_failed(self, voice_name: str, error) -> None:
+        """Voice-manager rescan failed after Whisper saved the .txt. Log
+        and clear the in-flight marker so deferred generation isn't
+        stranded — the .txt is on disk and will be picked up by the
+        profile manager on the next natural rescan."""
+        self.logger.error(
+            f"Auto-pipeline: rescan after transcription failed for "
+            f"'{voice_name}': {error}; clearing in-flight marker"
+        )
+        self._voice_pipeline_in_flight.discard(voice_name)
+        self._fire_pending_generation(voice_name)
 
     def _on_voice_selection_saved(self, success):
         """Callback when voice selection is saved to config."""
@@ -2547,10 +2706,12 @@ class MyVoiceApp(QObject):
                         # then chain into the embedding precompute so the very
                         # next generation hits the cache instead of paying the
                         # ~2-5s Base-model precompute on top of the Whisper run.
+                        # On rescan failure we still clear the in-flight marker
+                        # so a deferred Generate isn't stranded.
                         self._run_async_task(
                             self._voice_manager.force_rescan(),
                             on_success=lambda _: self._after_transcription_rescan(voice_name),
-                            on_error=lambda error: self.logger.error(f"Failed to refresh after transcription: {error}")
+                            on_error=lambda error: self._on_transcription_rescan_failed(voice_name, error),
                         )
 
                         # Show success notification
@@ -2589,6 +2750,15 @@ class MyVoiceApp(QObject):
                 f"Failed to transcribe '{voice_name}': {str(error)}",
                 "error"
             )
+
+        # Whisper failure is a terminal pipeline state — clear the in-flight
+        # marker and fire any deferred generation. With no transcription the
+        # generation will route through x_vector_only_mode, which the
+        # TRUE_STREAM->SENTENCE_STREAM downgrade in generate_voice_clone
+        # handles without surfacing an error dialog. The user still gets
+        # audio, just at x_vector quality until they retry transcription.
+        self._voice_pipeline_in_flight.discard(voice_name)
+        self._fire_pending_generation(voice_name)
 
     # --------------------------------------------------------------- #
     # Story 17.3 — progressive-playback consumer (Phase ⊥-Polish)
