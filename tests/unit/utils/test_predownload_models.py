@@ -162,3 +162,43 @@ class TestRunPredownload:
                 "MyVoice.exe", "--predownload-models", "--tier=quality",
             ])
         assert rc == 2
+
+    def test_progress_bars_are_disabled_before_snapshot_download(self):
+        # Regression for 3060 install 2026-05-17 (predownload.log):
+        # tqdm crashed with `AttributeError: 'NoneType' object has no
+        # attribute 'write'` because the frozen exe's `sys.stderr` is
+        # None (built `--noconsole`) and tqdm defaults to writing
+        # progress to stderr. We MUST call
+        # `huggingface_hub.utils.disable_progress_bars()` before
+        # snapshot_download to prevent this.
+        from huggingface_hub.utils import (
+            are_progress_bars_disabled,
+            enable_progress_bars,
+        )
+        # Start from the known-enabled state to make the assertion
+        # below meaningful.
+        enable_progress_bars()
+        assert not are_progress_bars_disabled()
+
+        captured_state = []
+
+        def side_effect(**_kwargs):
+            captured_state.append(are_progress_bars_disabled())
+            return "/fake/cache/path"
+
+        with patch(
+            "huggingface_hub.snapshot_download", side_effect=side_effect
+        ):
+            rc = run_predownload([
+                "MyVoice.exe", "--predownload-models", "--tier=small",
+            ])
+        assert rc == 0
+        assert captured_state, "snapshot_download was never called"
+        # Every snapshot_download invocation must see progress bars
+        # disabled, not just the first.
+        for state in captured_state:
+            assert state is True, (
+                "huggingface_hub progress bars must be disabled before "
+                "snapshot_download is called; otherwise tqdm crashes on "
+                "the frozen exe where stderr is None."
+            )

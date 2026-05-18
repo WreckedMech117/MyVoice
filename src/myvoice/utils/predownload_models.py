@@ -206,6 +206,26 @@ def run_predownload(argv: Iterable[str]) -> int:
         )
         return 2
 
+    # Disable tqdm progress bars BEFORE any snapshot_download call. The
+    # frozen exe is built `--noconsole`, so `sys.stderr` is None; tqdm
+    # defaults to writing progress to stderr and crashes immediately
+    # with `AttributeError: 'NoneType' object has no attribute 'write'`
+    # — observed on RTX 3060 install 2026-05-17 (predownload.log).
+    # The runtime app doesn't hit this because PyQt6 / qasync / etc.
+    # rebind stderr during their import setup before snapshot_download
+    # is reached via from_pretrained. The predownload path runs BEFORE
+    # those imports (that's the whole point) so it has to opt out of
+    # progress bars itself.
+    try:
+        from huggingface_hub.utils import disable_progress_bars
+        disable_progress_bars()
+        logger.info("Progress bars disabled (frozen-exe stderr is None).")
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.warning(
+            "Could not disable hf-hub progress bars (%s); attempting "
+            "snapshot_download anyway, may fail with stderr=None.", exc,
+        )
+
     overall_ok = True
     for idx, model_id in enumerate(model_ids, start=1):
         logger.info(
