@@ -8,7 +8,7 @@
 
 #define MyAppName "MyVoice"
 #define MyAppVersion "2.2.0"
-#define MyAppBuild "36"
+#define MyAppBuild "38"
 #define MyAppPublisher "MyVoice Development Team"
 #define MyAppURL "https://github.com/myvoice/myvoice"
 #define MyAppExeName "MyVoice.exe"
@@ -64,7 +64,18 @@ WizardImageStretch=no
 WizardImageAlphaFormat=defined
 
 ; Privileges and compatibility
-PrivilegesRequired=admin
+; PrivilegesRequired=lowest installs per-user without a UAC prompt, which
+; resolves two long-standing issues: (1) the default DirName resolves via
+; {autopf} to %LOCALAPPDATA%\Programs\MyVoice (the Microsoft-recommended
+; per-user app location, same pattern as VS Code/Slack/Discord) instead of
+; %ProgramFiles%; (2) portable_paths.py's writes to {app}\config\,
+; {app}\logs\, {app}\voice_files\ now succeed without elevation, which
+; previously forced users to run-as-admin or relocate. Users who want a
+; system-wide install can still elevate via the
+; PrivilegesRequiredOverridesAllowed=dialog prompt. VB-Cable's installer
+; (line 525-528) triggers its own UAC prompt independently of the outer
+; setup, so the optional VB-Cable task still works at any privilege level.
+PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 MinVersion=10.0.17763
 ArchitecturesInstallIn64BitMode=x64compatible
