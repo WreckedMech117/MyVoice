@@ -1847,6 +1847,14 @@ class MyVoiceApp(QObject):
                                         ),
                                         on_error=lambda e: self.logger.warning(f"Failed to preload model: {e}")
                                     )
+
+                        # Auto-prepare a freshly-selected CLONED voice: if it
+                        # lacks a transcription, run Whisper now; if it has
+                        # one but no .pt cache, run the embedding precompute.
+                        # Either way, the user's first generation skips the
+                        # cold path that previously surfaced as x_vector
+                        # quality + a noisy error dialog.
+                        self._ensure_voice_clone_pipeline(active_profile)
             else:
                 self.logger.warning(f"Failed to set active profile")
         except Exception as e:
@@ -1858,6 +1866,108 @@ class MyVoiceApp(QObject):
             self.logger.error(f"Error setting active profile: {error}")
         except Exception as e:
             self.logger.error(f"Error in voice profile error callback: {e}")
+
+    def _ensure_voice_clone_pipeline(self, voice_profile) -> None:
+        """Auto-prepare a CLONED voice the first time the user selects it.
+
+        For CLONED voices, the first TRUE_STREAM generation needs both a
+        transcription (so ICL mode works) and a precomputed
+        voice_clone_prompt .pt cache. If either is missing we kick off the
+        right next step in the background so the user doesn't pay the
+        transcription / precompute cost on their first generation:
+
+          - No transcription -> Whisper transcribes; the
+            ``_on_transcription_complete`` chain then triggers the embedding
+            precompute as soon as the .txt sidecar lands.
+          - Transcription present, embedding cache cold -> embedding
+            precompute fires directly.
+
+        No-op for non-CLONED voices, missing files, or voices already cached.
+        """
+        if not voice_profile:
+            return
+        from myvoice.models.voice_profile import VoiceType
+        if voice_profile.voice_type != VoiceType.CLONED:
+            return
+        if not getattr(voice_profile, "transcription", None):
+            self.logger.info(
+                f"Auto-pipeline: '{voice_profile.name}' lacks a "
+                f"transcription; firing Whisper now (embedding precompute "
+                f"will chain when transcription completes)"
+            )
+            self._on_transcription_requested(voice_profile.name)
+            return
+        self._trigger_voice_clone_prompt_prepare(voice_profile)
+
+    def _trigger_voice_clone_prompt_prepare(self, voice_profile) -> None:
+        """Background-prepare the voice_clone_prompt .pt for a CLONED voice
+        that already has a transcription. Failure modes (no .wav, no
+        ref_text, model load error) are logged but never user-fatal — the
+        next generation still runs through the lazy precompute path."""
+        if not getattr(self, "_tts_service", None):
+            return
+        self.logger.info(
+            f"Auto-pipeline: preparing voice_clone_prompt cache for "
+            f"'{voice_profile.name}'"
+        )
+        self._run_async_task(
+            self._tts_service.prepare_voice_clone_prompt(voice_profile),
+            on_success=lambda result: self._on_voice_clone_prompt_prepared(
+                voice_profile.name, result
+            ),
+            on_error=lambda error: self.logger.warning(
+                f"Auto-pipeline: voice_clone_prompt prepare raised for "
+                f"'{voice_profile.name}': {error}"
+            ),
+        )
+
+    def _on_voice_clone_prompt_prepared(self, voice_name: str, result) -> None:
+        """Log the auto-precompute outcome. result == (success, error_msg)."""
+        try:
+            success, error_msg = result if isinstance(result, tuple) else (bool(result), None)
+        except Exception:
+            success, error_msg = False, str(result)
+        if success:
+            self.logger.info(
+                f"Auto-pipeline: voice_clone_prompt ready for '{voice_name}'"
+            )
+        else:
+            self.logger.info(
+                f"Auto-pipeline: voice_clone_prompt prepare for "
+                f"'{voice_name}' did not cache: {error_msg}"
+            )
+
+    def _after_transcription_rescan(self, voice_name: str) -> None:
+        """After Whisper transcription saved + voice_manager rescan, kick off
+        the embedding precompute so the freshly-transcribed voice is fully
+        warmed up before the user hits Generate."""
+        self.logger.debug(
+            f"Voice profiles refreshed after transcription for '{voice_name}'"
+        )
+        if not getattr(self, "_voice_manager", None):
+            return
+        try:
+            profiles = self._voice_manager.get_valid_profiles()
+        except Exception as exc:
+            self.logger.warning(
+                f"Auto-pipeline: could not look up '{voice_name}' after "
+                f"rescan: {exc}"
+            )
+            return
+        profile = profiles.get(voice_name)
+        if profile is None:
+            self.logger.warning(
+                f"Auto-pipeline: '{voice_name}' missing after rescan; "
+                f"skipping embedding precompute"
+            )
+            return
+        if not getattr(profile, "transcription", None):
+            self.logger.warning(
+                f"Auto-pipeline: '{voice_name}' rescan completed but the "
+                f"profile still has no transcription; skipping precompute"
+            )
+            return
+        self._trigger_voice_clone_prompt_prepare(profile)
 
     def _on_voice_selection_saved(self, success):
         """Callback when voice selection is saved to config."""
@@ -2433,10 +2543,13 @@ class MyVoiceApp(QObject):
 
                         self.logger.info(f"Transcription saved to: {transcription_file_path}")
 
-                        # Refresh voice profiles to pick up the new transcription
+                        # Refresh voice profiles to pick up the new transcription,
+                        # then chain into the embedding precompute so the very
+                        # next generation hits the cache instead of paying the
+                        # ~2-5s Base-model precompute on top of the Whisper run.
                         self._run_async_task(
                             self._voice_manager.force_rescan(),
-                            on_success=lambda _: self.logger.debug("Voice profiles refreshed after transcription"),
+                            on_success=lambda _: self._after_transcription_rescan(voice_name),
                             on_error=lambda error: self.logger.error(f"Failed to refresh after transcription: {error}")
                         )
 

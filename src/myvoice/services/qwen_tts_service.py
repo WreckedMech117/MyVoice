@@ -1719,6 +1719,96 @@ class QwenTTSService(BaseService):
 
         return prompt
 
+    async def prepare_voice_clone_prompt(
+        self, voice_profile: Any
+    ) -> Tuple[bool, Optional[str]]:
+        """Eagerly precompute + persist the voice_clone_prompt for a CLONED
+        voice profile so a subsequent TRUE_STREAM generation hits the cache
+        and starts producing audio immediately.
+
+        Mirrors the cache-check / per-voice-lock / disk-cache / in-memory-
+        store discipline of the lazy gate in ``generate_voice_clone`` (the
+        Story 17.2 AC #1 four-condition block at :2146-2238) but is callable
+        from outside the generation request flow — used by the orchestrator
+        to warm the cache when the user switches to a freshly-transcribed
+        voice, before they hit Generate.
+
+        Args:
+            voice_profile: VoiceProfile of a CLONED voice with a populated
+                ``transcription`` (.txt sidecar or in-memory). Non-CLONED
+                voices and CLONED voices without transcription are treated
+                as no-ops and return (False, reason).
+
+        Returns:
+            (success, error_message). On cache hit (in-memory or disk),
+            returns (True, None) without recomputing. On miss, runs the
+            Base-model precompute and persists ``<stem>.<tier>.pt`` next
+            to the .wav.
+        """
+        from myvoice.models.voice_profile import VoiceType  # local — avoid cycle
+
+        if voice_profile is None:
+            return (False, "voice_profile is None")
+        if getattr(voice_profile, "voice_type", None) != VoiceType.CLONED:
+            return (False, "Not a CLONED voice; skipping precompute")
+        transcription = getattr(voice_profile, "transcription", None)
+        if not transcription:
+            return (
+                False,
+                "No transcription available; cannot precompute the prompt "
+                "(use Whisper to transcribe first)",
+            )
+        ref_audio = getattr(voice_profile, "file_path", None)
+        if ref_audio is None or not ref_audio.exists():
+            return (False, f"Reference audio not found: {ref_audio}")
+
+        try:
+            tier = self._model_registry.quality_tier.value
+            cache_key = (str(ref_audio.resolve()), tier)
+        except Exception as exc:
+            return (False, f"Cache-key derivation failed: {exc}")
+
+        # In-memory cache hit (mtime/size/txt-mtime validated) — nothing to do.
+        if self._cache_lookup_validated(cache_key, ref_audio) is not None:
+            self.logger.debug(
+                f"prepare_voice_clone_prompt: in-memory cache hit for "
+                f"{voice_profile.name} @ {tier}; skipping precompute"
+            )
+            return (True, None)
+
+        # Per-voice lock to serialize against any concurrent generation
+        # request on the same voice (double-checked locking).
+        lock = await self._get_voice_clone_prompt_lock(cache_key)
+        self._emit_preparing_voice("Preparing voice for streaming…")
+        try:
+            async with lock:
+                cached = self._cache_lookup_validated(cache_key, ref_audio)
+                if cached is not None:
+                    return (True, None)
+                self.logger.info(
+                    f"prepare_voice_clone_prompt: cache miss for "
+                    f"{voice_profile.name} ({cache_key[0]}) @ tier={tier}; "
+                    f"computing"
+                )
+                prompt = await self._ensure_voice_clone_prompt_for_voice(
+                    voice_profile, ref_audio, transcription, tier
+                )
+                self._cache_store(cache_key, prompt, ref_audio)
+                self.logger.info(
+                    f"prepare_voice_clone_prompt: cached prompt for "
+                    f"{voice_profile.name} @ tier={tier}"
+                )
+                return (True, None)
+        except Exception as exc:
+            self.logger.warning(
+                f"prepare_voice_clone_prompt failed for "
+                f"{voice_profile.name}: {exc}",
+                exc_info=True,
+            )
+            return (False, str(exc))
+        finally:
+            self._emit_preparing_voice(None)
+
     async def hydrate_voice_clone_prompt_cache(self) -> Tuple[int, int]:
         """Story 17.2 AC #3 — startup hydration of the in-memory cache.
 
