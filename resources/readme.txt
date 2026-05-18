@@ -1,6 +1,6 @@
 ================================================================================
 MyVoice V2 - Expressive Voice Communication for Everyone
-Version 2.1.0
+Version 2.2.0
 ================================================================================
 
 Thank you for choosing MyVoice!
@@ -44,7 +44,7 @@ Downloaded on First Use:
 INSTALLATION INSTRUCTIONS
 ================================================================================
 
-1. Run this installer (MyVoice-Setup-v2.1.0.exe)
+1. Run this installer (MyVoice-Setup-v2.2.0.exe)
 2. Follow the installation wizard
 3. Choose installation directory (default: C:\Program Files\MyVoice)
 4. Select optional shortcuts (Desktop, Start Menu)
@@ -198,7 +198,7 @@ For help and support:
 - Email: support@myvoice.local
 
 Report bugs:
-- Include MyVoice version (2.1.0)
+- Include MyVoice version (2.2.0)
 - Describe steps to reproduce
 - Attach relevant log files from %LOCALAPPDATA%\MyVoice\logs
 

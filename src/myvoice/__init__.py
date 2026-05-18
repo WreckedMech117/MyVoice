@@ -4,12 +4,12 @@ MyVoice V2 - Expressive Voice Communication for Everyone
 A PyQt6-based desktop application for generating emotionally expressive text-to-speech
 using embedded Qwen3-TTS with voice cloning, Voice Design, and dual audio routing.
 
-Version: 2.1.0
+Version: 2.2.0
 Author: MyVoice Development Team
 License: MIT
 """
 
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 __author__ = "MyVoice Development Team"
 __email__ = "support@myvoice.local"
 __license__ = "MIT"

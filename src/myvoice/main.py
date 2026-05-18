@@ -93,9 +93,13 @@ def setup_application() -> QApplication:
     # Create the application instance
     app = QApplication(sys.argv)
 
-    # Set application metadata
+    # Set application metadata. Version is read from myvoice.__version__
+    # (the single source of truth maintained by build_tools/version.py)
+    # instead of being hardcoded here — previously stuck at "2.0.0"
+    # across the 2.1 and 2.2 release cycles.
+    from myvoice import __version__ as _myvoice_version
     app.setApplicationName("MyVoice")
-    app.setApplicationVersion("2.0.0")
+    app.setApplicationVersion(_myvoice_version)
     app.setApplicationDisplayName("MyVoice TTS Desktop")
     app.setOrganizationName("MyVoice")
     app.setOrganizationDomain("myvoice.local")

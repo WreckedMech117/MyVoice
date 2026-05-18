@@ -381,5 +381,5 @@ MyVoice would not be possible without **VB-Cable** by VB-Audio. Their virtual au
 
 ## Version
 
-Current version: **2.1.0**
+Current version: **2.2.0**
 ---
