@@ -116,9 +116,9 @@ if %ERRORLEVEL% NEQ 0 (
     echo ERROR: default-voice embedding precompute failed!
     echo ============================================================================
     echo.
-    echo See above for the failing voice(s). The build can technically proceed
-    echo without these (runtime falls back to first-use precompute), but the
-    echo distribution will be missing the cache-warm-up convenience.
+    echo See above for failing voice/tier pairs. The build can technically proceed
+    echo without the precomputed cache - the runtime falls back to first-use
+    echo precompute - but the distribution will be missing the cache-warm-up.
     echo.
     pause
     exit /b 1
