@@ -2132,6 +2132,24 @@ class QwenTTSService(BaseService):
 
         resolved_mode = self._resolve_streaming_mode()
 
+        # x_vector_only_mode is structurally incompatible with TRUE_STREAM:
+        # TRUE_STREAM's BASE-model dispatch at :3961 demands a
+        # voice_clone_prompt, but voice_clone_prompt comes from
+        # create_voice_clone_prompt(ref_audio, ref_text=...), and x_vector
+        # mode means "no ref_text is available." Without this downgrade the
+        # request enters TRUE_STREAM, the talker raises immediately, an empty
+        # session.finalize() raises a SECOND ValueError that surfaces as a
+        # user-visible error dialog, and then the fallback chain produces the
+        # audio anyway. Routing to SENTENCE_STREAM up front avoids the noisy
+        # double-error round trip for cloned voices without a .txt sidecar.
+        if request.x_vector_only_mode and resolved_mode == StreamingMode.TRUE_STREAM:
+            self.logger.info(
+                "Downgrading TRUE_STREAM -> SENTENCE_STREAM for "
+                "x_vector_only_mode voice clone (no ref_text means no "
+                "voice_clone_prompt; TRUE_STREAM would raise and fall back)"
+            )
+            resolved_mode = StreamingMode.SENTENCE_STREAM
+
         # Story 17.2 AC #1 — four-condition gate. All four must hold;
         # otherwise skip precompute and let the dispatch chain handle it
         # (BATCH-force for streaming=False, SENTENCE_STREAM for non-GPU,
