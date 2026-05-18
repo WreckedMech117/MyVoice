@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from myvoice.utils.predownload_models import (
+    _ALLOW_PATTERNS,
     _parse_argv,
     _resolve_model_ids_for_tier,
     run_predownload,
@@ -95,6 +96,22 @@ class TestRunPredownload:
         # rerun without re-downloading completed shards.
         for call in mock_dl.call_args_list:
             assert call.kwargs.get("resume_download") is True
+        # `allow_patterns` must be passed so snapshot_download doesn't
+        # pull the entire repo (which includes demo audio, README
+        # media, etc.). Without this, the install-time download takes
+        # 30+ minutes vs. 1-2 minutes for the equivalent from_pretrained.
+        for call in mock_dl.call_args_list:
+            allow = call.kwargs.get("allow_patterns")
+            assert allow is _ALLOW_PATTERNS, (
+                "snapshot_download must be called with allow_patterns="
+                "_ALLOW_PATTERNS to restrict to the from_pretrained file set"
+            )
+        # Sanity-check the allow-list itself: it must include the file
+        # types from_pretrained needs and the speech_tokenizer subfolder.
+        assert "*.safetensors" in _ALLOW_PATTERNS
+        assert "*.json" in _ALLOW_PATTERNS
+        assert "speech_tokenizer/*.safetensors" in _ALLOW_PATTERNS
+        assert "speech_tokenizer/*.json" in _ALLOW_PATTERNS
 
     def test_small_tier_downloads_two_models(self):
         with patch("huggingface_hub.snapshot_download") as mock_dl:

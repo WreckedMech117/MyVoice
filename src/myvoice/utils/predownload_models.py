@@ -15,6 +15,15 @@ Design constraints:
   * Cache location is the default HuggingFace cache. UAC-elevated
     installers still run under the same user session, so the cache
     populated here is the same one the runtime app reads later.
+  * Must restrict the download to ONLY the files `from_pretrained` would
+    pull. Vanilla `snapshot_download` grabs the entire repo — for Qwen3-
+    TTS repos that includes demo audios, embedded model-card media,
+    notebooks, and sometimes redundant `.bin` weight copies. 2026-05-17
+    smoke surfaced this: snapshot_download ran 30+ minutes while
+    `from_pretrained` from the same repo finishes in 1-2 minutes. The
+    `_ALLOW_PATTERNS` list below mirrors the file set observed in the
+    HF cache after a successful `from_pretrained` (config + tokenizer
+    + safetensors + speech_tokenizer subfolder).
   * Exit codes: 0 = success, 1 = bad args, 2 = download failure. The
     installer is expected to treat exit code 2 as "warn user, app will
     download on first launch instead" rather than failing the install.
@@ -34,6 +43,35 @@ _BASE_QUALITY_IDS: List[str] = [
     "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
     "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
     "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+]
+
+# File-set filter for `snapshot_download`. Derived from the actual
+# HuggingFace cache contents after a successful `from_pretrained` on a
+# Qwen3-TTS-12Hz repo (verified 2026-05-17, both 0.6B and 1.7B tiers).
+# Each model snapshot contained exactly these files:
+#   config.json, generation_config.json, preprocessor_config.json,
+#   tokenizer_config.json, vocab.json, merges.txt, model.safetensors,
+#   speech_tokenizer/{config,configuration,preprocessor_config}.json,
+#   speech_tokenizer/model.safetensors
+# The patterns below are deliberately a superset (e.g. allowing
+# `model-*.safetensors` for future sharded weights, `tokenizer.model`
+# for sentencepiece variants, `*.py` for trust_remote_code-style
+# repos) without admitting the bloat that vanilla snapshot_download
+# pulls: README media, demo audios, .gguf quantizations, etc.
+_ALLOW_PATTERNS: List[str] = [
+    # Root-level config / metadata / tokenizer
+    "*.json",
+    "*.txt",
+    "*.safetensors",
+    "*.safetensors.index.json",
+    "tokenizer.model",
+    "*.py",
+    # Speech tokenizer sub-model directory (one level deep)
+    "speech_tokenizer/*.json",
+    "speech_tokenizer/*.safetensors",
+    "speech_tokenizer/*.safetensors.index.json",
+    "speech_tokenizer/tokenizer.model",
+    "speech_tokenizer/*.py",
 ]
 
 
@@ -138,6 +176,13 @@ def run_predownload(argv: Iterable[str]) -> int:
         try:
             snapshot_download(
                 repo_id=model_id,
+                # `allow_patterns` restricts the download to the files
+                # `from_pretrained` would pull. Without it,
+                # snapshot_download grabs the entire repo — 30+ minutes
+                # observed on RTX 3060 smoke 2026-05-17 vs. 1-2 min for
+                # the equivalent from_pretrained call. See module
+                # docstring for the derivation.
+                allow_patterns=_ALLOW_PATTERNS,
                 # Default cache_dir — matches what from_pretrained will
                 # look at later. Don't override unless the runtime also
                 # overrides.
