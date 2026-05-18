@@ -98,6 +98,34 @@ if %ERRORLEVEL% NEQ 0 (
 echo.
 
 REM ----------------------------------------------------------------------------
+REM Default-voice embedding precompute — bundles voice_clone_prompt .pt +
+REM .pt.meta.json files next to each default .wav so the end user's first
+REM generation with a bundled voice hits the persisted cache instead of
+REM running the ~2-5s Base-model precompute at first use. Idempotent: skips
+REM any (wav, tier) pair whose meta is still valid (matching pin + mtimes).
+REM Writes to both install-source dirs (src/install_files/default_voices/
+REM for Inno; voice_files/ for the PyInstaller bundle).
+REM ----------------------------------------------------------------------------
+
+echo [Default Voice Embeddings]
+echo.
+"%PYTHON_EXE%" precompute_default_embeddings.py
+if %ERRORLEVEL% NEQ 0 (
+    echo.
+    echo ============================================================================
+    echo ERROR: default-voice embedding precompute failed!
+    echo ============================================================================
+    echo.
+    echo See above for the failing voice(s). The build can technically proceed
+    echo without these (runtime falls back to first-use precompute), but the
+    echo distribution will be missing the cache-warm-up convenience.
+    echo.
+    pause
+    exit /b 1
+)
+echo.
+
+REM ----------------------------------------------------------------------------
 REM Bundle Prerequisites — Story 18.5 / Phase ⊥-Polish-2-Ship
 REM Halts the build if the three packaging components Story 18.5 introduces
 REM are missing on the build host. Without these, the produced bundle silently

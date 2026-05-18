@@ -123,11 +123,21 @@ temp/
 !voice_files/**/*.mp3
 !voice_files/**/*.flac
 
-# Story 17.2 lazy voice_clone_prompt precompute artifacts (per-voice runtime
-# caches at voice_files/<name>.quality.pt + .quality.pt.meta.json). Created
-# on first generation; not source data.
+# Story 17.2 lazy voice_clone_prompt precompute artifacts in voice_files/
+# (per-voice runtime caches at <name>.<tier>.pt + .<tier>.pt.meta.json).
+# These are auto-generated EITHER on first generation (for user-added voices)
+# OR at build time by build_tools/precompute_default_embeddings.py for the
+# bundled defaults (mirrored here for the PyInstaller bundle path —
+# myvoice.spec:469). build_release.bat regenerates them via the
+# [Default Voice Embeddings] step, so a clean repo doesn't need them tracked.
 voice_files/*.quality.pt
 voice_files/*.quality.pt.meta.json
+voice_files/*.small.pt
+voice_files/*.small.pt.meta.json
+# NOTE: src/install_files/default_voices/*.{quality,small}.pt + meta.json are
+# the CANONICAL build-time source for the Inno installer (installer.iss:127
+# globs them in) and ARE tracked. Regenerate via
+# `python310\python.exe build_tools\precompute_default_embeddings.py`
 
 # build_release.bat answer-piping leftover (auto-increment Y/N response).
 build_increment_answer.txt
