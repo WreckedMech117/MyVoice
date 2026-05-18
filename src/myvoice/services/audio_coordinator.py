@@ -1209,7 +1209,16 @@ class AudioCoordinator(BaseService):
             # Start streaming on virtual service (if available)
             if self.virtual_service and await self._is_virtual_service_healthy():
                 if hasattr(self.virtual_service, 'start_streaming_session'):
+                    # Pass the user's configured virtual device explicitly.
+                    # update_device_settings stashes it on the service as
+                    # `current_virtual_device` (line 1017), but without
+                    # passing it here the service falls back to the first
+                    # enumerated virtual device — which is the wrong sink
+                    # when the user has picked a specific Voicemeeter input.
+                    # Mirrors the working tone-test path
+                    # (app.py:4121 `play_virtual_microphone(device=…)`).
                     virtual_session = await self.virtual_service.start_streaming_session(
+                        device=getattr(self.virtual_service, 'current_virtual_device', None),
                         sample_rate=sample_rate,
                         channels=channels,
                         sample_width=sample_width,
