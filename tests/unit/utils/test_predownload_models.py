@@ -92,10 +92,13 @@ class TestRunPredownload:
             "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
             "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
         ]
-        # Resume must be enabled so an interrupted install can be
-        # rerun without re-downloading completed shards.
+        # `resume_download` is intentionally NOT passed: it's deprecated
+        # in huggingface_hub >= 0.30, the default behavior already
+        # resumes interrupted downloads, and emitting the
+        # DeprecationWarning was the most likely cause of "exit code 2"
+        # despite a successful download on the 2026-05-17 3060 smoke.
         for call in mock_dl.call_args_list:
-            assert call.kwargs.get("resume_download") is True
+            assert "resume_download" not in call.kwargs
         # `allow_patterns` must be passed so snapshot_download doesn't
         # pull the entire repo (which includes demo audio, README
         # media, etc.). Without this, the install-time download takes

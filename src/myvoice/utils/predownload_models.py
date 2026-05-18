@@ -33,6 +33,8 @@ from __future__ import annotations
 
 import logging
 import sys
+import traceback
+from pathlib import Path
 from typing import Iterable, List, Optional
 
 
@@ -118,21 +120,58 @@ def _parse_argv(argv: Iterable[str]) -> Optional[str]:
     return tier
 
 
+def _setup_logging() -> logging.Logger:
+    """Wire up dual stdout + file logging.
+
+    Stdout goes to the installer (which discards it, but it's useful when
+    a developer reruns `MyVoice.exe --predownload-models ...` manually
+    from a terminal). The file handler writes to `{app}/logs/predownload.log`
+    next to the runtime's `myvoice.log` so a failed install leaves a
+    diagnostic trail the user can attach to a bug report. `portable_paths.get_logs_path`
+    is the same resolver the runtime uses, so the predownload log lands
+    in the predictable location.
+
+    If portable_paths is unavailable (defensive — the import would always
+    succeed in the bundle), fall back to stdout-only.
+    """
+    logger = logging.getLogger("myvoice.predownload")
+    logger.setLevel(logging.INFO)
+    # Reset any handlers a prior caller (or test) may have left around.
+    logger.handlers.clear()
+    logger.propagate = False
+
+    fmt = logging.Formatter(
+        "%(asctime)s - %(levelname)s - %(message)s"
+    )
+
+    stdout_h = logging.StreamHandler(sys.stdout)
+    stdout_h.setFormatter(fmt)
+    logger.addHandler(stdout_h)
+
+    try:
+        from myvoice.utils.portable_paths import get_logs_path
+        log_path = Path(get_logs_path()) / "predownload.log"
+        file_h = logging.FileHandler(log_path, encoding="utf-8")
+        file_h.setFormatter(fmt)
+        logger.addHandler(file_h)
+        logger.info("Predownload log file: %s", log_path)
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.warning(
+            "Could not set up file logging (%s); stdout only.", exc,
+        )
+
+    return logger
+
+
 def run_predownload(argv: Iterable[str]) -> int:
     """Entry point. Returns process exit code.
 
-    Logging is minimal stdout so the installer can capture progress in
-    its own progress page. INFO and WARNING go to stdout; ERROR also
-    goes to stdout so the installer sees it without needing to wire up
-    a stderr pipe.
+    Logging goes to BOTH stdout (visible if invoked manually) and a
+    `predownload.log` file in the app's logs directory (so installer-
+    invoked failures leave a diagnostic trail next to the runtime's
+    `myvoice.log`).
     """
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(levelname)s: %(message)s",
-        stream=sys.stdout,
-        force=True,
-    )
-    logger = logging.getLogger("myvoice.predownload")
+    logger = _setup_logging()
 
     try:
         tier = _parse_argv(argv)
@@ -185,17 +224,21 @@ def run_predownload(argv: Iterable[str]) -> int:
                 allow_patterns=_ALLOW_PATTERNS,
                 # Default cache_dir — matches what from_pretrained will
                 # look at later. Don't override unless the runtime also
-                # overrides.
-                # `resume_download=True` lets partial downloads from an
-                # interrupted prior run continue rather than restart.
-                resume_download=True,
+                # overrides. (Resume behavior is the default in
+                # huggingface_hub >= 0.30; the `resume_download` kwarg
+                # was deprecated and we previously passed it explicitly —
+                # dropped 2026-05-17 since the DeprecationWarning was
+                # the most likely culprit for "exit code 2" on the
+                # 3060 smoke even though all model files actually
+                # downloaded successfully.)
             )
             logger.info("[%d/%d] %s done", idx, len(model_ids), model_id)
         except Exception as exc:  # noqa: BLE001 — log any failure
             overall_ok = False
             logger.error(
-                "[%d/%d] %s FAILED: %s",
+                "[%d/%d] %s FAILED: %s\n%s",
                 idx, len(model_ids), model_id, exc,
+                traceback.format_exc(),
             )
             # Continue to the next model — partial cache population is
             # still useful (the user may have downloaded one of the
