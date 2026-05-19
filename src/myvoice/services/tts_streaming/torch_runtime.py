@@ -62,6 +62,7 @@ Telemetry breadcrumb (the metric Stories 18.3 + 18.4 baseline against):
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Optional, Tuple
 
 from myvoice.observability import metrics
@@ -408,6 +409,109 @@ def _probe_compile_engaged(model: Any) -> bool:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Reload-compile diagnostic helpers (compile-disengage-post-generation spec)
+# --------------------------------------------------------------------------- #
+
+# Cycle correlation: there is NO module-level counter. The canonical cycle_idx
+# is owned by ``ModelRegistry._reload_cycle_counter`` and threaded through to
+# this module via the ``reload_cycle_idx`` parameter on
+# ``engage_compile_optimizations``. This preserves TD-1's "diff post_unload vs
+# reload_gate by cycle_idx" contract: both stages of the same unload→load pair
+# share the same integer because both read from the same registry counter.
+
+_DIAGNOSTIC_PROBE_KEYS = (
+    "stage",
+    "cycle_idx",
+    "is_available",
+    "device_count",
+    "in_bad_fork",
+    "initialized",
+    "last_cuda_error",
+    "cuda_path_present",
+    "path_has_cuda_redist",
+)
+
+
+def collect_compile_gate_diagnostic(stage: str, cycle_idx: int) -> dict:
+    """Pure-decision probe: capture CUDA + env-var state at a single point in time.
+
+    Called at two emission points per unload/reload cycle:
+
+      * ``stage="post_unload"`` — invoked from ``ModelRegistry._unload_model``
+        immediately after ``torch.cuda.empty_cache()``. Captures CUDA state
+        right after the allocator pool release.
+      * ``stage="reload_gate"`` — invoked from ``engage_compile_optimizations``
+        on the ``cuda_unavailable`` branch. Captures the state that produced
+        the gate flip.
+      * ``stage="reload_engaged"`` — invoked from the engaged branches when
+        ``MYVOICE_RELOAD_COMPILE_DIAGNOSTIC=1`` is set. Lets the verdict-table
+        driver diff "fix engaged" vs "fix didn't help" emissions.
+
+    The dict's values are all serializable as ``int|float|str|bool`` so the
+    ``metrics.record`` validator at ``observability/metrics.py:106-110``
+    accepts them as tags.
+
+    Pure-decision discipline: this helper does NOT log, does NOT emit a
+    metric. The caller owns observability. Each probe is wrapped in
+    ``try/except`` so a single broken probe yields a ``"probe_error:..."``
+    sentinel rather than aborting the dict assembly.
+    """
+    # Lazy import — honors monkeypatch.setattr("torch.cuda.is_available", ...)
+    # without import-order gymnastics (mirrors is_ampere_or_newer).
+    import torch
+
+    probe: "dict[str, Any]" = {
+        "stage": stage,
+        "cycle_idx": int(cycle_idx),
+    }
+
+    try:
+        probe["is_available"] = bool(torch.cuda.is_available())
+    except Exception as exc:  # noqa: BLE001 — defensive: probe-only
+        probe["is_available"] = f"probe_error: {type(exc).__name__}"
+
+    try:
+        probe["device_count"] = int(torch.cuda.device_count())
+    except Exception as exc:  # noqa: BLE001
+        probe["device_count"] = f"probe_error: {type(exc).__name__}"
+
+    try:
+        probe["in_bad_fork"] = bool(torch.cuda._is_in_bad_fork())
+    except Exception as exc:  # noqa: BLE001
+        probe["in_bad_fork"] = f"probe_error: {type(exc).__name__}"
+
+    try:
+        probe["initialized"] = bool(torch.cuda.is_initialized())
+    except Exception as exc:  # noqa: BLE001
+        probe["initialized"] = f"probe_error: {type(exc).__name__}"
+
+    # Last CUDA error — try to surface the exception class name from a
+    # ``_cuda_getDeviceCount`` call. On healthy CUDA this returns cleanly
+    # (the "none" sentinel matches the convention from
+    # ``_device_capability_str``). On a poisoned context, the exception
+    # class name reveals the failure mode (RuntimeError, OSError, etc.).
+    try:
+        _ = torch.cuda._cuda_getDeviceCount()
+        probe["last_cuda_error"] = "none"
+    except Exception as exc:  # noqa: BLE001
+        probe["last_cuda_error"] = type(exc).__name__
+
+    # Environment-state probes — pure os.environ reads, no torch involvement.
+    try:
+        probe["cuda_path_present"] = bool(os.environ.get("CUDA_PATH"))
+    except Exception as exc:  # noqa: BLE001
+        probe["cuda_path_present"] = f"probe_error: {type(exc).__name__}"
+
+    try:
+        path_value = os.environ.get("PATH", "")
+        probe["path_has_cuda_redist"] = "cuda_redist" in path_value
+    except Exception as exc:  # noqa: BLE001
+        probe["path_has_cuda_redist"] = f"probe_error: {type(exc).__name__}"
+
+    return probe
+
+
 def engage_compile_optimizations(
     model: Any,
     *,
@@ -416,6 +520,7 @@ def engage_compile_optimizations(
     streamer_lookahead: int = 5,
     decode_window_frames: Optional[int] = None,
     qwen_tts_pin_hash: Optional[str] = None,
+    reload_cycle_idx: int = 0,
 ) -> dict:
     """Engage torch.compile + CUDA Graph replay on the qwen-tts talker + decoder.
 
@@ -566,6 +671,23 @@ def engage_compile_optimizations(
     # ----- D-9 hardware probe ----- #
     cuda_available = torch.cuda.is_available()
     if not cuda_available:
+        # Diagnostic emission — always on for the cuda_unavailable branch.
+        # Uses the caller-supplied ``reload_cycle_idx`` so this emission
+        # shares the same cycle_idx as the matching ``stage="post_unload"``
+        # emission from ``_unload_model`` (TD-1 contract).
+        try:
+            _probe = collect_compile_gate_diagnostic(
+                stage="reload_gate",
+                cycle_idx=reload_cycle_idx,
+            )
+            metrics.record("reload_compile_diagnostic", 0.0, **_probe)
+        except Exception as _diag_exc:  # noqa: BLE001 — diagnostic must not abort
+            _logger.warning(
+                "reload_compile_diagnostic emission failed (%s: %s); "
+                "continuing with cuda_unavailable gate",
+                type(_diag_exc).__name__,
+                _diag_exc,
+            )
         metrics.record(
             _METRIC_NAME_COMPILE,
             0.0,
@@ -746,6 +868,23 @@ def engage_compile_optimizations(
     # ----- Engaged: success path ----- #
     reason = "engaged_warm_cache" if is_warm_at_call else "engaged_cold_compile"
     cache_label = "warm" if is_warm_at_call else "cold"
+    # Verbose diagnostic on engaged branches — opt-in via env var so the
+    # verdict-table driver can collect per-row "fix engaged" emissions
+    # without paying the probe cost in production.
+    if os.environ.get("MYVOICE_RELOAD_COMPILE_DIAGNOSTIC") == "1":
+        try:
+            _probe = collect_compile_gate_diagnostic(
+                stage="reload_engaged",
+                cycle_idx=reload_cycle_idx,
+            )
+            metrics.record("reload_compile_diagnostic", 1.0, **_probe)
+        except Exception as _diag_exc:  # noqa: BLE001
+            _logger.warning(
+                "reload_compile_diagnostic emission failed (%s: %s); "
+                "continuing with engaged branch",
+                type(_diag_exc).__name__,
+                _diag_exc,
+            )
     metrics.record(
         _METRIC_NAME_COMPILE,
         1.0,
@@ -768,3 +907,181 @@ def engage_compile_optimizations(
         "cuda_capability": capability,
         "cache_warm": is_warm_at_call,
     }
+
+
+# --------------------------------------------------------------------------- #
+# Reload-compile fix dispatch (compile-disengage-post-generation spec)
+# --------------------------------------------------------------------------- #
+
+_VALID_RELOAD_FIX_VALUES = ("off", "post_gen", "rthook", "triton", "all")
+_VALID_RELOAD_FIX_STAGES = ("post_unload", "pre_load")
+
+
+def apply_reload_compile_fix(stage: str) -> None:
+    """Single dispatch symbol for the three candidate fixes.
+
+    Reads ``MYVOICE_RELOAD_COMPILE_FIX`` and dispatches to the appropriate
+    helper(s) for the given ``stage``. Called from two points:
+
+      * ``stage="post_unload"`` — from ``ModelRegistry._unload_model`` after
+        the unload's ``empty_cache()``. The H1 helper actually lives inline
+        in ``_unload_model`` (needs ``self``); this dispatch branch is a
+        breadcrumb so the verdict-table driver can confirm execution.
+      * ``stage="pre_load"`` — from ``ModelRegistry._load_model_sync`` right
+        before ``engage_compile_optimizations``. H2 (rthook re-injection)
+        and H3 (dynamo/triton reset) bodies run here.
+
+    Unknown ``stage`` or fix values warn + treat as ``off``. Any helper
+    exception is caught, logged at WARNING, and the dispatch returns
+    normally — NFR7 graceful degradation: a buggy fix MUST NOT brick the
+    app.
+
+    Args:
+        stage: ``"post_unload"`` or ``"pre_load"``.
+
+    Returns:
+        None. All observability is logging + metric emission inside the
+        helpers themselves.
+    """
+    fix = os.environ.get("MYVOICE_RELOAD_COMPILE_FIX", "off")
+    if fix not in _VALID_RELOAD_FIX_VALUES:
+        _logger.warning(
+            "MYVOICE_RELOAD_COMPILE_FIX=%r is not one of %s; treating as 'off'",
+            fix,
+            _VALID_RELOAD_FIX_VALUES,
+        )
+        fix = "off"
+
+    if stage not in _VALID_RELOAD_FIX_STAGES:
+        _logger.warning(
+            "apply_reload_compile_fix called with unknown stage=%r; expected %s",
+            stage,
+            _VALID_RELOAD_FIX_STAGES,
+        )
+        return
+
+    _logger.debug(
+        "apply_reload_compile_fix(stage=%s) fix=%s", stage, fix
+    )
+
+    if fix == "off":
+        return
+
+    # H1 (post_gen) — actual hygiene helper runs inline in
+    # ``ModelRegistry._unload_model`` (needs ``self``). This branch is a
+    # breadcrumb so the verdict-table driver can confirm dispatch fired.
+    if stage == "post_unload" and fix in ("post_gen", "all"):
+        _logger.info(
+            "H1 fix dispatched via _unload_with_cuda_hygiene (fix=%s)", fix
+        )
+
+    # H2 (rthook re-injection) — fires on pre_load.
+    if stage == "pre_load" and fix in ("rthook", "all"):
+        _apply_h2_rthook_reinject()
+
+    # H3 (dynamo + triton driver reset) — fires on pre_load.
+    if stage == "pre_load" and fix in ("triton", "all"):
+        _apply_h3_dynamo_triton_reset()
+
+
+def _apply_h2_rthook_reinject() -> None:
+    """H2 helper: re-invoke the rthook's CUDA/triton path injection on reload.
+
+    The body is gated on ``sys.frozen`` inside ``reinject_runtime_paths``
+    itself, so a non-frozen (dev-tree pytest) call is a silent no-op that
+    returns a status dict with all-False slots. We still call it so unit
+    tests can assert the dispatch fired.
+
+    Try/except absorbs ImportError if ``build_tools.hooks.rthook_torch`` is
+    not on ``sys.path`` (the dev-tree case before ``tests/conftest.py``
+    adjusts the path, or a partial-install scenario).
+    """
+    try:
+        from build_tools.hooks.rthook_torch import reinject_runtime_paths
+    except (ImportError, AttributeError) as exc:
+        _logger.warning(
+            "H2 rthook reinject skipped: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        return
+    try:
+        status = reinject_runtime_paths()
+        _logger.info("H2 rthook reinject status: %s", status)
+    except Exception as exc:  # noqa: BLE001 — NFR7: don't brick the app
+        _logger.warning(
+            "H2 rthook reinject raised (%s: %s); continuing with eager-mode fallback",
+            type(exc).__name__,
+            exc,
+        )
+
+
+def _apply_h3_dynamo_triton_reset() -> None:
+    """H3 helper: reset torch._dynamo + clear triton's per-process driver cache.
+
+    Both operations are wrapped in ``try/except (AttributeError, ImportError,
+    Exception)`` because the torch + triton API surface evolves across pin
+    versions. A missing attribute or import is silently skipped; the verdict-
+    table driver's INFO breadcrumb confirms whether the body actually ran.
+    """
+    # torch._dynamo.reset() — clears per-process compile state.
+    # F3 fix: gate success log on did_run so the log only fires when the
+    # call actually completed. Use `except Exception` (single class, not a
+    # redundant tuple with AttributeError).
+    dynamo_ran = False
+    try:
+        import torch
+        try:
+            torch._dynamo.reset()
+            dynamo_ran = True
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "H3 dynamo reset: torch._dynamo.reset() raised (%s: %s); skipping",
+                type(exc).__name__,
+                exc,
+            )
+    except ImportError as exc:
+        _logger.warning(
+            "H3 dynamo reset: torch import failed (%s); skipping",
+            exc,
+        )
+    if dynamo_ran:
+        _logger.info("H3 dynamo reset: torch._dynamo.reset() succeeded")
+
+    # triton.runtime.driver.active = None — clears per-process driver cache.
+    # F4 fix: probe before+after so we can distinguish "cleared" from
+    # "attribute is a property/descriptor and our assignment was a no-op".
+    triton_before: Any = "<unread>"
+    triton_after: Any = "<unread>"
+    triton_assign_ran = False
+    try:
+        import triton
+        try:
+            triton_before = getattr(triton.runtime.driver, "active", "<missing>")
+            triton.runtime.driver.active = None
+            triton_assign_ran = True
+            triton_after = getattr(triton.runtime.driver, "active", "<missing>")
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "H3 triton reset: clearing driver.active raised (%s: %s); skipping",
+                type(exc).__name__,
+                exc,
+            )
+    except ImportError as exc:
+        _logger.warning(
+            "H3 triton reset: triton import failed (%s); skipping",
+            exc,
+        )
+    if triton_assign_ran:
+        if repr(triton_before) == repr(triton_after):
+            _logger.warning(
+                "H3 triton reset: driver.active assignment did not change value "
+                "(before=%r, after=%r); fix is a no-op on this triton pin",
+                triton_before, triton_after,
+            )
+        else:
+            _logger.info(
+                "H3 triton reset: cleared triton.runtime.driver.active "
+                "(before=%r, after=%r)",
+                triton_before, triton_after,
+            )

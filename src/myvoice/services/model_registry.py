@@ -172,6 +172,14 @@ class ModelRegistry:
         self._current_checkpoint_path: Optional[str] = None  # Track loaded checkpoint for optimized voices
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ModelLoader")
         self._lock = asyncio.Lock()
+        # Cycle counter for the compile-disengage-post-generation diagnostic.
+        # Owned here (single source of truth — F1 fix) and threaded into
+        # ``engage_compile_optimizations`` via ``reload_cycle_idx`` so the
+        # ``stage="post_unload"`` emission and the matching
+        # ``stage="reload_gate"`` emission share the same integer. Increment
+        # convention: BEFORE each emission (post_unload increments first,
+        # then reload_gate reads without incrementing).
+        self._reload_cycle_counter = 0
 
         # Initialize model registry entries
         for model_type in QwenModelType:
@@ -563,11 +571,28 @@ class ModelRegistry:
             )
         except (ImportError, AttributeError):
             qwen_tts_pin_hash = None
+
+        # compile-disengage-post-generation spec: candidate fixes H2 (rthook
+        # re-injection) and H3 (dynamo/triton driver reset) run here, BEFORE
+        # the engage call, so the per-reload state can be repaired ahead of
+        # the gate's `torch.cuda.is_available()` check. The dispatch is a
+        # no-op when MYVOICE_RELOAD_COMPILE_FIX is unset or "off".
+        try:
+            from myvoice.services.tts_streaming import apply_reload_compile_fix
+            apply_reload_compile_fix("pre_load")
+        except Exception as exc:  # noqa: BLE001 — NFR7: don't brick the load
+            self.logger.warning(
+                "apply_reload_compile_fix(pre_load) raised (%s: %s); "
+                "continuing with engage attempt",
+                type(exc).__name__, exc,
+            )
+
         try:
             self._compile_engage_result = engage_compile_optimizations(
                 model,
                 app_settings=self._app_settings,
                 qwen_tts_pin_hash=qwen_tts_pin_hash,
+                reload_cycle_idx=self._reload_cycle_counter,
             )
         except Exception as exc:  # noqa: BLE001 — defensive against any unexpected probe path
             # engage_compile_optimizations is supposed to absorb its own
@@ -799,6 +824,100 @@ class ModelRegistry:
         )
         self.logger.info("=" * 70)
 
+    def _unload_with_cuda_hygiene(self, model_type: QwenModelType) -> None:
+        """H1 candidate fix from compile-disengage-post-generation spec.
+
+        Sequences CUDA-allocator + Dynamo cleanup in the order:
+
+            synchronize → _dynamo.reset → graphs._reset_caches (if present) →
+            empty_cache → ipc_collect
+
+        Each step is wrapped in ``try/except`` with a WARNING log so partial
+        failure does not abort the sequence (AC #9). This helper REPLACES
+        the legacy ``gc.collect() + empty_cache()`` block when the
+        ``MYVOICE_RELOAD_COMPILE_FIX`` env var is set to ``post_gen`` or
+        ``all`` — the caller (``_unload_model``) chooses between the two
+        paths exclusively (TD-9 — no double ``empty_cache``).
+
+        Gating asymmetry (F8): three of the five steps are gated on
+        ``torch.cuda.is_available()`` because they touch CUDA-runtime
+        state directly (``synchronize``, ``empty_cache``, ``ipc_collect``).
+        The other two are intentionally unconditional:
+
+          * ``torch._dynamo.reset()`` clears Dynamo's CPU-side compilation
+            cache (a Python dict). It is safe to call regardless of CUDA
+            availability and meaningfully clears state on CPU-only or
+            cuda-poisoned hosts.
+          * ``torch.cuda.graphs._reset_caches()`` is gated separately on
+            ``hasattr(graphs, "_reset_caches")`` because the attribute may
+            not exist on older torch builds. The hasattr probe doubles as
+            a torch-version gate; calling it on a CUDA-poisoned host is
+            no worse than calling ``empty_cache()`` under the same
+            condition.
+        """
+        self.logger.info(
+            f"_unload_with_cuda_hygiene entry: model_type={model_type.value if hasattr(model_type, 'value') else model_type}"
+        )
+
+        # 1. synchronize — finish any in-flight kernels before releasing pools.
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(
+                "_unload_with_cuda_hygiene: torch.cuda.synchronize() raised (%s: %s); continuing",
+                type(exc).__name__, exc,
+            )
+
+        # 2. _dynamo.reset — clear per-process compile state so the next
+        # engagement doesn't reuse a stale CodePredictor wrapper.
+        try:
+            torch._dynamo.reset()
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(
+                "_unload_with_cuda_hygiene: torch._dynamo.reset() raised (%s: %s); continuing",
+                type(exc).__name__, exc,
+            )
+
+        # 3. graphs._reset_caches — CUDA-Graph allocator pool reset. The
+        # attribute is present in recent torch builds; gate on hasattr so a
+        # downgrade doesn't break the helper.
+        try:
+            graphs = getattr(torch.cuda, 'graphs', None)
+            if graphs is not None and hasattr(graphs, '_reset_caches'):
+                graphs._reset_caches()
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(
+                "_unload_with_cuda_hygiene: torch.cuda.graphs._reset_caches() raised (%s: %s); continuing",
+                type(exc).__name__, exc,
+            )
+
+        # 4. empty_cache — release allocator pool. Replaces the legacy
+        # ``gc.collect() + empty_cache()`` block when this helper runs;
+        # caller is responsible for the gc.collect() call before invoking.
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(
+                "_unload_with_cuda_hygiene: torch.cuda.empty_cache() raised (%s: %s); continuing",
+                type(exc).__name__, exc,
+            )
+
+        # 5. ipc_collect — reclaim cross-process IPC handles.
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.ipc_collect()
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(
+                "_unload_with_cuda_hygiene: torch.cuda.ipc_collect() raised (%s: %s); continuing",
+                type(exc).__name__, exc,
+            )
+
+        self.logger.info(
+            f"_unload_with_cuda_hygiene exit: model_type={model_type.value if hasattr(model_type, 'value') else model_type}"
+        )
+
     async def _unload_model(self, model_type: QwenModelType) -> bool:
         """
         Unload a model (internal method, must be called with lock held).
@@ -825,10 +944,56 @@ class ModelRegistry:
                 del model_info.model_instance
                 model_info.model_instance = None
 
-            # Force garbage collection to free GPU memory
+            # Always call gc.collect() — releases Python references that may
+            # be holding CUDA tensors alive. Cheap; runs in both branches.
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+
+            # compile-disengage-post-generation spec: when fix is `post_gen`
+            # or `all`, the H1 hygiene helper REPLACES the legacy
+            # `empty_cache()` block (TD-9 — exclusive replacement so the
+            # AC #10 contract of "empty_cache exactly once" holds).
+            # F2 fix: torch.cuda.synchronize() can block 10s+ on a poisoned
+            # CUDA-Graph teardown; dispatch the hygiene helper to the model-
+            # loader thread (same pool that owns `_load_model_sync`) so the
+            # asyncio event loop stays responsive during the unload.
+            fix_value = os.environ.get("MYVOICE_RELOAD_COMPILE_FIX", "off")
+            if fix_value in ("post_gen", "all"):
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(
+                    self._executor, self._unload_with_cuda_hygiene, model_type
+                )
+            else:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+            # Diagnostic emission — always on; cycle_idx correlates with the
+            # reload-gate emission in `engage_compile_optimizations` so the
+            # verdict-table driver can diff pre-unload vs post-unload state.
+            # Increment BEFORE record (F10 fix) so the first emission is
+            # cycle_idx=1 (1-indexed, matches reload_gate convention).
+            try:
+                from myvoice.services.tts_streaming import collect_compile_gate_diagnostic
+                self._reload_cycle_counter += 1
+                probe = collect_compile_gate_diagnostic(
+                    stage="post_unload",
+                    cycle_idx=self._reload_cycle_counter,
+                )
+                metrics.record("reload_compile_diagnostic", 0.0, **probe)
+            except Exception as exc:  # noqa: BLE001 — diagnostic must not abort
+                self.logger.warning(
+                    "reload_compile_diagnostic emission failed in _unload_model (%s: %s); continuing",
+                    type(exc).__name__, exc,
+                )
+
+            # H1 dispatch breadcrumb (the actual hygiene work ran inline above).
+            try:
+                from myvoice.services.tts_streaming import apply_reload_compile_fix
+                apply_reload_compile_fix("post_unload")
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning(
+                    "apply_reload_compile_fix(post_unload) raised (%s: %s); continuing",
+                    type(exc).__name__, exc,
+                )
 
             # Update state
             model_info.state = ModelState.UNLOADED

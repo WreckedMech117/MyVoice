@@ -45,6 +45,39 @@ if "--predownload-models" in sys.argv:
     from myvoice.utils.predownload_models import run_predownload
     sys.exit(run_predownload(sys.argv))
 
+# Reload-compile reproducer (compile-disengage-post-generation spec).
+# Drives a deterministic load -> priming -> force-reload sequence to expose
+# the post-generation torch.compile disengagement bug behind a switchable
+# fix env var. Routed BEFORE the heavy torch + PyQt6 + qasync imports below
+# (mirrors the --predownload-models precedent) so the reproducer doesn't
+# re-trigger splash/Qt init.
+if "--reload-compile-repro" in sys.argv:
+    # Parse optional --fix=<value> from argv; defaults to the env var (or
+    # "off" if neither). The env var MUST be set BEFORE any torch import
+    # so the dispatch in `apply_reload_compile_fix(pre_load)` sees the
+    # right value on the first registry load.
+    _fix_value = os.environ.get("MYVOICE_RELOAD_COMPILE_FIX", "off")
+    for _arg in sys.argv:
+        if _arg.startswith("--fix="):
+            _fix_value = _arg.split("=", 1)[1]
+            break
+    os.environ["MYVOICE_RELOAD_COMPILE_FIX"] = _fix_value
+    # Suppress the natural compile warmup — its priming generation would
+    # collide with the reproducer's own priming step and skew the
+    # timing/cache state of the reload measurement.
+    os.environ["MYVOICE_DISABLE_COMPILE_WARMUP"] = "1"
+    # Force HuggingFace offline mode — the bundled Python's requests/HF cert
+    # bundle does not validate against huggingface.co's certificate chain
+    # (observed in the 2026-05-18 first verifier run: SSLCertVerificationError
+    # on the model_info() API call). The models are already in the HF cache
+    # via the installer's --predownload-models step, so offline mode short-
+    # circuits the API check and `from_pretrained` reads cached weights
+    # directly.
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    from myvoice.utils.reload_compile_reproducer import run_reproducer
+    sys.exit(run_reproducer(_fix_value))
+
 # CRITICAL: Register DLL directories BEFORE importing torch (Python 3.8+ Windows requirement)
 # This is required for portable Python environments where DLL paths aren't in system PATH
 if sys.platform == "win32" and hasattr(os, "add_dll_directory"):

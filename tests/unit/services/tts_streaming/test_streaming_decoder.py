@@ -100,8 +100,10 @@ def test_package_all_lists_expected_symbols_in_declaration_order():
     # Story 18.2 widened the package surface with two new exports
     # (`enable_tf32_and_cudnn_benchmark`, `is_ampere_or_newer`); Story 18.3
     # added one more (`resolve_tts_precision`); Story 18.4 appends two
-    # (`engage_compile_optimizations` + the `compile_cache` module re-export)
-    # per the append-only declaration-order discipline.
+    # (`engage_compile_optimizations` + the `compile_cache` module re-export);
+    # the compile-disengage-post-generation-reload spec appends
+    # `apply_reload_compile_fix` + `collect_compile_gate_diagnostic` —
+    # append-only declaration-order discipline.
     assert pkg.__all__ == [
         "StreamingMode",
         "default_streaming_mode_for_hardware",
@@ -109,6 +111,8 @@ def test_package_all_lists_expected_symbols_in_declaration_order():
         "CodecTokenStreamer",
         "END_OF_STREAM",
         "StreamingDecoderWorker",
+        "apply_reload_compile_fix",
+        "collect_compile_gate_diagnostic",
         "enable_tf32_and_cudnn_benchmark",
         "is_ampere_or_newer",
         "resolve_tts_precision",

@@ -8,7 +8,7 @@
 
 #define MyAppName "MyVoice"
 #define MyAppVersion "2.2.0"
-#define MyAppBuild "40"
+#define MyAppBuild "44"
 #define MyAppPublisher "MyVoice Development Team"
 #define MyAppURL "https://github.com/myvoice/myvoice"
 #define MyAppExeName "MyVoice.exe"

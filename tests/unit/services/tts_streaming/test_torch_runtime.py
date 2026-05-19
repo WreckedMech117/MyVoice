@@ -23,6 +23,8 @@ snapshot/restore is the load-bearing fixture for that test (Task 3.4).
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -31,6 +33,8 @@ import torch  # noqa: F401  — conftest already enforced DLL ordering
 
 from myvoice.observability import metrics
 from myvoice.services.tts_streaming import (
+    apply_reload_compile_fix,
+    collect_compile_gate_diagnostic,
     compile_cache,
     enable_tf32_and_cudnn_benchmark,
     engage_compile_optimizations,
@@ -930,3 +934,145 @@ def test_engage_compile_probe_failed_returns_eager_fallback(
     compile_records = [r for r in metric_records if r.name == "tts_compile_engaged"]
     assert len(compile_records) == 1
     assert compile_records[0].tags["reason"] == "probe_failed"
+
+
+# --------------------------------------------------------------------------- #
+# Compile-disengage-post-generation spec — diagnostic + dispatch tests
+# --------------------------------------------------------------------------- #
+
+
+_EXPECTED_DIAGNOSTIC_KEYS = {
+    "stage",
+    "cycle_idx",
+    "is_available",
+    "device_count",
+    "in_bad_fork",
+    "initialized",
+    "last_cuda_error",
+    "cuda_path_present",
+    "path_has_cuda_redist",
+}
+
+
+def test_collect_diagnostic_returns_expected_keys_and_types(
+    monkeypatch, _snapshot_and_restore_torch_backends
+):
+    """AC #1 — collect_compile_gate_diagnostic returns a flat dict of probes.
+
+    Monkeypatches the CUDA probes to known values and asserts:
+      * the returned dict has the nine expected keys
+      * all values serialize as int/float/str/bool (metrics.record contract)
+      * stage/cycle_idx round-trip verbatim
+    """
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+    monkeypatch.setattr("torch.cuda.device_count", lambda: 0)
+    monkeypatch.setattr("torch.cuda._is_in_bad_fork", lambda: False)
+    monkeypatch.setattr("torch.cuda.is_initialized", lambda: False)
+    monkeypatch.setenv("CUDA_PATH", "C:/test/path")
+
+    probe = collect_compile_gate_diagnostic(stage="reload_gate", cycle_idx=7)
+
+    assert set(probe.keys()) == _EXPECTED_DIAGNOSTIC_KEYS
+    assert probe["stage"] == "reload_gate"
+    assert probe["cycle_idx"] == 7
+    assert probe["is_available"] is False
+    assert probe["device_count"] == 0
+    assert probe["cuda_path_present"] is True
+    # All values must be of the four allowed types — metrics.record's
+    # validator rejects anything else.
+    for key, value in probe.items():
+        assert isinstance(value, (int, float, str, bool)), (
+            f"key {key!r} has disallowed value type {type(value).__name__}"
+        )
+
+
+def test_collect_diagnostic_probe_error_yields_sentinel(
+    monkeypatch, _snapshot_and_restore_torch_backends
+):
+    """A broken probe yields a `probe_error: ...` sentinel, not an exception."""
+    def boom():
+        raise RuntimeError("simulated probe failure")
+
+    monkeypatch.setattr("torch.cuda.is_available", boom)
+
+    probe = collect_compile_gate_diagnostic(stage="post_unload", cycle_idx=0)
+    assert isinstance(probe["is_available"], str)
+    assert probe["is_available"].startswith("probe_error: ")
+
+
+def test_apply_reload_compile_fix_off_is_noop(
+    monkeypatch, _snapshot_and_restore_torch_backends, caplog
+):
+    """AC #4 — fix=off (or unset) is a no-op: no torch state mutation, no exception."""
+    monkeypatch.setenv("MYVOICE_RELOAD_COMPILE_FIX", "off")
+
+    import torch
+    snap_benchmark = torch.backends.cudnn.benchmark
+
+    with caplog.at_level(
+        logging.DEBUG,
+        logger="myvoice.services.tts_streaming.torch_runtime",
+    ):
+        apply_reload_compile_fix("pre_load")
+        apply_reload_compile_fix("post_unload")
+
+    # No torch state mutation observable.
+    assert torch.backends.cudnn.benchmark == snap_benchmark
+
+
+def test_apply_reload_compile_fix_unknown_warns_and_skips(
+    monkeypatch, _snapshot_and_restore_torch_backends, caplog
+):
+    """AC #5 — unknown fix value warns + behaves as `off`."""
+    monkeypatch.setenv("MYVOICE_RELOAD_COMPILE_FIX", "purple_monkey")
+
+    with caplog.at_level(
+        logging.WARNING,
+        logger="myvoice.services.tts_streaming.torch_runtime",
+    ):
+        # Must not raise.
+        apply_reload_compile_fix("pre_load")
+
+    warning_lines = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("purple_monkey" in r.getMessage() for r in warning_lines), (
+        f"Expected a WARNING mentioning the unknown fix value; got: "
+        f"{[r.getMessage() for r in warning_lines]}"
+    )
+
+
+def test_apply_reload_compile_fix_unknown_stage_returns_silently(
+    monkeypatch, _snapshot_and_restore_torch_backends, caplog
+):
+    """Unknown stage logs a warning and returns without raising."""
+    monkeypatch.setenv("MYVOICE_RELOAD_COMPILE_FIX", "post_gen")
+
+    with caplog.at_level(
+        logging.WARNING,
+        logger="myvoice.services.tts_streaming.torch_runtime",
+    ):
+        apply_reload_compile_fix("nonsense_stage")
+
+    warning_msgs = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("nonsense_stage" in m for m in warning_msgs), (
+        f"Expected a WARNING mentioning the unknown stage; got: {warning_msgs}"
+    )
+
+
+def test_apply_reload_compile_fix_rthook_non_frozen_noop(
+    monkeypatch, _snapshot_and_restore_torch_backends, caplog
+):
+    """AC #6 — H2 rthook helper is a no-op in non-frozen pytest (sys.frozen=False)."""
+    monkeypatch.setenv("MYVOICE_RELOAD_COMPILE_FIX", "rthook")
+
+    # Capture starting CUDA_PATH so we can assert no mutation.
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
+    original_cuda_path = os.environ.get("CUDA_PATH")
+
+    with caplog.at_level(
+        logging.INFO,
+        logger="myvoice.services.tts_streaming.torch_runtime",
+    ):
+        apply_reload_compile_fix("pre_load")
+
+    # CUDA_PATH unchanged (or unset) in dev-tree.
+    assert os.environ.get("CUDA_PATH") == original_cuda_path

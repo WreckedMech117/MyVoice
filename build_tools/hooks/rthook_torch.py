@@ -144,26 +144,40 @@ def _preload_torch_dlls():
     log("=== Runtime Hook Complete ===")
 
 
-def _inject_cuda_redist_paths():
-    """Surface the bundled CUDA Toolkit redistributable subset to triton's NVRTC pipeline.
+def reinject_runtime_paths():
+    """Re-invoke CUDA-redist + triton-backend env-var injection on demand.
 
-    Story 18.5 / Phase ⊥-Polish-2-Ship. Without this injection, triton-windows
-    3.6.x's `find_cuda()` probe (at `triton/runtime/windows_utils.py` per
-    research-subagent enumeration 2026-05-11) reads `CUDA_PATH` from the
-    process environment and falls back to looking up a system-wide CUDA
-    Toolkit install — failing on user machines that don't have CUDA Toolkit
-    installed system-wide. By pointing CUDA_PATH at the bundled
-    `_internal/cuda_redist/` (which contains cudart64_*, nvrtc64_*,
-    nvrtc-builtins64_*, plus the device-side headers from CUDA Toolkit's
-    `include/crt/`), triton's NVRTC pipeline resolves cleanly without a
-    user-side install.
+    Extracted from ``_inject_cuda_redist_paths`` + ``_configure_triton_backend_discovery``
+    so the H2 candidate fix of the compile-disengage-post-generation spec can
+    call the same body from ``apply_reload_compile_fix(stage="pre_load")``.
 
-    Gated on `sys.frozen` per the existing rthook convention (line ~21):
-    dev-tree pytest must not exercise this path because the dev-env runs
-    against a system-wide CUDA Toolkit, not the bundled subset.
+    Gated on ``sys.frozen`` + ``_MEIPASS``: a non-frozen (dev-tree pytest)
+    call is a silent no-op that returns an all-False status dict. The
+    function does not raise — partial-failure paths log via the rthook
+    debug log and report False for the affected slot.
+
+    The function is idempotent: env vars retain their startup values when
+    re-invoked, and PATH is only prepended if ``cuda_redist/bin`` is not
+    already present. The returned dict reports whether each slot is
+    currently set (regardless of whether *this* call did the setting).
+
+    Returns:
+        dict with four ``bool`` slots:
+          * ``cuda_path_set``: True iff ``CUDA_PATH`` env var is set
+          * ``path_prepended``: True iff ``cuda_redist/bin`` is in ``PATH``
+          * ``triton_env_set``: True iff ``TRITON_BACKENDS_IN_TREE`` is set
+          * ``cc_env_set``: True iff ``CC`` env var is set
     """
+    status = {
+        "cuda_path_set": False,
+        "path_prepended": False,
+        "triton_env_set": False,
+        "cc_env_set": False,
+    }
     if not getattr(sys, 'frozen', False):
-        return
+        return status
+    if not getattr(sys, '_MEIPASS', None):
+        return status
 
     base_path = sys._MEIPASS
     debug_log = _ensure_logs_dir(base_path)
@@ -177,136 +191,96 @@ def _inject_cuda_redist_paths():
 
     cuda_redist_root = os.path.join(base_path, 'cuda_redist')
     cuda_redist_bin = os.path.join(cuda_redist_root, 'bin')
-    # Triton-windows ships its own ptxas + cuda.h + cuda.lib at
-    # `triton/backends/nvidia/{bin,include,lib/x64}/` (under triton-windows's
-    # own permissive license; collected by `collect_data_files('triton')`).
-    # `find_cuda_env(CUDA_PATH)` requires ptxas.exe + cuda.h + cuda.lib all
-    # to be present at the path — our `cuda_redist/` has the NVRTC + CUDA
-    # Runtime DLLs but NOT ptxas/cuda.h/cuda.lib (those are bundled inside
-    # triton itself). Pointing CUDA_PATH at triton's bundled subset
-    # satisfies `find_cuda_env`; runtime NVRTC DLL loading still resolves
-    # via the cuda_redist/bin entries we add to PATH + add_dll_directory
-    # below (separate from CUDA_PATH).
     triton_cuda_root = os.path.join(base_path, 'triton', 'backends', 'nvidia')
 
-    log("=== CUDA Redistributable Path Injection ===")
-    log(f"cuda_redist_root: {cuda_redist_root}")
+    log("=== reinject_runtime_paths ===")
     log(f"cuda_redist_root exists: {os.path.exists(cuda_redist_root)}")
     log(f"cuda_redist_bin exists: {os.path.exists(cuda_redist_bin)}")
-    log(f"triton_cuda_root: {triton_cuda_root}")
     log(f"triton_cuda_root exists: {os.path.exists(triton_cuda_root)}")
 
-    # Story 18.5 Task 7 Fix #2 (2026-05-11): set CUDA_PATH to triton's
-    # bundled `backends/nvidia/` rather than our cuda_redist/. The former
-    # has ptxas.exe + cuda.h + cuda.lib (the triple `find_cuda_env` checks);
-    # the latter has only the redistributable DLLs needed at runtime.
-    # Without this fix, triton's host-C-compile step fails to link against
-    # cuda.lib (no library_dirs entry; `find_cuda_env` returned empty).
-    if os.path.exists(os.path.join(triton_cuda_root, 'bin', 'ptxas.exe')):
-        os.environ['CUDA_PATH'] = triton_cuda_root
-        log(f"Set CUDA_PATH = {triton_cuda_root} (triton's bundled "
-            f"ptxas/cuda.h/cuda.lib)")
-    else:
-        os.environ['CUDA_PATH'] = cuda_redist_root
-        log(f"WARNING: triton's bundled ptxas missing; falling back to "
-            f"CUDA_PATH={cuda_redist_root}. find_cuda will likely fall "
-            f"through to find_cuda_hardcoded (works on dev hosts with "
-            f"system CUDA Toolkit installed; FAILS on clean user machines).")
+    # ---- CUDA_PATH ---- #
+    try:
+        if os.path.exists(os.path.join(triton_cuda_root, 'bin', 'ptxas.exe')):
+            os.environ['CUDA_PATH'] = triton_cuda_root
+            log(f"Set CUDA_PATH = {triton_cuda_root}")
+        else:
+            os.environ['CUDA_PATH'] = cuda_redist_root
+            log(f"WARNING: triton's bundled ptxas missing; CUDA_PATH = "
+                f"{cuda_redist_root} (fallback)")
+        status["cuda_path_set"] = bool(os.environ.get('CUDA_PATH'))
+    except Exception as e:
+        log(f"CUDA_PATH set failed: {e}")
 
-    # Add bundled cuda_redist/bin to the DLL search path. Some DLLs are
-    # loaded via LoadLibraryW(name_only) (honors PATH) and others via
-    # add_dll_directory; cover both paths.
-    if os.path.exists(cuda_redist_bin):
-        # Prepend to PATH — mirrors the torch-DLL pattern at line ~52.
-        current_path = os.environ.get('PATH', '')
-        if cuda_redist_bin not in current_path:
-            os.environ['PATH'] = cuda_redist_bin + os.pathsep + current_path
-            log(f"Prepended {cuda_redist_bin} to PATH")
+    # ---- PATH prepend + add_dll_directory ---- #
+    try:
+        if os.path.exists(cuda_redist_bin):
+            current_path = os.environ.get('PATH', '')
+            if cuda_redist_bin not in current_path:
+                os.environ['PATH'] = cuda_redist_bin + os.pathsep + current_path
+                log(f"Prepended {cuda_redist_bin} to PATH")
+            else:
+                log(f"PATH already contains {cuda_redist_bin}; skipping prepend")
+            if hasattr(os, 'add_dll_directory'):
+                try:
+                    os.add_dll_directory(cuda_redist_bin)
+                except OSError as e:
+                    log(f"add_dll_directory failed: {e}")
+            status["path_prepended"] = cuda_redist_bin in os.environ.get('PATH', '')
+        else:
+            log(f"WARNING: cuda_redist/bin missing; PATH unchanged")
+    except Exception as e:
+        log(f"PATH prepend failed: {e}")
 
-        # Add via os.add_dll_directory (Win10+) — mirrors line ~56-62.
-        if hasattr(os, 'add_dll_directory'):
-            try:
-                os.add_dll_directory(cuda_redist_bin)
-                log(f"Added DLL directory: {cuda_redist_bin}")
-            except OSError as e:
-                log(f"Failed to add DLL directory {cuda_redist_bin}: {e}")
-    else:
-        log(f"WARNING: cuda_redist/bin missing — torch.compile path will "
-            f"likely fall back to eager mode via the Story 18.4 NFR7 "
-            f"compile_failed branch.")
+    # ---- TRITON_BACKENDS_IN_TREE ---- #
+    try:
+        os.environ['TRITON_BACKENDS_IN_TREE'] = '1'
+        status["triton_env_set"] = os.environ.get('TRITON_BACKENDS_IN_TREE') == '1'
+        log("Set TRITON_BACKENDS_IN_TREE=1")
+    except Exception as e:
+        log(f"TRITON_BACKENDS_IN_TREE set failed: {e}")
 
-    log("CUDA redistributable paths injected "
-        f"(CUDA_PATH={os.environ.get('CUDA_PATH', '<unset>')}, "
-        f"DLL search path += {cuda_redist_bin})")
-    log("=== CUDA Redistributable Path Injection Complete ===")
+    # ---- CC (bundled TinyCC) ---- #
+    try:
+        bundled_tcc = os.path.join(
+            base_path, 'triton', 'runtime', 'tcc', 'tcc.exe'
+        )
+        if os.path.exists(bundled_tcc):
+            os.environ['CC'] = bundled_tcc
+            status["cc_env_set"] = True
+            log(f"Set CC = {bundled_tcc}")
+        else:
+            log(f"WARNING: bundled TinyCC missing at {bundled_tcc}")
+    except Exception as e:
+        log(f"CC set failed: {e}")
+
+    log(f"=== reinject_runtime_paths complete: {status} ===")
+    return status
+
+
+def _inject_cuda_redist_paths():
+    """Startup wrapper for the CUDA-redist subset of ``reinject_runtime_paths``.
+
+    Kept as a thin wrapper for the existing startup-invocation list (line
+    439) — the body now lives in ``reinject_runtime_paths`` so the H2
+    candidate fix can re-invoke it on reload via
+    ``apply_reload_compile_fix(stage="pre_load")``.
+    """
+    reinject_runtime_paths()
 
 
 def _configure_triton_backend_discovery():
-    """Force triton to discover backends via filesystem instead of entry_points().
+    """Startup wrapper for the triton-backend subset of ``reinject_runtime_paths``.
 
-    Story 18.5 — Triton's default backend discovery (`triton.backends._discover_backends`)
-    uses `importlib.metadata.entry_points()` to find registered backends from
-    `triton_windows-*.dist-info/entry_points.txt`. PyInstaller's
-    `collect_data_files('triton')` collects the triton PACKAGE but NOT its
-    sibling `.dist-info/` directory, so `entry_points()` returns an empty
-    result in the frozen bundle. The resulting empty `backends` dict makes
-    `_create_driver()` raise:
-
-      RuntimeError: 0 active drivers ([]). There should only be one.
-
-    Triton ships a documented fast-path env var `TRITON_BACKENDS_IN_TREE=1`
-    that switches discovery to `os.listdir(triton/backends/)` — iterating
-    on-disk backend subdirectories. In the bundle, `_internal/triton/backends/`
-    contains both `nvidia/` and `amd/` with their compiler.py + driver.py
-    (verified at Story 18.5 Task 7 bundle smoke 2026-05-11), so the fast
-    path resolves both backends cleanly without needing dist-info metadata.
-
-    The env var must be set BEFORE `triton.backends` is imported (which
-    happens transitively on first `import triton`), so this function runs
-    in the rthook invocation block BEFORE `_probe_triton_availability`.
-
-    Gated on `sys.frozen`: the dev-env uses entry_points() discovery
-    successfully (dist-info IS present in `python310/Lib/site-packages/`),
-    so the dev-tree pytest must not exercise this path.
+    Kept as a thin wrapper for the existing startup-invocation list (line
+    440). The triton-backend env-var work is performed by
+    ``reinject_runtime_paths``; this wrapper exists so the startup
+    invocation block at line 438-442 remains unchanged.
     """
-    if not getattr(sys, 'frozen', False):
-        return
-
-    base_path = sys._MEIPASS
-    debug_log = _ensure_logs_dir(base_path)
-
-    def log(msg):
-        try:
-            with open(debug_log, 'a') as f:
-                f.write(msg + '\n')
-        except Exception:
-            pass
-
-    log("=== Triton Backend Discovery Configuration ===")
-    os.environ['TRITON_BACKENDS_IN_TREE'] = '1'
-    log("Set TRITON_BACKENDS_IN_TREE=1 (filesystem-based backend discovery)")
-
-    # Story 18.5 Task 7 Fix #2 (2026-05-11): set CC env var to the bundled
-    # TinyCC. Triton's `get_cc()` checks the bundled tcc at
-    # `sysconfig.get_paths()["platlib"]/triton/runtime/tcc/tcc.exe` — but in a
-    # PyInstaller frozen bundle, `platlib` doesn't resolve to `_internal/`
-    # (PyInstaller's frozen sysconfig setup leaves it pointing at a
-    # non-existent path). Setting CC explicitly to the bundle's tcc.exe
-    # bypasses the sysconfig resolution issue. Without this, `get_cc()`
-    # falls through to cl/gcc/clang on PATH — all missing on a typical
-    # end-user machine — and raises "Failed to find C compiler".
-    bundled_tcc = os.path.join(
-        base_path, 'triton', 'runtime', 'tcc', 'tcc.exe'
-    )
-    if os.path.exists(bundled_tcc):
-        os.environ['CC'] = bundled_tcc
-        log(f"Set CC = {bundled_tcc} (bundled TinyCC)")
-    else:
-        log(f"WARNING: bundled TinyCC missing at {bundled_tcc}; triton's "
-            f"host-C-compile path will fall back to MSVC/gcc/clang on PATH "
-            f"— typically absent on end-user machines, leading to "
-            f"`RuntimeError: Failed to find C compiler`.")
-    log("=== Triton Backend Discovery Configuration Complete ===")
+    # No-op at startup: reinject_runtime_paths was already called by
+    # _inject_cuda_redist_paths above. We re-call here to preserve the
+    # original two-phase startup behavior exactly (the env vars are
+    # idempotent under the new function).
+    reinject_runtime_paths()
 
 
 def _hide_subprocess_windows():

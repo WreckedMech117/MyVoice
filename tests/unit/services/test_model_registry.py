@@ -355,3 +355,211 @@ def _single_record(records, name):
         f"Expected exactly one {name!r} record; got {len(matching)} ({matching})"
     )
     return matching[0]
+
+
+# --------------------------------------------------------------------------- #
+# compile-disengage-post-generation spec — _unload_with_cuda_hygiene tests
+# --------------------------------------------------------------------------- #
+
+
+import asyncio
+import logging as _logging
+
+
+def _track_calls(*names: str):
+    """Return (recorded_calls list, factory(name) -> stub) for monkeypatching.
+
+    Each stub records its name in ``recorded_calls`` then returns silently.
+    Use to verify ordering of multiple monkeypatched callables.
+    """
+    recorded: List[str] = []
+
+    def factory(name: str):
+        def _stub(*a, **kw):
+            recorded.append(name)
+        return _stub
+
+    return recorded, factory
+
+
+def test_unload_hygiene_calls_helpers_in_order(monkeypatch, metric_records):
+    """AC #8 — _unload_with_cuda_hygiene sequences the five steps in order.
+
+    synchronize → _dynamo.reset → graphs._reset_caches → empty_cache → ipc_collect
+    """
+    from myvoice.models.service_enums import QwenModelType
+
+    recorded, factory = _track_calls()
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.synchronize", factory("synchronize"))
+    monkeypatch.setattr("torch._dynamo.reset", factory("dynamo_reset"))
+    monkeypatch.setattr("torch.cuda.empty_cache", factory("empty_cache"))
+    monkeypatch.setattr("torch.cuda.ipc_collect", factory("ipc_collect"))
+    # graphs._reset_caches — set the attribute via setattr; the hygiene
+    # helper hasattr-gates on it. We want to confirm it fires when present.
+    import torch
+    graphs = getattr(torch.cuda, "graphs", None)
+    if graphs is not None:
+        monkeypatch.setattr(
+            torch.cuda.graphs, "_reset_caches", factory("graphs_reset_caches"), raising=False
+        )
+
+    registry = _make_registry(dtype="float32", device="cpu")
+    registry._unload_with_cuda_hygiene(QwenModelType.BASE)
+
+    # AC #8 — exact sequence, exactly-once. Verbatim assertion catches both
+    # ordering regressions AND double-call regressions (the latter is the
+    # exact concern of AC #10 — F7 fix tightens this from pairwise to full
+    # sequence). The expected sequence accommodates platforms where
+    # `torch.cuda.graphs` is missing (older torch): if absent, the
+    # hygiene helper skips that step and the expected sequence drops it.
+    expected = ["synchronize", "dynamo_reset"]
+    if graphs is not None and hasattr(graphs, "_reset_caches"):
+        expected.append("graphs_reset_caches")
+    expected.extend(["empty_cache", "ipc_collect"])
+    assert recorded == expected, (
+        f"_unload_with_cuda_hygiene call sequence drift: expected {expected}, "
+        f"got {recorded}. AC #8 (exact ordering + exactly-once) regressed."
+    )
+
+
+def test_unload_hygiene_individual_failure_does_not_abort(monkeypatch, caplog):
+    """AC #9 — one helper raising does NOT prevent subsequent helpers from running."""
+    from myvoice.models.service_enums import QwenModelType
+
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+
+    called: List[str] = []
+
+    def _synchronize_ok(*a, **kw):
+        called.append("synchronize")
+
+    def _dynamo_reset_raises(*a, **kw):
+        called.append("dynamo_reset")
+        raise RuntimeError("simulated CUDA bug")
+
+    def _empty_cache_ok(*a, **kw):
+        called.append("empty_cache")
+
+    def _ipc_collect_ok(*a, **kw):
+        called.append("ipc_collect")
+
+    monkeypatch.setattr("torch.cuda.synchronize", _synchronize_ok)
+    monkeypatch.setattr("torch._dynamo.reset", _dynamo_reset_raises)
+    monkeypatch.setattr("torch.cuda.empty_cache", _empty_cache_ok)
+    monkeypatch.setattr("torch.cuda.ipc_collect", _ipc_collect_ok)
+
+    registry = _make_registry(dtype="float32", device="cpu")
+
+    with caplog.at_level(_logging.WARNING, logger="ModelRegistry"):
+        registry._unload_with_cuda_hygiene(QwenModelType.BASE)
+
+    # Despite the simulated error, empty_cache + ipc_collect must still run.
+    assert "empty_cache" in called, called
+    assert "ipc_collect" in called, called
+
+    warning_msgs = [r.getMessage() for r in caplog.records if r.levelno == _logging.WARNING]
+    assert any("simulated CUDA bug" in m for m in warning_msgs), (
+        f"Expected WARNING log recording the simulated error; got: {warning_msgs}"
+    )
+
+
+def test_unload_model_replaces_legacy_block_when_fix_post_gen(monkeypatch):
+    """AC #10 — under fix=post_gen, _unload_with_cuda_hygiene is called and
+    the legacy gc.collect()+empty_cache() block is bypassed (no double
+    empty_cache).
+    """
+    from myvoice.models.service_enums import QwenModelType, ModelState
+    from myvoice.services import model_registry as mr_module
+
+    monkeypatch.setenv("MYVOICE_RELOAD_COMPILE_FIX", "post_gen")
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+
+    empty_cache_calls = {"count": 0}
+
+    def _counting_empty_cache(*a, **kw):
+        empty_cache_calls["count"] += 1
+
+    monkeypatch.setattr("torch.cuda.empty_cache", _counting_empty_cache)
+    monkeypatch.setattr("torch.cuda.synchronize", lambda *a, **kw: None)
+    monkeypatch.setattr("torch._dynamo.reset", lambda *a, **kw: None)
+    monkeypatch.setattr("torch.cuda.ipc_collect", lambda *a, **kw: None)
+
+    registry = _make_registry(dtype="float32", device="cpu")
+
+    # Pre-populate model state to simulate a READY model so _unload_model
+    # takes the real-unload path (not the no-op short-circuit).
+    registry._models[QwenModelType.BASE].state = ModelState.READY
+    registry._models[QwenModelType.BASE].model_instance = object()
+    registry._current_model_type = QwenModelType.BASE
+
+    hygiene_called = {"count": 0}
+    original_hygiene = registry._unload_with_cuda_hygiene
+
+    def _tracking_hygiene(model_type):
+        hygiene_called["count"] += 1
+        return original_hygiene(model_type)
+
+    registry._unload_with_cuda_hygiene = _tracking_hygiene  # type: ignore[method-assign]
+
+    # Reset just before the action — see note on the fix=off mirror test.
+    import gc as _gc
+    _gc.collect()
+    empty_cache_calls["count"] = 0
+    asyncio.run(registry._unload_model(QwenModelType.BASE))
+
+    assert hygiene_called["count"] == 1, (
+        f"Expected _unload_with_cuda_hygiene to be called exactly once under "
+        f"fix=post_gen; got {hygiene_called['count']}"
+    )
+    # empty_cache called exactly once via the hygiene helper (not twice).
+    assert empty_cache_calls["count"] == 1, (
+        f"Expected exactly one empty_cache call under fix=post_gen "
+        f"(legacy block must NOT also fire); got {empty_cache_calls['count']}"
+    )
+
+
+def test_unload_model_uses_legacy_block_when_fix_off(monkeypatch):
+    """Mirror test — under fix=off, the legacy empty_cache() path runs and
+    _unload_with_cuda_hygiene is NOT called."""
+    from myvoice.models.service_enums import QwenModelType, ModelState
+
+    monkeypatch.setenv("MYVOICE_RELOAD_COMPILE_FIX", "off")
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+
+    empty_cache_calls = {"count": 0}
+    monkeypatch.setattr(
+        "torch.cuda.empty_cache",
+        lambda *a, **kw: empty_cache_calls.__setitem__("count", empty_cache_calls["count"] + 1),
+    )
+
+    registry = _make_registry(dtype="float32", device="cpu")
+
+    registry._models[QwenModelType.BASE].state = ModelState.READY
+    registry._models[QwenModelType.BASE].model_instance = object()
+    registry._current_model_type = QwenModelType.BASE
+
+    hygiene_called = {"count": 0}
+    original_hygiene = registry._unload_with_cuda_hygiene
+
+    def _tracking_hygiene(model_type):
+        hygiene_called["count"] += 1
+        return original_hygiene(model_type)
+
+    registry._unload_with_cuda_hygiene = _tracking_hygiene  # type: ignore[method-assign]
+
+    # Reset the counter just before the action so the assertion is
+    # order-independent — prior tests' registry __del__/shutdown can fire
+    # empty_cache asynchronously. Force a gc cycle first to flush any
+    # pending finalizers, then zero the counter.
+    import gc as _gc
+    _gc.collect()
+    empty_cache_calls["count"] = 0
+    asyncio.run(registry._unload_model(QwenModelType.BASE))
+
+    assert hygiene_called["count"] == 0, (
+        f"Expected _unload_with_cuda_hygiene NOT to be called under fix=off; "
+        f"got {hygiene_called['count']}"
+    )
+    # Legacy block fires empty_cache once.
+    assert empty_cache_calls["count"] == 1
