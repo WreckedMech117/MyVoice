@@ -133,6 +133,15 @@ class StreamingDecoderWorker:
 
     def _run(self) -> None:
         """Decoder loop body. P-6 four-step contract + P-7 cancel."""
+        # Track whether any append_chunk has been posted so the END_OF_STREAM
+        # branch can choose finalize vs. try_set_error + discard. The talker
+        # exception path in qwen_tts_service.py:4006-4014 pushes
+        # END_OF_STREAM after raising — with zero chunks accumulated — and a
+        # blind finalize post here raises ValueError inside the Qt slot
+        # (session_registry.py:433 -> generation_session.py:163), which the
+        # global exception handler surfaces as a user-visible dialog even
+        # though the dispatch's fallback chain produces audio.
+        appended = 0
         while True:
             # P-6 step 5 + P-7: cancel takes priority over decode.
             if self._cancel_event.is_set():
@@ -141,15 +150,25 @@ class StreamingDecoderWorker:
 
             chunk = self._streamer.queue.get()
 
-            # P-6 step 4: END_OF_STREAM → finalize → exit.
+            # P-6 step 4: END_OF_STREAM → finalize → exit. When no chunks
+            # were appended (talker raised mid-stream and pushed
+            # END_OF_STREAM from the exception path), finalize would raise
+            # in the registry slot — route to try_set_error + discard so the
+            # session settles into a terminal state cleanly and the
+            # dispatch's own cleanup races harmlessly.
             if chunk is END_OF_STREAM:
-                self._post_terminal("finalize")
+                if appended > 0:
+                    self._post_terminal("finalize")
+                else:
+                    self._post_terminal("try_set_error")
+                    self._post_terminal("discard")
                 return
 
             # P-6 steps 2 + 3: decode + post; any decode/post exception
             # → record decode_error metric → cancel + drain + exit.
             try:
                 self._decode_and_post(chunk)
+                appended += 1
             except Exception as exc:  # noqa: BLE001 — see AC #6
                 # Numeric value (1.0) so the real metrics.record (which
                 # validates value to int|float at metrics.py:95-98) does

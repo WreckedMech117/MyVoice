@@ -802,14 +802,22 @@ def test_post_terminal_records_metric_when_post_mutation_raises_and_does_not_kil
     killed the worker thread silently mid-handoff, leaving no record.
 
     This test verifies a `post_mutation_error` metric is recorded
-    instead, and the worker thread exits cleanly.
+    instead, and the worker thread exits cleanly. Exercises the
+    finalize-success path by feeding one chunk before END_OF_STREAM so
+    the worker's empty-chunks branch (try_set_error + discard, added to
+    avoid the no-chunks finalize ValueError) is not the one under test.
     """
     streamer = _build_streamer(chunk_size=4, lookahead=2)
-    streamer.queue.put(END_OF_STREAM)  # immediate finalize path
+    streamer.queue.put([1, 2, 3, 4, 5, 6])  # one chunk → appended > 0
+    streamer.queue.put(END_OF_STREAM)
     fake_metrics = _RecordingMetrics()
 
     def raising_post(*args):
-        raise RuntimeError("registry rejected mutation")
+        # Only raise on the finalize terminal (which is what M1 covers);
+        # let append_chunk through so the appended counter increments and
+        # the END_OF_STREAM branch chooses the finalize post.
+        if len(args) >= 1 and args[0] == "finalize":
+            raise RuntimeError("registry rejected mutation")
 
     import myvoice.observability.metrics as _m
     original_record = _m.record
@@ -836,6 +844,40 @@ def test_post_terminal_records_metric_when_post_mutation_raises_and_does_not_kil
     assert len(pm_errors) == 1
     assert pm_errors[0]["tags"]["method_name"] == "finalize"
     assert "registry rejected mutation" in pm_errors[0]["tags"]["error_repr"]
+
+
+def test_end_of_stream_with_no_chunks_routes_to_try_set_error_and_discard():
+    """When the TRUE_STREAM talker raises mid-stream and pushes END_OF_STREAM
+    without any chunks ever being appended (qwen_tts_service.py:4006-4014
+    talker-exception push), the worker MUST NOT post finalize — that would
+    raise ValueError inside the registry slot (session_registry.py:433 ->
+    generation_session.py:163) which the global exception handler
+    surfaces as a user-visible dialog even though the dispatch's fallback
+    chain produces audio.
+
+    Regression test for the May-2026 'finalize() called with no chunks'
+    dialog observed when a newly-added cloned voice's first compile-
+    primed generation hit a torch.compile failure.
+    """
+    streamer = _build_streamer(chunk_size=4, lookahead=2)
+    streamer.queue.put(END_OF_STREAM)  # talker raised → no chunks appended
+    fake_post = _RecordingPostMutation()
+
+    worker = StreamingDecoderWorker(
+        streamer=streamer,
+        decode_fn=_make_decoded_pcm,
+        post_mutation=fake_post,
+        session_id="abc-123",
+    )
+    worker.start()
+    worker.join(timeout=2.0)
+
+    assert worker.is_alive() is False
+    # try_set_error then discard — no finalize.
+    assert fake_post.calls == [
+        ("try_set_error", "abc-123"),
+        ("discard", "abc-123"),
+    ]
 
 
 # ============================================================================
