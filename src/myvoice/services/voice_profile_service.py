@@ -377,6 +377,37 @@ class VoiceProfileManager(BaseService):
                     self.logger.info(f"Re-initialized {bundled_count} bundled voices after full rescan")
                     valid_count += bundled_count
 
+                    # Re-sync the active-profile reference to the freshly-built
+                    # object. The full rescan cleared self._profiles at :321 and
+                    # rebuilt it from disk, but self._active_profile still pointed
+                    # at the pre-rescan VoiceProfile instance — so any state that
+                    # only exists in the new instance (e.g. a .txt sidecar that
+                    # Whisper just wrote and __post_init__ now picks up as
+                    # `transcription`) was invisible to subsequent
+                    # get_active_profile() calls. Without this resync the user's
+                    # next Generate click after auto-pipeline transcription saw
+                    # transcription=None and routed to x_vector mode even though
+                    # the .txt was already on disk.
+                    if self._active_profile is not None:
+                        active_name = self._active_profile.name
+                        refreshed = self._profiles.get(active_name)
+                        if refreshed is not None:
+                            self._active_profile = refreshed
+                            self.logger.debug(
+                                f"Re-synced active profile reference to "
+                                f"freshly-rescanned '{active_name}'"
+                            )
+                        else:
+                            # Profile no longer exists after rescan (file deleted
+                            # / renamed between selection and rescan). Clear so
+                            # callers see "no active voice" rather than a stale
+                            # reference whose .wav is gone.
+                            self.logger.info(
+                                f"Active profile '{active_name}' missing after "
+                                f"full rescan; clearing reference"
+                            )
+                            self._active_profile = None
+
                 # Scan embeddings directory for saved embedding voices (Story 1.6)
                 # This discovers voices created in Voice Design Studio
                 embedding_count = self._scan_embeddings_directory()
