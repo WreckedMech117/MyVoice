@@ -88,57 +88,85 @@ class WhisperSubprocessService:
                 import whisper
                 import torch
 
-                # Force CPU mode
+                # Force CPU mode for Whisper. The `device="cpu"` argument to
+                # `whisper.load_model` covers the model placement, but some of
+                # OpenAI Whisper's internal helpers (audio padding / language-
+                # detection FFT, transcribe()'s log_mel kernels) call
+                # `torch.cuda.is_available()` directly and silently allocate on
+                # GPU if it returns True — which then races with the Qwen3-TTS
+                # model that's still loaded on cuda:0. Monkey-patching the
+                # probe to return False forces every Whisper code path to CPU.
+                #
+                # CRITICAL: restore the original `torch.cuda.is_available` in
+                # the finally block. Without the restore, the patched lambda
+                # persists for the lifetime of the process and every
+                # downstream caller (most importantly `engage_compile_optimizations`
+                # at `tts_streaming/torch_runtime.py:672` and ModelRegistry's
+                # `_unload_model` empty_cache gate at `model_registry.py:966`)
+                # sees CUDA as unavailable. Symptom: the first model reload
+                # after Whisper transcription returns `compile_engaged=False,
+                # compile_reason='cuda_unavailable'`, which downgrades
+                # TRUE_STREAM dispatch to SENTENCE_STREAM and regresses
+                # first-chunk latency from ~1.8 s to ~10 s for the rest of
+                # the session. Diagnosed 2026-05-20 by the
+                # `reload_compile_diagnostic` probe — cycle 1 post_unload
+                # showed is_available=True; cycle 2 (post-Whisper) showed
+                # is_available=False with device_count=1 + initialized=True
+                # + in_bad_fork=False, which is only reachable if
+                # `torch.cuda.is_available` itself was overwritten.
+                _orig_cuda_is_available = torch.cuda.is_available
                 torch.cuda.is_available = lambda: False
+                try:
+                    # Determine bundled model path
+                    app_dir = Path(sys._MEIPASS)
+                    model_dir = app_dir / "whisper_models"
+                    model_file = model_dir / "base.pt"
 
-                # Determine bundled model path
-                app_dir = Path(sys._MEIPASS)
-                model_dir = app_dir / "whisper_models"
-                model_file = model_dir / "base.pt"
+                    self.logger.info(f"Loading bundled Whisper model from: {model_file}")
 
-                self.logger.info(f"Loading bundled Whisper model from: {model_file}")
+                    if model_file.exists():
+                        # Load bundled model directly
+                        checkpoint = torch.load(str(model_file), map_location="cpu")
 
-                if model_file.exists():
-                    # Load bundled model directly
-                    checkpoint = torch.load(str(model_file), map_location="cpu")
+                        # Handle checkpoint format - may have model_state_dict wrapper
+                        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+                            # Checkpoint has wrapper with metadata
+                            state_dict = checkpoint["model_state_dict"]
+                        else:
+                            # Direct state dict
+                            state_dict = checkpoint
 
-                    # Handle checkpoint format - may have model_state_dict wrapper
-                    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-                        # Checkpoint has wrapper with metadata
-                        state_dict = checkpoint["model_state_dict"]
+                        model = whisper.load_model("base", device="cpu", download_root=None)
+                        model.load_state_dict(state_dict)
+                        self.logger.info("Loaded bundled Whisper model successfully")
                     else:
-                        # Direct state dict
-                        state_dict = checkpoint
+                        # Fallback: try to load from bundled directory
+                        if model_dir.exists():
+                            model = whisper.load_model("base", device="cpu", download_root=str(model_dir))
+                        else:
+                            raise RuntimeError(f"Bundled Whisper model not found at {model_file}")
 
-                    model = whisper.load_model("base", device="cpu", download_root=None)
-                    model.load_state_dict(state_dict)
-                    self.logger.info("Loaded bundled Whisper model successfully")
-                else:
-                    # Fallback: try to load from bundled directory
-                    if model_dir.exists():
-                        model = whisper.load_model("base", device="cpu", download_root=str(model_dir))
-                    else:
-                        raise RuntimeError(f"Bundled Whisper model not found at {model_file}")
+                    # Transcribe
+                    self.logger.info(f"Transcribing audio file: {file_path}")
+                    result = model.transcribe(
+                        str(file_path),
+                        language=language,
+                        temperature=temperature,
+                        word_timestamps=word_timestamps
+                    )
 
-                # Transcribe
-                self.logger.info(f"Transcribing audio file: {file_path}")
-                result = model.transcribe(
-                    str(file_path),
-                    language=language,
-                    temperature=temperature,
-                    word_timestamps=word_timestamps
-                )
+                    # Create TranscriptionResult
+                    transcription_result = TranscriptionResult(
+                        text=result["text"].strip(),
+                        language=result.get("language", "unknown"),
+                        confidence=0.9,  # Placeholder
+                        duration=0.0  # Will be set by caller if needed
+                    )
 
-                # Create TranscriptionResult
-                transcription_result = TranscriptionResult(
-                    text=result["text"].strip(),
-                    language=result.get("language", "unknown"),
-                    confidence=0.9,  # Placeholder
-                    duration=0.0  # Will be set by caller if needed
-                )
-
-                self.logger.info(f"Transcription completed: {len(transcription_result.text)} characters")
-                return transcription_result
+                    self.logger.info(f"Transcription completed: {len(transcription_result.text)} characters")
+                    return transcription_result
+                finally:
+                    torch.cuda.is_available = _orig_cuda_is_available
 
             else:
                 # Running from source - use subprocess to avoid PyQt6 DLL conflicts
