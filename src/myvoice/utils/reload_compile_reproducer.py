@@ -179,11 +179,38 @@ async def _run_async(fix_value: str) -> int:
         return 3
 
     # ----- Priming generation — the "first generation" that the failure
-    # mode requires. Skipped entirely if it raises (we still want the
-    # reload-reason captured for diagnostic purposes). ----- #
+    # mode requires. Critical correction (2026-05-19 production-log
+    # observation): we MUST run a BASE-model generation here. The earlier
+    # implementation called QwenTTSService._run_compile_priming() which
+    # invokes generate_custom_voice() — that path swaps the loaded model
+    # from BASE to CUSTOM_VOICE, never reaching the "Base post-generation"
+    # state where the cuda_unavailable bug manifests. Instead, call
+    # generate_voice_clone() with a bundled Anna-F reference so the
+    # TRUE_STREAM path runs against the still-loaded BASE model and
+    # poisons the CUDA-Graph state as the production user flow does.
     priming_ok = True
     try:
-        await service._run_compile_priming()
+        from myvoice.utils.portable_paths import get_voice_files_path
+        voice_dir = get_voice_files_path()
+        ref_audio = voice_dir / "Anna-F.wav"
+        ref_text_path = voice_dir / "Anna-F.txt"
+        if not ref_audio.exists() or not ref_text_path.exists():
+            raise FileNotFoundError(
+                f"Bundled Anna-F reference voice not found at {voice_dir}; "
+                f"reproducer cannot drive a real Base generation."
+            )
+        ref_text = ref_text_path.read_text(encoding="utf-8").strip()
+        _logger.info(
+            "Priming Base via generate_voice_clone (ref=%s)", ref_audio.name
+        )
+        await service.generate_voice_clone(
+            text="Reproducer priming.",
+            ref_audio=ref_audio,
+            ref_text=ref_text,
+            language="English",
+            streaming=True,
+            x_vector_only_mode=False,
+        )
     except Exception as exc:  # noqa: BLE001
         priming_ok = False
         _logger.warning(
