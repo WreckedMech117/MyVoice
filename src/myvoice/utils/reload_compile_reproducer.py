@@ -149,6 +149,11 @@ async def _run_async(fix_value: str) -> int:
         # call's downstream `ensure_model_loaded` uses our registry.
         if hasattr(service, "_model_registry"):
             service._model_registry = registry
+        # Initialize the service's thread pool + request semaphore. Without
+        # this, generate_voice_clone's precompute pipeline hits an
+        # AttributeError on `async with self._request_semaphore` (the
+        # semaphore is None until start() runs).
+        await service.start()
     except Exception as exc:  # noqa: BLE001
         _logger.exception("Reproducer setup failed: %s", exc)
         _emit_marker(fix_value, "setup_error", "not_evaluated")
