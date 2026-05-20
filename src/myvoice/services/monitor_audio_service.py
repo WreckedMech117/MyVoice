@@ -217,10 +217,6 @@ class MonitorAudioService(BaseService):
             # Log comprehensive audio system info for debugging
             self.windows_audio_client.log_audio_system_info()
 
-            # Validate default monitor device is available
-            if not self._validate_monitor_device(self.config.default_device_index):
-                self.logger.warning(f"Default monitor device {self.config.default_device_index} not available")
-
             # Load monitor device from settings
             await self._load_monitor_device_from_settings()
 
