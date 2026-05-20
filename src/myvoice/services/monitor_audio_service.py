@@ -848,7 +848,37 @@ class MonitorAudioService(BaseService):
                     else:
                         device_index = int(device_id_str)
                 else:
-                    device_index = self.config.default_device_index
+                    # User has "Default" selected (no monitor_device_id in
+                    # settings -> current_monitor_device is None). Resolve
+                    # the OS-reported default output device at runtime via
+                    # `get_default_output_device_info()`. The legacy fallback
+                    # `self.config.default_device_index = 11` is a developer-
+                    # machine artifact (literally labeled "VoiceMeeter Input
+                    # from working tests") that is wrong on any host without
+                    # the exact same VoiceMeeter setup at the same enumeration
+                    # index. On user hosts where index 11 exists but is a
+                    # stereo-only output, PyAudio's `open()` fails with
+                    # `[Errno -9998] Invalid number of channels` and monitor
+                    # playback goes silent for the rest of the session with
+                    # no UI signal. Verified 2026-05-20 from
+                    # `myvoice.services.monitor_audio_service - ERROR -
+                    # Failed to start streaming session: [Errno -9998]
+                    # Invalid number of channels` on every TRUE_STREAM
+                    # session where the user left Monitor on "Default".
+                    try:
+                        default_info = self._pyaudio.get_default_output_device_info()
+                        device_index = int(default_info.get("index", self.config.default_device_index))
+                        self.logger.info(
+                            "Using OS default output device for monitor: index=%d name=%r",
+                            device_index, default_info.get("name"),
+                        )
+                    except Exception as exc:  # noqa: BLE001 — defensive: any PyAudio error -> hardcoded fallback
+                        self.logger.warning(
+                            "Could not query OS default output device (%s: %s); "
+                            "falling back to config default_device_index=%d",
+                            type(exc).__name__, exc, self.config.default_device_index,
+                        )
+                        device_index = self.config.default_device_index
 
                 # Convert sample width to PyAudio format
                 if sample_width == 2:
@@ -873,14 +903,58 @@ class MonitorAudioService(BaseService):
                 # `self.config.chunk_size` — they have stable playback
                 # behavior across many epics and the change is scoped to
                 # the streaming-output path only.
-                self._streaming_stream = self._pyaudio.open(
-                    format=audio_format,
-                    channels=channels,
-                    rate=sample_rate,
-                    output=True,
-                    output_device_index=device_index,
-                    frames_per_buffer=4096,
-                )
+                try:
+                    self._streaming_stream = self._pyaudio.open(
+                        format=audio_format,
+                        channels=channels,
+                        rate=sample_rate,
+                        output=True,
+                        output_device_index=device_index,
+                        frames_per_buffer=4096,
+                    )
+                except (OSError, IOError) as stream_error:
+                    # Mirrors the batch-playback fallback at lines 548-570:
+                    # if the chosen device rejects the requested format
+                    # (invalid channels, invalid sample rate, device gone),
+                    # retry on the OS-reported default. The auto-resolved
+                    # branch above already used `get_default_output_device_info`
+                    # so this fallback is mainly for the user-picked-a-device
+                    # path (target_device != None and that specific device
+                    # later fails — e.g., user disconnected headphones).
+                    self.logger.warning(
+                        "Failed to open streaming session on device %d (%s); "
+                        "attempting fallback to OS default output",
+                        device_index, stream_error,
+                    )
+                    try:
+                        default_info = self._pyaudio.get_default_output_device_info()
+                        fallback_index = int(default_info.get("index", -1))
+                    except Exception as exc:  # noqa: BLE001
+                        self.logger.error(
+                            "Streaming fallback query failed (%s: %s); session aborts",
+                            type(exc).__name__, exc,
+                        )
+                        return None
+                    if fallback_index < 0 or fallback_index == device_index:
+                        self.logger.error(
+                            "No alternative output device available "
+                            "(fallback_index=%d, original=%d); session aborts",
+                            fallback_index, device_index,
+                        )
+                        return None
+                    self._streaming_stream = self._pyaudio.open(
+                        format=audio_format,
+                        channels=channels,
+                        rate=sample_rate,
+                        output=True,
+                        output_device_index=fallback_index,
+                        frames_per_buffer=4096,
+                    )
+                    self.logger.info(
+                        "Streaming session recovered on fallback device %d",
+                        fallback_index,
+                    )
+                    device_index = fallback_index
 
                 # Generate session ID
                 self._task_counter += 1
