@@ -18,6 +18,19 @@ qasync>=0.27.0
 requests>=2.31.0
 # Size: ~5MB (includes urllib3, certifi, charset-normalizer, idna)
 
+truststore>=0.10.0
+# Size: ~20 KB (pure-Python). REQUIRED for end-users running SSL-scanning AV
+# (Norton, Kaspersky, Avast, Bitdefender, ESET, ...) or corporate MITM proxies.
+# These AVs re-sign outbound TLS with a private root that lives only in the
+# Windows cert store, never in Python's bundled certifi cacert.pem. Without
+# truststore, requests/huggingface_hub call fail with
+# `SSLCertVerificationError: unable to get local issuer certificate` on
+# first model resolve — observed in production 2026-05-19 on a Norton-
+# protected host (23 s retry-chain timeout per HEAD). truststore patches
+# Python's SSL to consult the OS trust store where the AV's root IS trusted.
+# Wired by `src/myvoice/main.py` immediately after `freeze_support()`,
+# before any HTTPS path can run.
+
 
 # =============================================================================
 # Speech Recognition (Required)

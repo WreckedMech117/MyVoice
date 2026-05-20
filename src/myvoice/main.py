@@ -31,6 +31,28 @@ from pathlib import Path
 # re-exec happens there).
 multiprocessing.freeze_support()
 
+# CRITICAL: Route Python's SSL trust through the OS certificate store BEFORE
+# any HTTPS call happens. End-user machines running SSL-scanning antivirus
+# (Norton, Kaspersky, Avast, Bitdefender, ESET, corporate MITM proxies, ...)
+# re-sign outbound TLS handshakes with a private root that lives only in the
+# Windows cert store — never in Python's bundled `certifi` cacert.pem. Without
+# truststore, every huggingface_hub / requests call fails with
+# `SSLCertVerificationError: unable to get local issuer certificate` and
+# first-launch model download/resume hangs through a 23 s retry chain before
+# failing outright (observed 2026-05-19 in production on a Norton-protected
+# host). truststore replaces Python's SSL context with one that consults the
+# OS trust store, where the AV's root IS trusted because the AV installed it
+# there. Must run before any `requests.Session`, `huggingface_hub`, or
+# `urllib3.PoolManager` is constructed; placing it here covers every
+# downstream branch (--predownload-models, --reload-compile-repro, normal
+# app launch). Best-effort: dev trees that haven't run `pip install
+# truststore` yet still work over public CAs via the default certifi path.
+try:
+    import truststore as _truststore
+    _truststore.inject_into_ssl()
+except ImportError:
+    pass
+
 # Add the src directory to Python path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 

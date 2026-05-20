@@ -8,6 +8,14 @@ qasync>=0.27.0  # PyQt6 + asyncio integration
 # HTTP Client
 requests>=2.31.0
 
+# OS trust store bridge for Python SSL — required so end-users running
+# SSL-scanning antivirus (Norton, Kaspersky, Avast, Bitdefender, ESET, ...)
+# or corporate MITM proxies don't hit SSLCertVerificationError on first
+# huggingface_hub call. Patches Python's SSL to consult the Windows cert
+# store where the AV's private root is trusted. See src/myvoice/main.py
+# header comment.
+truststore>=0.10.0
+
 # Speech Recognition
 openai-whisper>=20231117
 

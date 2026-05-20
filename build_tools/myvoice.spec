@@ -314,6 +314,13 @@ hiddenimports_utils = [
     'requests',
     'numpy',
     'regex',  # Required by tiktoken
+    # OS trust store bridge — wired in src/myvoice/main.py immediately
+    # after freeze_support() so SSL-scanning AV (Norton/Kaspersky/Avast/etc.)
+    # and corporate MITM proxies don't break first-launch model resolve.
+    # Top-level import in main.py would normally be discovered, but explicit
+    # listing here protects against PyInstaller dropping it when main.py is
+    # collected via the Analysis() entry rather than as a hidden import.
+    'truststore',
 ]
 
 # SciPy - Required by voice_design_studio_dialog.py
