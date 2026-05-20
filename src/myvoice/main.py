@@ -254,6 +254,37 @@ def setup_logging():
         ]
     )
 
+    # Diagnostic sink for the post-generation compile-disengage spec.
+    # `metrics.record(...)` attaches its payload as a `LogRecord.extra` dict;
+    # the standard `%(message)s` formatter discards `extra`, so the probe
+    # values that explain WHY a reload tripped `cuda_unavailable` never
+    # surface in `myvoice.log`. This listener subscribes to
+    # `reload_compile_diagnostic` events (emitted by `_unload_model`'s
+    # post-unload probe and `engage_compile_optimizations`'s reload_gate
+    # branch) and rewrites them as a flat readable line on a dedicated
+    # logger. Cycle_idx ties the post_unload and reload_gate emissions of
+    # the same unload→load pair together. Best-effort: any exception inside
+    # the sink is swallowed so a broken probe can't brick startup.
+    try:
+        from myvoice.observability import metrics
+        _diag_logger = logging.getLogger("myvoice.reload_compile_diag")
+
+        def _diag_sink(record):
+            try:
+                if record.name != "reload_compile_diagnostic":
+                    return
+                tag_str = " ".join(f"{k}={v!r}" for k, v in record.tags.items())
+                _diag_logger.info(
+                    "reload_compile_diagnostic value=%s %s",
+                    record.value, tag_str,
+                )
+            except Exception:
+                pass
+
+        metrics.add_listener(_diag_sink)
+    except Exception:
+        pass
+
 
 
 
