@@ -204,3 +204,8 @@ startup_test_output.txt
 fix_validation.py
 test_startup.py
 test_output.wav
+
+# Generated output from `python build_tools/verify_reload_compile.py`. The
+# verifier is committed; its per-run verdict table is not (each invocation
+# overwrites it with a fresh timestamp + table).
+build_tools/verify_reload_compile_verdict.md
