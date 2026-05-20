@@ -29,6 +29,7 @@ import logging
 import os
 import sys
 import traceback
+from pathlib import Path
 from typing import Optional
 
 
@@ -191,13 +192,35 @@ async def _run_async(fix_value: str) -> int:
     priming_ok = True
     try:
         from myvoice.utils.portable_paths import get_voice_files_path
-        voice_dir = get_voice_files_path()
-        ref_audio = voice_dir / "Anna-F.wav"
-        ref_text_path = voice_dir / "Anna-F.txt"
-        if not ref_audio.exists() or not ref_text_path.exists():
+        # Resolve Anna-F across the two possible bundle layouts:
+        #   1. Installer-deployed: <bundle_root>/voice_files/Anna-F.wav
+        #      (the installer copies voice_files OUT of _internal/)
+        #   2. Raw PyInstaller dist: <_MEIPASS>/voice_files/Anna-F.wav
+        #      (the verifier-driven path used by build_tools/verify_reload_compile.py)
+        # Check both locations in order; the data files are byte-identical
+        # so generation behavior is independent of which one we use.
+        candidates = []
+        try:
+            candidates.append(get_voice_files_path() / "Anna-F.wav")
+        except Exception:  # noqa: BLE001
+            pass
+        if getattr(sys, "frozen", False) and getattr(sys, "_MEIPASS", None):
+            candidates.append(Path(sys._MEIPASS) / "voice_files" / "Anna-F.wav")
+        ref_audio: Optional[Path] = None
+        for cand in candidates:
+            if cand.exists():
+                ref_audio = cand
+                break
+        if ref_audio is None:
             raise FileNotFoundError(
-                f"Bundled Anna-F reference voice not found at {voice_dir}; "
-                f"reproducer cannot drive a real Base generation."
+                f"Bundled Anna-F reference voice not found in any of: "
+                f"{[str(c) for c in candidates]}; reproducer cannot drive a "
+                f"real Base generation."
+            )
+        ref_text_path = ref_audio.with_suffix(".txt")
+        if not ref_text_path.exists():
+            raise FileNotFoundError(
+                f"Anna-F.txt transcript not found alongside {ref_audio}"
             )
         ref_text = ref_text_path.read_text(encoding="utf-8").strip()
         _logger.info(
