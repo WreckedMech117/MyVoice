@@ -32,7 +32,7 @@ MyVoice is a Windows desktop application that enables mute individuals and conte
 - **Improved Voice Cloning** - Clone voices from just 3 seconds of audio
 - **9 Bundled Voices** - Ready to use out of the box with full emotion support
 - **Quick Speak** - Save and trigger common phrases instantly
-- **Streaming TTS** - First audio in under 2 seconds
+- **Live Streaming Playback** - Hear your speech begin within ~5 seconds; audio streams as it's generated rather than waiting for the full clip
 
 ## Features
 
@@ -44,6 +44,7 @@ MyVoice is a Windows desktop application that enables mute individuals and conte
 - **Microphone Passthrough**: Route your real microphone through the virtual mic device for seamless voice chat mixing
 - **Quick Speak**: Configure common phrases for instant generation
 - **Virtual Microphone**: Route speech directly to Discord, Zoom, Teams, and other apps
+- **Live Streaming Playback**: Audio begins playing within ~5 seconds and streams as it's generated — real-time pacing for natural voice chat instead of waiting for the full clip
 - **Audio Transcription**: Automatic transcription using OpenAI Whisper
 - **Always-On-Top Window**: Compact 400x188px interface stays visible during voice chats
 - **Fully Offline**: After initial setup, no internet connection required
