@@ -2,6 +2,12 @@
 
 MyVoice is a Windows desktop application that enables mute individuals and content creators to communicate in voice chats using emotionally expressive text-to-speech. Powered by embedded Qwen3-TTS technology, it works fully offline with no external service dependencies.
 
+## Download
+
+**[Download MyVoice Installer (v2.2.0)](https://f005.backblazeb2.com/file/MyVoiceTTS-Installers/MyVoice-Setup-v2.2.0.exe)** — single-executable installer with bundled Python environment. Recommended for most users.
+
+For the portable .zip, system requirements, and the feature guide, visit **[myvoicetts.com](https://myvoicetts.com)**.
+
 ## Screenshots
 
 <p align="center">
