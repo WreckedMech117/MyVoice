@@ -754,6 +754,28 @@ class VirtualMicrophoneService(BaseService):
         """
         Check if device name indicates a virtual audio device.
 
+        The pattern list is deliberately conservative: it only catches names
+        that uniquely identify a known virtual-audio driver. Earlier versions
+        also matched ``'mic'``, ``'aux'``, and ``'input'`` — those proved
+        actively dangerous because they're substrings of common hardware
+        device names. In particular, ``'mic' in 'microsoft sound mapper -
+        output'`` is True, which made Windows' default speaker-output
+        device qualify as a "virtual microphone". When ``mic_mixing`` was
+        enabled but no explicit ``virtual_microphone_device_id`` was
+        configured, ``audio_coordinator._continuous_passthrough_thread_loop``
+        fell back to ``enumerate_virtual_devices()[0]`` and routed the user's
+        microphone straight through the speakers — with no UI signal and
+        no toggle the user could find to turn it off. Diagnosed 2026-05-20
+        from log lines:
+
+            [MIC_PASSTHROUGH] No virtual device configured, trying to find one
+            [MIC_PASSTHROUGH] Using first available device: Microsoft Sound Mapper - Output
+            [MIC_PASSTHROUGH] Opening stream to Microsoft Sound Mapper - Output (index 15)
+
+        Any future addition to this list must use full driver-name tokens
+        (``'voicemeeter'``, ``'vb-audio'``, ``'vac'`` for "Virtual Audio
+        Cable") or whole-name patterns — never short, ambiguous substrings.
+
         Args:
             device_name: Name of the device
 
@@ -761,14 +783,11 @@ class VirtualMicrophoneService(BaseService):
             bool: True if device appears to be virtual
         """
         virtual_patterns = [
-            'voicemeeter',
-            'vb-audio',
-            'virtual',
-            'cable',
-            'vac',
-            'aux',
-            'mic',
-            'input'
+            'voicemeeter',   # VoiceMeeter (all variants: Input, Output, AUX, B1-B3)
+            'vb-audio',      # VB-Audio drivers (covers VoiceMeeter + VB-Cable family)
+            'virtual',       # Generic "Virtual *" device names
+            'cable',         # VB-CABLE Input/Output, CABLE-A, CABLE-B
+            'vac',           # Virtual Audio Cable (vac.exe driver from ntonyx)
         ]
 
         name_lower = device_name.lower()
