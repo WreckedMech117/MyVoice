@@ -84,38 +84,25 @@ Choose ONE of the following:
 
 ## Quick Start
 
-### Bundled Installation (Recommended)
+**Most users:** download the installer from the [Download](#download) section above — no Python or build setup required. The installer ships with its own Python environment and all dependencies.
 
-This package includes a pre-configured Python 3.10 environment. No Python installation required!
+**Developers (cloning this repository):**
 
-1. **Install Dependencies**
-   - Double-click `00_Install_Dependencies.bat`
-   - Wait for installation to complete (may take 5-10 minutes)
-   - Downloads include:
-     - Python packages: PyTorch, Whisper, Qwen3-TTS, PyQt6 (~2GB)
-     - Voice cloning models download on first use (~3.4GB)
-
-2. **Run MyVoice**
-   - Double-click `01_Run_MyVoice.bat`
-   - MyVoice application window will open
-
-### Manual Installation (Advanced Users)
-
-If you have Python 3.10+ installed:
+Requires Python 3.10+ installed locally.
 
 ```bash
-# Create virtual environment
+# Create and activate a virtual environment
 python -m venv .venv
-
-# Activate environment
 .venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Run application
+# Run the app
 python -m myvoice.main
 ```
+
+> **Note:** `01_Run_MyVoice.bat` in the repo root belongs to the **bundled portable distribution** (the `.zip` from the website) — it expects a pre-built `python310/` folder alongside it and will not work from a fresh source clone. Use the venv path above instead.
 
 ## First Time Setup
 
@@ -301,8 +288,7 @@ MyVoice/
 ├── build_tools/                # Installer and build scripts
 ├── requirements.txt            # Python dependencies
 ├── setup.py                    # Package configuration
-├── 00_Install_Dependencies.bat # Dependency installer
-├── 01_Run_MyVoice.bat          # Application launcher
+├── 01_Run_MyVoice.bat          # Launcher for the bundled portable distribution (requires python310/)
 └── README.md                   # This file
 ```
 
