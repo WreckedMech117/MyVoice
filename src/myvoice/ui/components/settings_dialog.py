@@ -29,6 +29,7 @@ from myvoice.ui.components.voice_library_widget import VoiceLibraryWidget
 from myvoice.ui.dialogs.settings import (
     ClearCommsSettingsPanel,  # Story 15.3
     StreamingSettingsPanel,  # Story 16.6
+    APIAccessSettingsPanel,  # Local TTS API
 )
 from myvoice.ui.dialogs.voice_design_studio import VoiceDesignStudioDialog
 from myvoice.services.quick_speak_service import QuickSpeakService
@@ -177,6 +178,9 @@ class SettingsDialog(QDialog):
 
         # Clear Comms settings tab (Story 15.3)
         self._create_clear_comms_tab()
+
+        # Local TTS API settings tab (OpenAI-compatible localhost server).
+        self._create_api_access_tab()
 
         layout.addWidget(self.tab_widget)
 
@@ -756,6 +760,19 @@ class SettingsDialog(QDialog):
         )
         self.tab_widget.addTab(self.streaming_panel, "Streaming")
 
+    def _create_api_access_tab(self):
+        """Create the Local TTS API settings tab (enable / port / key).
+
+        Mirrors ``_create_streaming_tab``: the panel binds to
+        ``current_settings`` (the staging copy applied on OK). Its values are
+        hydrated/persisted explicitly via ``load_state``/``save_state`` in
+        ``_load_current_settings``/``_save_current_settings``.
+        """
+        self.api_access_panel = APIAccessSettingsPanel(
+            app_settings=self.current_settings, parent=self
+        )
+        self.tab_widget.addTab(self.api_access_panel, "API Access")
+
     def _mark_settings_modified(self):
         """Mark settings as modified (for future save tracking)."""
         # Currently settings are applied on OK, but this could be used
@@ -819,6 +836,9 @@ class SettingsDialog(QDialog):
                 file_path=self.current_settings.clear_comms_file_path,
                 queue_mode=self.current_settings.clear_comms_queue_mode,
             )
+
+            # Local TTS API: hydrate enable/port/key from current_settings.
+            self.api_access_panel.load_state(self.current_settings)
 
             self.logger.debug("Loaded current settings into UI")
 
@@ -929,6 +949,9 @@ class SettingsDialog(QDialog):
             self.current_settings.clear_comms_source_kind = cc_source
             self.current_settings.clear_comms_file_path = cc_path
             self.current_settings.clear_comms_queue_mode = cc_queue
+
+            # Local TTS API: read enable/port/key into current_settings.
+            self.api_access_panel.save_state(self.current_settings)
 
             self.logger.debug("Saved UI values to current settings")
 

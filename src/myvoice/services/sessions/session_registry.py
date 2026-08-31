@@ -389,14 +389,24 @@ class SessionRegistry(QObject):
         voice: str,
         model_type: str,
         source: SessionSource = SessionSource.GENERATED,
+        session_id: Optional[str] = None,
     ) -> str:
         """Instantiate a `GenerationSession` (always in PENDING per 11.1
         `__post_init__`), store it, and return the new session id.
 
         `model_type` is held in a registry-side mapping until Story 11.4
         decides whether to add the field to `GenerationSession` itself.
+
+        `session_id` (tech-spec local-tts-api Task 6.5): when provided, the
+        session is created with that id (so the HTTP API can correlate its
+        stream); when None, `GenerationSession` auto-generates a uuid4 as before.
         """
-        session = GenerationSession(text=text, voice=voice, source=source)
+        if session_id is not None:
+            session = GenerationSession(
+                text=text, voice=voice, source=source, session_id=session_id
+            )
+        else:
+            session = GenerationSession(text=text, voice=voice, source=source)
         self._sessions[session.session_id] = session
         self._session_model_types[session.session_id] = model_type
         # PENDING is not focal-eligible, so this is usually a no-op until the

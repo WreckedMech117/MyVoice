@@ -145,6 +145,16 @@ class AppSettings:
     #     verification.
     tts_compile: str = "auto"
 
+    # Local TTS API (OpenAI-compatible) settings (tech-spec local-tts-api-v1).
+    # enable_http_api: master toggle for the localhost-bound HTTP server.
+    # http_api_port: bind port (127.0.0.1 only in v1).
+    # http_api_key: Bearer key; auto-generated + required by default when the
+    #   API is enabled (closes the localhost-CSRF gap). Empty string = keyless
+    #   opt-out (the Settings panel warns against it).
+    enable_http_api: bool = False
+    http_api_port: int = 7778
+    http_api_key: str = ""
+
     # Advanced settings
     advanced_settings: Dict[str, Any] = field(default_factory=dict)
 
@@ -609,6 +619,9 @@ class AppSettings:
                 "streaming_mode_override": self.streaming_mode_override,
                 "tts_precision": self.tts_precision,
                 "tts_compile": self.tts_compile,
+                "enable_http_api": self.enable_http_api,
+                "http_api_port": self.http_api_port,
+                "http_api_key": self.http_api_key,
                 "advanced_settings": self.advanced_settings.copy(),
                 "training_enabled": self.training_enabled,
                 "training_workspace_directory": self.training_workspace_directory,
@@ -677,6 +690,9 @@ class AppSettings:
                 streaming_mode_override=data.get("streaming_mode_override"),
                 tts_precision=data.get("tts_precision", "auto"),
                 tts_compile=data.get("tts_compile", "auto"),
+                enable_http_api=data.get("enable_http_api", False),
+                http_api_port=data.get("http_api_port", 7778),
+                http_api_key=data.get("http_api_key", ""),
                 advanced_settings=data.get("advanced_settings", {}),
                 training_enabled=data.get("training_enabled", True),
                 training_workspace_directory=data.get("training_workspace_directory", "training_workspace"),
@@ -795,6 +811,9 @@ class AppSettings:
             "streaming_mode_override",
             "tts_precision",
             "tts_compile",
+            "enable_http_api",
+            "http_api_port",
+            "http_api_key",
             "advanced_settings",
             "training_enabled", "training_workspace_directory",
             "custom_emotion_text", "custom_emotion_presets"

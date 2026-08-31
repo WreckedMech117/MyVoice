@@ -317,6 +317,11 @@ class QwenTTSRequest:
     streaming: bool = True  # Default to streaming mode
     checkpoint_path: Optional[Path] = None  # Fine-tuned checkpoint path for OPTIMIZED voices
     voice_clone_prompt: Optional[Any] = None  # QA5: Pre-computed voice clone prompt for embedding voices
+    # Caller-supplied session id (tech-spec local-tts-api Task 6.5). When set,
+    # it is threaded through create_session so emitted AudioChunk.session_id
+    # carries it — enabling the HTTP API to correlate its stream deterministically.
+    # None (default) preserves the existing auto-generate behavior.
+    session_id: Optional[str] = None
 
 
 @dataclass
@@ -1068,6 +1073,7 @@ class QwenTTSService(BaseService):
         instruct: Optional[str] = None,
         emotion_preset: Optional[str] = None,
         streaming: bool = True,
+        session_id: Optional[str] = None,
     ) -> QwenTTSResponse:
         """
         Generate speech using CustomVoice model with bundled speakers.
@@ -1082,6 +1088,9 @@ class QwenTTSService(BaseService):
             instruct: Custom emotion/style instruction
             emotion_preset: Preset emotion name (neutral, happy, sad, angry, flirtatious)
             streaming: Use streaming mode for progressive audio output
+            session_id: Optional caller-supplied session id (HTTP API). When
+                provided, emitted AudioChunk.session_id carries it; when None,
+                a session id is auto-generated as before.
 
         Returns:
             QwenTTSResponse: Response with audio data or error
@@ -1097,6 +1106,7 @@ class QwenTTSService(BaseService):
             speaker=speaker,
             instruct=instruct,
             streaming=streaming,
+            session_id=session_id,
         )
 
         # Story 16.6: route every public entry through the three-mode dispatch
@@ -3103,6 +3113,7 @@ class QwenTTSService(BaseService):
                 voice=self._resolve_voice_label(request),
                 model_type=self._resolve_model_type_label(request),
                 source=SessionSource.GENERATED,
+                session_id=request.session_id,
             )
             # Story 16.5: publish the active session id so cancel_generation
             # can request_cancel(sid). Cleared in the outer finally below.
@@ -3336,6 +3347,7 @@ class QwenTTSService(BaseService):
                 voice=self._resolve_voice_label(request),
                 model_type=self._resolve_model_type_label(request),
                 source=SessionSource.GENERATED,
+                session_id=request.session_id,
             )
             # Story 16.5: publish the active session id so cancel_generation
             # can request_cancel(sid). Cleared in the outer finally below.
@@ -4203,6 +4215,7 @@ class QwenTTSService(BaseService):
                 voice=self._resolve_voice_label(request),
                 model_type=self._resolve_model_type_label(request),
                 source=SessionSource.GENERATED,
+                session_id=request.session_id,
             )
             # Story 16.5: publish the active session id so cancel_generation
             # can request_cancel(sid) -> hook -> streamer._cancel_event.set().

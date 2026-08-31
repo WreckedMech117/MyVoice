@@ -8,6 +8,16 @@ qasync>=0.27.0  # PyQt6 + asyncio integration
 # HTTP Client
 requests>=2.31.0
 
+# Local TTS API (OpenAI-compatible) — tech-spec local-tts-api-v1.
+# Settings-toggled localhost HTTP server exposing /v1/audio/speech over the
+# existing QwenTTSService. All pure wheels; no ffmpeg. uvicorn runs as a task
+# on the existing qasync loop (install_signal_handlers=False, reload=False).
+# lameenc provides the MP3 encoder (128 kbps); wav uses soundfile (already
+# in-tree), pcm is raw int16 passthrough.
+fastapi>=0.110.0
+uvicorn>=0.29.0
+lameenc>=1.7.0
+
 # OS trust store bridge for Python SSL — required so end-users running
 # SSL-scanning antivirus (Norton, Kaspersky, Avast, Bitdefender, ESET, ...)
 # or corporate MITM proxies don't hit SSLCertVerificationError on first

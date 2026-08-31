@@ -215,6 +215,17 @@ class MyVoiceApp(QObject):
         # drops itself instead of opening a fresh session post-cancel.
         self._progressive_playback_epoch: int = 0
 
+        # Local TTS API (tech-spec local-tts-api Tasks 7/9). The StreamHub
+        # fans progressive chunks out to HTTP subscribers; _api_origin_sessions
+        # holds session ids that originated from an API request so
+        # _handle_progressive_chunk_async gates them away from the desktop
+        # device. The controller (uvicorn-on-qasync) is built in
+        # initialize_async iff enable_http_api. Initialized here so the chunk
+        # handler's gate guard is always safe to evaluate.
+        self._stream_hub = None  # type: Optional[object]
+        self._api_origin_sessions: set[str] = set()
+        self._api_server = None  # type: Optional[object]
+
         # Story 18.1 Task 1.4: env-var-gated CSV capture for the three new
         # progressive-playback metrics. Disabled by default (None) — engages
         # only when ``MYVOICE_PROGRESSIVE_PLAYBACK_CSV`` is set, returning a
@@ -309,6 +320,10 @@ class MyVoiceApp(QObject):
 
             # Initialize mic mixing if enabled in settings
             await self._setup_mic_mixing_from_settings()
+
+            # Local TTS API (tech-spec local-tts-api Task 9): construct the
+            # StreamHub + ApiServerController and start the server iff enabled.
+            await self._setup_api_server_from_settings()
 
             self.logger.info("MyVoice application initialization completed successfully")
             return True
@@ -780,6 +795,18 @@ class MyVoiceApp(QObject):
         self.logger.info("Starting async cleanup - stopping services...")
 
         try:
+            # Local TTS API (tech-spec Task 9 / H2): stop the API server FIRST,
+            # ahead of the TTS teardown below, so any in-flight streaming
+            # gen_task is cancelled before _tts_service.stop() runs. The
+            # controller's stop() is bounded (<=2s) so it fits inside the 8s
+            # cleanup_async budget (main.py) and never trips the hard exit.
+            if getattr(self, '_api_server', None) is not None:
+                try:
+                    await self._api_server.stop()
+                    self.logger.info("Local TTS API server stopped")
+                except Exception as e:
+                    self.logger.error(f"Error stopping local TTS API server: {e}")
+
             # Story 18.1 Task 1.4: flush + close the progressive-playback CSV
             # capture FIRST (before service cleanup) so the last metric records
             # land on disk even if a downstream cleanup step raises. Moved
@@ -2831,6 +2858,37 @@ class MyVoiceApp(QObject):
         cancel. ``epoch=None`` (legacy direct-test callers) skips the
         check.
         """
+        # Local TTS API (tech-spec Task 7 / H1): API-origin sessions are fanned
+        # out to the HTTP StreamHub and MUST NOT touch the desktop audio device
+        # or the progressive-playback singleton state. Gate the WHOLE handler
+        # for these sessions: convert float32->int16, publish, and RETURN —
+        # bypassing start/stop_streaming_session, play_audio_chunk, and the
+        # _progressive_playback_* state machine. GUI/None sessions fall through
+        # to the unchanged device path below.
+        if (
+            getattr(self, "_stream_hub", None) is not None
+            and chunk.session_id in self._api_origin_sessions
+        ):
+            _probe_start = time.perf_counter()
+            if chunk.audio_data is not None and chunk.audio_data.size > 0:
+                audio_bytes = (
+                    np.clip(chunk.audio_data, -1.0, 1.0) * 32767
+                ).astype(np.int16).tobytes()
+            else:
+                audio_bytes = b""
+            self._stream_hub.publish(chunk.session_id, audio_bytes, chunk.is_final)
+            # AC16 tripwire probe — the on-loop gate+publish path must stay
+            # cheap (<10ms/chunk). The mp3 encode is offloaded in the route via
+            # run_in_executor, NOT here, so this measures only the gate+fan-out.
+            metrics.record(
+                "api_stream_gate_publish_ms",
+                (time.perf_counter() - _probe_start) * 1000.0,
+                session_id=chunk.session_id,
+                chunk_index=chunk.chunk_index,
+                is_final=chunk.is_final,
+            )
+            return
+
         if self._progressive_playback_lock is None:
             self._progressive_playback_lock = asyncio.Lock()
 
@@ -4001,6 +4059,67 @@ class MyVoiceApp(QObject):
         except Exception as e:
             self.logger.error(f"Error setting up mic mixing: {e}")
 
+    async def _setup_api_server_from_settings(self):
+        """Construct the StreamHub + ApiServerController and start iff enabled.
+
+        Called once at the end of initialize_async. The collaborators are
+        always constructed (so the chunk-handler gate + later toggles work);
+        the uvicorn server only starts when ``enable_http_api`` is True.
+        """
+        try:
+            from myvoice.services.api_server.server import ApiServerController
+            from myvoice.services.api_server.stream_hub import StreamHub
+        except Exception:
+            self.logger.exception(
+                "Local TTS API dependencies unavailable; API disabled"
+            )
+            return
+
+        if self._stream_hub is None:
+            self._stream_hub = StreamHub()
+        if self._api_server is None:
+            self._api_server = ApiServerController(
+                tts_service=self._tts_service,
+                voice_manager=self._voice_manager,
+                app_ref=self,
+                settings_provider=lambda: self._app_settings,
+            )
+
+        if getattr(self._app_settings, "enable_http_api", False):
+            try:
+                await self._api_server.start(
+                    host="127.0.0.1",
+                    port=getattr(self._app_settings, "http_api_port", 7778),
+                )
+            except Exception:
+                self.logger.exception("Failed to start local TTS API server")
+
+    async def _reconcile_api_server(self, old_enabled: bool, old_port: int, new_settings):
+        """Start/stop/restart the API server on a settings change.
+
+        A key change needs no restart (the auth dependency reads the key live
+        via ``settings_provider``); only enable-toggle and port changes act.
+        """
+        # Lazy safety net if the controller wasn't built at startup.
+        if self._api_server is None or self._stream_hub is None:
+            await self._setup_api_server_from_settings()
+            return
+
+        new_enabled = getattr(new_settings, "enable_http_api", False)
+        new_port = getattr(new_settings, "http_api_port", 7778)
+        try:
+            if not new_enabled:
+                if self._api_server.is_running:
+                    await self._api_server.stop()
+            elif not old_enabled:
+                await self._api_server.start(host="127.0.0.1", port=new_port)
+            elif old_port != new_port:
+                await self._api_server.stop()
+                await self._api_server.start(host="127.0.0.1", port=new_port)
+            # else: enabled with same port -> nothing to do (key picked up live)
+        except Exception:
+            self.logger.exception("Failed to reconcile local TTS API server")
+
     def _on_settings_changed(self, new_settings):
         """
         Handle settings changes from the UI.
@@ -4014,6 +4133,11 @@ class MyVoiceApp(QObject):
             # Check if model quality tier changed (before updating stored settings)
             old_tier = getattr(self._app_settings, 'model_quality_tier', 'quality') if self._app_settings else 'quality'
             new_tier = getattr(new_settings, 'model_quality_tier', 'quality')
+
+            # Local TTS API: capture pre-change toggle/port (before the swap)
+            # so _reconcile_api_server can detect enable/port transitions.
+            old_api_enabled = getattr(self._app_settings, 'enable_http_api', False) if self._app_settings else False
+            old_api_port = getattr(self._app_settings, 'http_api_port', 7778) if self._app_settings else 7778
 
             # Update stored settings
             self._app_settings = new_settings
@@ -4075,6 +4199,13 @@ class MyVoiceApp(QObject):
                     on_success=lambda _: self.logger.debug("Mic mixing settings applied"),
                     on_error=lambda error: self.logger.error(f"Failed to apply mic mixing settings: {error}")
                 )
+
+            # Local TTS API: start/stop/restart the server on toggle/port change.
+            self._run_async_task(
+                self._reconcile_api_server(old_api_enabled, old_api_port, new_settings),
+                on_success=lambda _: self.logger.debug("Local TTS API settings applied"),
+                on_error=lambda error: self.logger.error(f"Failed to apply local TTS API settings: {error}")
+            )
 
         except Exception as e:
             self.logger.error(f"Error handling settings changes: {e}")
