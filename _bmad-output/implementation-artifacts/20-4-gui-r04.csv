@@ -1,0 +1,5 @@
+metric_name,value,session_id,chunk_index,is_final,audio_data_size
+ttfa_generation_start_ms,1788287211922.9368,,,,
+ttfa_talker_thread_start_ms,1788287211923.939,,,,
+ttfa_first_decode_step_ms,1788287215589.5662,,,,
+ttfa_first_chunk_emit_ms,1788287216339.8123,,,,

@@ -1,0 +1,53 @@
+{
+  "_meta": {
+    "round": 2,
+    "candidate": "cs10fix",
+    "reference": "cs25",
+    "candidate_desc": "chunk_size=10 WITH the Story 20.4 seam fix",
+    "reference_desc": "chunk_size=25 with the shipped pre-fix stitching (round 1's exact files)"
+  },
+  "L1": {
+    "l-020": {
+      "trial_A_filename": "l-020-cs25.wav",
+      "trial_A_geometry": "cs25",
+      "trial_B_filename": "l-020-cs10fix.wav",
+      "trial_B_geometry": "cs10fix"
+    },
+    "l-021": {
+      "trial_A_filename": "l-021-cs25.wav",
+      "trial_A_geometry": "cs25",
+      "trial_B_filename": "l-021-cs10fix.wav",
+      "trial_B_geometry": "cs10fix"
+    },
+    "m-020": {
+      "trial_A_filename": "m-020-cs25.wav",
+      "trial_A_geometry": "cs25",
+      "trial_B_filename": "m-020-cs10fix.wav",
+      "trial_B_geometry": "cs10fix"
+    },
+    "m-021": {
+      "trial_A_filename": "m-021-cs10fix.wav",
+      "trial_A_geometry": "cs10fix",
+      "trial_B_filename": "m-021-cs25.wav",
+      "trial_B_geometry": "cs25"
+    },
+    "s-020": {
+      "trial_A_filename": "s-020-cs10fix.wav",
+      "trial_A_geometry": "cs10fix",
+      "trial_B_filename": "s-020-cs25.wav",
+      "trial_B_geometry": "cs25"
+    },
+    "s-021": {
+      "trial_A_filename": "s-021-cs10fix.wav",
+      "trial_A_geometry": "cs10fix",
+      "trial_B_filename": "s-021-cs25.wav",
+      "trial_B_geometry": "cs25"
+    },
+    "s-022": {
+      "trial_A_filename": "s-022-cs25.wav",
+      "trial_A_geometry": "cs25",
+      "trial_B_filename": "s-022-cs10fix.wav",
+      "trial_B_geometry": "cs10fix"
+    }
+  }
+}

@@ -1,6 +1,6 @@
 # Story 20.4: Chunk-Size Retune + Adaptive-Cushion Fix (Phase ⊥-Polish-3)
 
-Status: in-progress — AC #1/#2/#3/#4/#7 complete and verified; AC #5 and AC #6 blocked on the operator run (evidence §8 is the consolidated hand-off)
+Status: in-progress — AC #1/#2/#3/#4/#6/#7 complete and verified. AC #5 round 1 FAILED (blocking); root cause found to be a splice-alignment bug deleting 15-19 ms of speech at EVERY chunk boundary on both geometries, plus a codec-state mismatch — both fixed in `streaming_decoder.py`, seam discontinuity 12.3x -> 1.3x the non-seam baseline. Round-2 audition is the only outstanding task (evidence §8b)
 
 <!-- Phase tag: Phase ⊥-Polish-3. Fourth story of Epic 20 (First-Audio Latency). -->
 <!-- Source: Story 20.1 evidence §5 (Follow-up B) + §2.6 (Follow-up C), which are COUPLED. -->
@@ -183,15 +183,23 @@ Story 20.3's priming then warms the **new** key
 - [x] **Task 3 — Coupling** (AC: #3)
   - [x] 3.1 `20-4-adaptive-cushion-sim.py` re-derives both policies at both geometries against the shipped buffer, and **cross-checks its pre-20.4 reproduction against all 10 numbers Story 20.1 §2.7 published (10/10 match)**. Ratio at cs10 goes 4.00× → 0.67×. Three unpredicted interactions reported in evidence §3.3.
 
-- [~] **Task 4 — Measure** (AC: #4, #6)
+- [x] **Task 4 — Measure** (AC: #4, #6)
   - [x] 4.1 Re-measured on current code: **0.619× at cs10** vs 0.585× at cs25, contemporaneous, same host, same session. Gate `< 1.0×` holds with 38 % margin.
-  - [ ] 4.2 GUI capture — **OPERATOR**. `11_Story_20.4_AC6_GUI_Capture.bat` (new; the 20.3 launcher would overwrite the baseline). Aggregator validated by reproducing the 20.3 baseline exactly.
+  - [x] 4.2 GUI capture — **operator run 2026-09-01, PASSED**: long TTFA median **976 ms**, short **1,065 ms**, producer ratio 0.602 / 0.403, short class on the threshold path at 3 chunks. Against the 1,353 ms Story 20.3 baseline. AC #6 closed.
   - [x] 4.3 Sub-16 GiB effect derived and labelled derived; the deferred 3060 check restated with five specific things it would now falsify (evidence §7).
   - [x] 4.4 Evidence file written.
 
-- [~] **Task 5 — Audition** (AC: #5) — fixture **generated and verified** (14 WAVs through the production TRUE_STREAM path, CLONED voice, short + long); the listening session is **OPERATOR**, via `12_Story_20.4_AC5_Audition.bat`.
+- [~] **Task 5 — Audition** (AC: #5) — **round 1 RUN and FAILED** (blocking): `m-020` clean at cs25, `tonal_distortion` at cs10; `l-020`/`l-021` defective on **both** arms; cs10 never preferred. Root-caused (see Task 7), fixed, and a round-2 fixture built. **Round-2 listening session is the only outstanding operator task.**
 
-- [x] **Task 6 — Regression sweep** (AC: #7) — zero new failures on every surface; pre-existing set unchanged in count and identity. Exactly one new compile-cache key directory observed, as predicted.
+- [x] **Task 6 — Regression sweep** (AC: #7) — zero new failures on every surface; pre-existing set unchanged in count and identity. Exactly one new compile-cache key directory observed, as predicted. Re-run after the Task 7 fix: unchanged.
+
+- [x] **Task 7 — Seam root-cause + fix** (AC: #5; added 2026-09-01 after the round-1 failure)
+  - [x] 7.1 Determined the mechanism by measurement rather than assumption — captured the decoder's posted arrays AND its pre-trim `pcm_full`, which consecutive chunks share by `lookahead` frames, making the alignment answerable by cross-correlation.
+  - [x] 7.2 **It is not the consumer crossfade.** That crossfade is 2.67 ms; the defect is a 15.4 ms deletion (5.8× wider) plus a mismatch spanning 377 ms (141× wider). No consumer-crossfade sweep was run — it would have been aimed at the wrong mechanism at the wrong layer.
+  - [x] 7.3 Found and fixed a **splice-alignment bug**: `decode(N) = 1920N − 555`, and the trim treated the fixed 555-sample edge loss as proportional, deleting `555·cs/(cs+la)` samples of real speech at every seam — 370 at cs10, 463 at cs25 — since Story 16.4.
+  - [x] 7.4 Found a **codec-state mismatch** (~35 % NRMSE between the two decodes of the shared frames) and swept the fix at the correct layer — a decoder-side overlap-add over the tail the module used to discard. Chose 1024 samples on evidence; cost stated (5.3 % of the stream inside a blend at cs10).
+  - [x] 7.5 Verified end-to-end on the shipped path: seam step **12.3× → 1.3×** the non-seam baseline; the blocking utterance's spectral seam resolved to baseline.
+  - [x] 7.6 Round-2 fixture built with round 1's `cs25` files reused verbatim as a calibration anchor; round 1's evidence preserved intact.
 
 ## Dev Notes
 
@@ -280,9 +288,59 @@ claude-opus-5[1m]
    run and one listening session, ~35 minutes total, with both launchers
    preflighting themselves.
 
+--- added 2026-09-01, after the round-1 audition failure ---
+
+8. **The round-1 failure had a cause neither candidate hypothesis named.**
+   The two hypotheses on the table were the consumer crossfade being too
+   narrow, or the decoder's independent chunk decodes. The actual dominant
+   defect was a third thing nobody had looked for: `decode(N frames)` returns
+   `1920N − 555` samples — 1920 per frame plus a FIXED 555-sample edge loss —
+   and the trim treated that fixed loss as proportional. Every chunk boundary
+   was therefore **deleting 15-19 ms of real speech**, and had been since
+   Story 16.4. That is why round 1 flagged long-form seams on the *reference*
+   arm too: `cs25` was never a clean baseline.
+
+9. **The two defects are not independent, and that changed the design.**
+   Correcting the alignment ALONE makes the click measurably **worse** at
+   `chunk_size = 25` (8.46× → 18.04× the non-seam baseline), because it butts
+   two genuinely different renditions of the same instant together where
+   before they were at least offset. Fixing the splice without the overlap-add
+   would have shipped a regression while looking like a fix.
+
+10. **The fix uses material the decoder already computes and threw away.**
+    `pcm_full` extends 9,045 samples (377 ms) past the splice point, covering
+    exactly what the next chunk re-decodes at its head. The "overlap-add" was
+    an overlap-*discard*. Retaining it makes the boundary a true cross-fade
+    between two renditions of the same instant, so unlike widening the
+    consumer crossfade it costs **no audio and no duration**.
+
+11. **The constants are verified, not trusted.** `1920`/`555` were measured
+    and are re-checked on every chunk; a failure drops the session to the
+    pre-20.4 trim and emits `decode_geometry_unverified`. Deriving a splice
+    from a stale constant would mis-cut every chunk — worse than the bug being
+    replaced — so the fallback is deliberate.
+
+12. **A documentation defect, harmless but worth recording:** 1920
+    samples/frame is **12.5 Hz**, not the 12 Hz this codebase's prose has said
+    since Story 16.3. No code used 12, so nothing behavioural changes; every
+    "seconds of audio per chunk" figure in comments and evidence is ~4 %
+    optimistic.
+
+13. **This reframes Mary's research Finding 1.** Codec state caching across
+    chunks was filed as a throughput optimisation. §11.4 measures the cost of
+    not doing it — ~35 % NRMSE between the two decodes at every boundary — so
+    it is an **audio-quality** item, and the only fix that removes the cause
+    rather than masking it. Out of scope here; recommended for re-filing.
+
+14. **The `chunk_size = 15` retreat was prepared for and deliberately not
+    taken.** It does not fix the defect; it halves how often you meet it, at
+    the cost of the story's speed win, while shipping a now-understood
+    one-line-fixable bug. It remains the fallback if round 2 fails.
+
 ### File List
 
 **Source**
+- `src/myvoice/services/tts_streaming/streaming_decoder.py` (seam fix)
 - `src/myvoice/services/tts_streaming/codec_token_streamer.py`
 - `src/myvoice/services/tts_streaming/torch_runtime.py`
 - `src/myvoice/services/model_registry.py`
@@ -297,6 +355,7 @@ claude-opus-5[1m]
 - `tests/unit/services/tts_streaming/test_torch_runtime.py`
 - `tests/unit/services/tts_streaming/test_codec_token_streamer.py`
 - `tests/integration/test_streaming_tts_smoke.py`
+- `tests/unit/services/tts_streaming/test_streaming_decoder.py` (+8 rows)
 
 **Tooling**
 - `tools/ttfa_spike_harness.py`
@@ -314,8 +373,14 @@ claude-opus-5[1m]
 - `20-4-ratio-long-cs10.csv`, `20-4-ratio-long-cs25.csv`,
   `20-4-ratio-short-cs10.csv`, `20-4-ratio-short-cs25.csv` (new)
 - `20-1-adaptive-cushion-sim.py` — superseded-header note only
+- `20-4-seam-capture.py`, `20-4-seam-capture-full.py`, `20-4-seam-analysis.py`,
+  `20-4-seam-fix-sweep.py` (new) — the root-cause investigation
+- `20-4-seam-raw/`, `20-4-seam-rawfull/`, `20-4-seam-rawfull-prefix/` (new) — its captures
+- `20-4-regen-audition-fixture-r2.py`, `20-4-perceptual-fixtures-r2/` (new) — round 2
+- `20-4-chunk-retune-audition.csv` — round-1 result, preserved
 
 ## Change Log
 
 - 2026-09-01 — Drafted by Winston from Story 20.1 Follow-ups B and C, shipped as one story because Story 20.1 found them coupled: `chunk_size = 10` worsens the sub-16 GiB cushion-to-talker ratio from 2.5× to 4.0×, so B alone would speed up large-VRAM hosts and leave the RTX 30xx tier pinned at the cap.
 - 2026-09-01 — Implemented. AC #1/#2/#3/#4/#7 complete and verified; AC #5 fixture generated and AC #6 tooling in place, both awaiting the operator run consolidated in evidence §8. Producer ratio re-measured at 0.619× (gate `< 1.0×`). Long-form TTFA 1,491 → 829 ms and short-form 1,409 → 784 ms on current code, with the short class off the residual-flush path 6/6. Sub-16 GiB cushion at `P = 0.5` derived at 10.00 s → 1.67 s, cushion/talker 4.00× → 0.67×.
+- 2026-09-01 — AC #6 measured and PASSED (long 976 ms / short 1,065 ms). AC #5 round 1 FAILED; investigation found the dominant cause was a splice-alignment bug deleting 370-463 samples of speech at every chunk boundary — present at the shipped chunk_size=25, not introduced by the retune — with a codec-state mismatch underneath it. Both fixed in `streaming_decoder.py` (exact splice + decoder-side overlap-add over the tail that was previously discarded); seam discontinuity 12.3x -> 1.3x the non-seam baseline, verified end-to-end on the shipped path. The consumer crossfade was ruled out by measurement and not swept. Round-2 fixture built; re-audition outstanding.

@@ -15,10 +15,7 @@ Story 20.1 found them coupled.
 | `T_a` estimator error, long fixture | +44.5 % | **+2.0 %** | §2.3 |
 | `MAX_PRE_DELAY_SECONDS` | 10.0 s | **10.0 s — unchanged** | §2.2 |
 
-**Status.** AC #1, #2, #3, #4 and #7 are complete and verified. AC #5 and
-AC #6 need Commander at the keyboard — the fixture, the launchers, the
-utterance texts and the validated aggregator are all in place. **§8 is the
-single consolidated hand-off**; nothing else is asked of the operator.
+**Status (updated 2026-09-01, after the §9 audition failure).**
 
 | AC | what it asks | status |
 |---|---|---|
@@ -26,9 +23,26 @@ single consolidated hand-off**; nothing else is asked of the operator.
 | #2 | cushion policy + the T_a overshoot | **DONE** — §2 |
 | #3 | coupling re-derived at `chunk_size = 10` | **DONE** — §3 |
 | #4 | OFR-E producer ratio re-measured | **DONE, PASSES** — §4 |
-| #5 | NFR3 perceptual audition | fixture **DONE**, audition **needs operator** — §5, §8 |
-| #6 | GUI capture on the reachable tier | tooling **DONE**, capture **needs operator** — §6, §8 |
-| #7 | no regressions | **DONE, zero new failures** — §9 |
+| #5 | NFR3 perceptual audition | **round 1 FAILED (§9)** → cause found and fixed (§11) → **round 2 needs operator** |
+| #6 | GUI capture on the reachable tier | **DONE, PASSES** — operator run, §6.3 |
+| #7 | no regressions | **DONE, zero new failures** — §9.1, §11.12 |
+
+> **Reading order.** This file is an append log across three passes, so the
+> section numbers are chronological rather than sorted: §0-§10 are the
+> original implementation pass, **§9 (second one, near the end)** is the
+> round-1 audition failure the coordinator recorded, **§8b** is the current
+> operator hand-off, and **§11** is the seam investigation and fix. Where §5,
+> §6 and §8 have been overtaken, their headers say so and point forward.
+
+**The §9 failure had a cause, and it was not the one either candidate
+hypothesis proposed.** Every decoder chunk boundary was deleting 15-19 ms of
+real speech — a splice-alignment bug present at the shipped `chunk_size = 25`
+too, which is why round 1 flagged long-form seams on *both* arms. Underneath
+it, the two independent decodes either side of a boundary differ by ~35 %
+NRMSE. Both are now fixed; seam discontinuity measures **12.3x -> 1.3x** the
+non-seam baseline, i.e. a seam is now statistically indistinguishable from any
+other point in the audio. **§11 is the investigation; §8 is the one remaining
+operator task.**
 
 ---
 
@@ -431,8 +445,12 @@ Story 20.1's 19.32 s figure, and this run independently produced 19.53 s.
 
 ## 5. AC #5 — NFR3 perceptual gate
 
-_Status: **fixture GENERATED and verified; the audition itself is PENDING an
-operator.** See §8._
+_Status: **round 1 RUN and FAILED — see §9 (blocking). Cause diagnosed and
+fixed — see §11. Round-2 fixture generated and verified; the re-audition
+needs an operator — see §8.**_
+
+_The subsections below describe the round-1 fixture design, which round 2
+reuses. Read §11.11 for what changed in round 2._
 
 ### 5.1 Why this story needed a gate the previous three did not
 
@@ -494,8 +512,7 @@ not block; that distinction is made by the helper, not by hand.
 
 ## 6. AC #6 — GUI measurement on the reachable tier
 
-_Status: **PENDING an operator.** Everything else is in place: the launcher,
-the utterance texts, and the aggregator (validated — see below). See §8._
+_Status: **MEASURED AND PASSED** (operator run, 2026-09-01). See §6.3._
 
 ### 6.1 What will be measured, and against what
 
@@ -539,6 +556,34 @@ table exactly:
 published. An aggregator that could not reproduce the baseline would not be
 trustworthy on the new captures either.
 
+### 6.3 Result — AC #6 PASSES
+
+Operator run, 2026-09-01, reported by the coordinator:
+
+| class | TTFA median | producer ratio | dispatch path |
+|---|---:|---:|---|
+| long | **976 ms** | 0.602 | threshold |
+| short | **1,065 ms** | 0.403 | threshold, 3 chunks |
+
+Against the Story 20.3 baseline of **1,353 ms** long-form, and comfortably
+inside the OFR-E `< 1.0x` producer gate on both classes. The short class is on
+the threshold path at 3 chunks — the residual-flush degeneration is gone in
+the shipped GUI, not just in the headless harness (§4.1).
+
+**These numbers are not re-run and not re-derived by the §11 work.** The seam
+fix changes how chunk boundaries are stitched, not when the first chunk is
+produced or dispatched; segments 1-3 are untouched by it, and segment 4 is a
+consumer-side cushion that never sees a seam. AC #6 is closed.
+
+One second-order effect, in the safe direction and worth stating rather than
+leaving for a reviewer to ask: each posted chunk is now 19,200 samples instead
+of 18,830, so ``progressive_chunk_audio_duration_ms`` rises 784.6 → 800.0 ms.
+The producer emit/drain ratio is (inter-chunk wall time) / (chunk audio
+duration), and only the denominator moves, so the ratio **improves** by ~2 %
+— 0.619 → ~0.607 headless, 0.602 → ~0.590 in the GUI. The OFR-E gate is not
+at risk from the fix. Segment 4 is likewise unaffected: 800 ms still clears
+the 500 ms static watermark, as 784.6 ms did.
+
 ---
 
 ## 7. AC #6 — the sub-16 GiB tier: derived, and the deferred confirmation
@@ -581,6 +626,10 @@ trusting a shipped-exe run on that host.
 ---
 
 ## 8. Operator hand-off
+
+**Superseded — see §8b.** AC #6 (Task 1 below) has since been run and passed
+(§6.3). The text is retained because it is the record of what was asked and
+what the launcher does.
 
 Two things need Commander at the keyboard. They are independent — either
 order works — and together they are about **35 minutes**. Everything else in
@@ -746,10 +795,11 @@ one, with no error anywhere.
 
 ## 10. File list
 
-### Source (6 files)
+### Source (7 files)
 
 | file | change |
 |---|---|
+| `src/myvoice/services/tts_streaming/streaming_decoder.py` | **§11 fix** — exact splice from the codec's measured geometry, verified per chunk with a loud fallback; decoder-side overlap-add over the previously discarded tail |
 | `src/myvoice/services/tts_streaming/codec_token_streamer.py` | `DEFAULT_CHUNK_SIZE` 25 → 10; the sweep evidence and the retune contract recorded at the constants |
 | `src/myvoice/services/tts_streaming/torch_runtime.py` | geometry params default to `None`, resolved from the streamer module at call time |
 | `src/myvoice/services/model_registry.py` | the call site threads the real geometry through |
@@ -767,6 +817,7 @@ one, with no error anywhere.
 | `tests/unit/services/tts_streaming/test_torch_runtime.py` | +1 resolution row; two window literals derived |
 | `tests/unit/services/tts_streaming/test_codec_token_streamer.py` | +1 committed-geometry row; the defaults row now tests the wiring |
 | `tests/integration/test_streaming_tts_smoke.py` | three literals derived + helper self-check row |
+| `tests/unit/services/tts_streaming/test_streaming_decoder.py` | **§11** — +8 rows on the exact splice, time-contiguity, the blend ramp, the clamp, residual handling, the fallback + telemetry, and the measured constants |
 
 ### Tooling and artifacts
 
@@ -784,11 +835,430 @@ one, with no error anywhere.
 | `_bmad-output/.../20-4-ratio-{long,short}-cs{10,25}.csv` | **new** — the AC #4 raw captures |
 | `_bmad-output/.../20-1-adaptive-cushion-sim.py` | header note: superseded; it no longer reproduces its own `.txt` against current code |
 
+### Added by the §11 seam investigation
+
+| file | purpose |
+|---|---|
+| `_bmad-output/.../20-4-seam-capture.py` | captures the float32 arrays the decoder posts, pre-consumer — the data the output-length model was solved from |
+| `_bmad-output/.../20-4-seam-capture-full.py` | captures `pcm_full`, pre-trim — the redundancy that makes the alignment answerable by cross-correlation |
+| `_bmad-output/.../20-4-seam-analysis.py` | the mechanism analysis: alignment, dropped-span energy, same-token decode divergence, seam-step comparison |
+| `_bmad-output/.../20-4-seam-fix-sweep.py` | the eight-width overlap-add sweep, offline against a fixed take |
+| `_bmad-output/.../20-4-seam-raw/`, `20-4-seam-rawfull/`, `20-4-seam-rawfull-prefix/` | the captures (`-prefix` is the pre-fix baseline retained for the before/after comparison in §11.7) |
+| `_bmad-output/.../20-4-regen-audition-fixture-r2.py` | round-2 fixture builder; preflights the geometry **and** the presence of the fix |
+| `_bmad-output/.../20-4-perceptual-fixtures-r2/` | 14 WAVs + truth table with a `_meta` block naming candidate and reference |
+| `_bmad-output/.../20-4-l1-audition-helper.py` | round-aware; unblinds against `_meta`; round 1 still re-runnable |
+| `12_Story_20.4_AC5_Audition.bat` | defaults to round 2; `L1 r1` re-runs round 1 |
+
 ### Untouched, deliberately
 
+* **The consumer crossfade** (`_DEFAULT_STREAMING_CROSSFADE_SAMPLES = 64`).
+  §11.5 establishes it was never the lever; with the decoder now producing a
+  continuous stream it blends 2.7 ms of genuinely adjacent audio, which is
+  harmless and still masks any residual DC step. Changing it was considered
+  and rejected as out of scope for a defect it does not cause.
+* **The round-1 fixture, truth table and results CSV** — that round is a
+  recorded result, and round 2 reuses its `cs25` files as a calibration
+  anchor.
 * `MAX_PRE_DELAY_SECONDS` (10.0 s) and `max_hold_chunks` (16) — guardrails.
 * `_DEFAULT_STREAMING_WATERMARK_MS` (500) and
   `_DEFAULT_STREAMING_CROSSFADE_SAMPLES` (64) — the ≥16 GiB static path.
 * `DEFAULT_LOOKAHEAD` (5) — held fixed across Story 20.1's whole sweep.
 * The dispatch chain, PORT-b, the qasync call-site audit, and the 0.5 s
   reference-padding lift (Follow-up D) — all out of scope per the story.
+
+---
+
+## §9. AC #5 — NFR3 perceptual audition: **FAILED** (blocking), 2026-09-01
+
+L1 (Commander solo), 7 utterances, blinded A/B, unblinded against
+`_perlistener_truthtable.json`.
+
+| utt | cs25 (old) | cs10 (NEW) | preferred | verdict |
+|---|---|---|---|---|
+| l-020 | click_or_discontinuity | tonal_distortion | cs25 | shared — both arms |
+| l-021 | tonal_distortion | click_or_discontinuity | cs25 | shared — both arms |
+| m-020 | none | **tonal_distortion** | cs25 | **BLOCKING — cs10 only** |
+| m-021 | none | none | equivalent | clean |
+| s-020 | none | none | equivalent | clean |
+| s-021 | none | none | equivalent | clean |
+| s-022 | none | none | equivalent | clean |
+
+**Preference tally: cs25 3 — cs10 0 — equivalent 4.** The new geometry was never
+preferred on any utterance.
+
+### Verdict
+
+**AC #5 fails.** `m-020` carries a tonal-distortion artefact on the committed
+`cs10` geometry that is absent on `cs25`. AC #5 states that any audible
+chunk-boundary artefact is blocking, not a note. `chunk_size = 10` must not
+ship on this evidence.
+
+### A separate, pre-existing finding — not caused by this story
+
+`l-020` and `l-021` show seam artefacts on **both** geometries. Long-form
+generations therefore already carry audible seam defects at the shipped
+`cs25` setting. Story 17.1's audition certified TRUE_STREAM as perceptually
+equivalent to BATCH, but it was not directed at seams specifically; this one
+was, and found them. That is a pre-existing product defect, discovered here
+rather than introduced here, and it warrants its own story.
+
+### Scope note
+
+The clean rows are all short/medium. The defects cluster on the long fixtures
+plus one medium — consistent with a per-seam artefact whose probability of
+being noticed rises with the number of seams, rather than with a constant
+per-chunk defect.
+
+---
+
+## §8b. Operator hand-off — round 2 (the ONLY outstanding task)
+
+**One task, ~10 minutes, listening only.** No GPU work, no app launches, no
+generation. The 14-WAV round-2 fixture is already built and verified.
+
+```
+12_Story_20.4_AC5_Audition.bat
+```
+
+Seven blinded A/B pairs. The helper unblinds and prints the verdict itself;
+hand that block back.
+
+**What to listen for.** Round 1's cause turned out to be a splice bug that
+deleted 15-19 ms of real speech at every chunk boundary — on both geometries.
+That is fixed, and the boundary is now cross-faded rather than butt-spliced.
+So this round asks whether the fix worked. The defect class is unchanged: a
+click or tick partway through a word, a momentary discontinuity in a held
+vowel, prosody that resets mid-phrase.
+
+**What NOT to judge:** timbre, loudness, accent, wording rhythm. The two arms
+are different samples, not one waveform cut two ways.
+
+**Two things worth knowing before you start, because they change how to read
+the result:**
+
+1. **One arm of every pair is round 1's exact `cs25` file.** Not a
+   regeneration — the same bytes you judged last time. If `l-020` and `l-021`
+   draw the same calls again, the session is internally consistent. That is
+   why they were reused, and it is also why the reference arm still carries
+   the splice bug: it is what ships today, and AC #5 asks whether the
+   candidate is clean *against the current build*.
+
+2. **The click is measurably gone; the timbral component is reduced but not
+   eliminated** (§11.7). The fix cross-fades the codec-state mismatch rather
+   than removing it — only carrying codec state across chunks would remove it,
+   and that is out of scope (§11.9). If a *faint* tonal seam is still audible
+   on the long fixtures, that is the known residual, it is present on the
+   reference arm too, and under the AC #5 rule it is a shared finding rather
+   than a blocking one. The helper makes that distinction automatically.
+
+**If round 2 fails**, the fallback is `chunk_size = 15` (Story 20.1 §5.2:
+1,157 ms perceived TTFA versus 1,015 at cs10). §11.8 explains why that is the
+fallback and not the fix.
+
+---
+
+## §11. The seam investigation, and the fix (2026-09-01, after the §9 failure)
+
+Round 1 failed on `m-020` at `chunk_size = 10`, and flagged `l-020` / `l-021`
+on **both** geometries. Two mechanisms were candidates: (a) the consumer
+crossfade in `StreamingChunkBuffer` being too narrow now that seams are 2.5x
+more frequent, or (b) the decoder's overlap-add posting independently decoded
+segments with no codec state carried across the boundary.
+
+**It is neither, quite. It is (b), plus a splice bug nobody had looked for.**
+
+### 11.1 Method — measure the seam, do not reason about it
+
+The fixture WAVs cannot separate the mechanisms: they are already crossfaded,
+so the 64-sample blend has smeared exactly the evidence that distinguishes an
+amplitude step from a spectral mismatch. So the raw signal was captured
+instead, at two points the shipped pipeline never exposes:
+
+| script | what it captures |
+|---|---|
+| `20-4-seam-capture.py` | the float32 arrays `StreamingDecoderWorker` posts, before the int16 cast, the watermark merge, and any crossfade |
+| `20-4-seam-capture-full.py` | `pcm_full` — the decoder's output **before** the lookahead trim |
+
+`pcm_full` is the key. Consecutive chunks decode `lookahead` frames of
+**identical tokens**, so their `pcm_full` arrays contain the same audio twice.
+That redundancy makes the alignment question answerable by cross-correlation
+rather than by argument.
+
+### 11.2 Finding 1 — the codec's real geometry, and a documentation error
+
+Solving the output-length model from posted chunk lengths at two chunk sizes:
+
+```
+decode(N frames) -> 1920 * N - 555 samples
+```
+
+Cross-checked against **14 independent residual-chunk lengths** (residuals are
+posted whole, so each is a free data point): every one is integral under the
+model, none is off by a sample.
+
+Two consequences.
+
+**1920 samples/frame is 12.5 Hz, not 12 Hz.** This codebase's prose has said
+"12 Hz tokenizer" since Story 16.3, and Story 20.1's sweep table computed
+"audio per chunk" as `chunk_size/12`. Every such figure is ~4 % optimistic:
+`chunk_size = 10` carries **800 ms** of audio per chunk, not 833 ms. Nothing
+*behavioural* depended on it — no code used 12 — so this is a documentation
+defect, not a bug. It does not change any conclusion in this file: the
+`chunk_size >= 6` watermark-no-op condition becomes `chunk_size >= 7.5`, and
+10 still clears it.
+
+**There is a fixed 555-sample edge loss per decode call** — convolution edge
+effects the vocoder cannot produce without context beyond the window. This is
+the part that turned out to matter.
+
+### 11.3 Finding 2 — a splice bug: 15-19 ms of speech deleted at every seam
+
+`StreamingDecoderWorker._decode_and_post` computed its trim as
+
+```python
+samples_per_token = len(pcm_full) / len(chunk)      # = 1901.5 at cs25, 1883 at cs10
+trim_samples = int(round(self._lookahead * samples_per_token))
+```
+
+That treats the **fixed** 555-sample loss as if it were **proportional**. The
+resulting posted length falls short of `chunk_size * 1920` by exactly
+`555 * chunk_size/(chunk_size + lookahead)`:
+
+| geometry | posted | correct | deficit |
+|---|---:|---:|---:|
+| `chunk_size = 25` | 47,537 | 48,000 | **463 samples = 19.29 ms** |
+| `chunk_size = 10` | 18,830 | 19,200 | **370 samples = 15.42 ms** |
+
+Cross-correlating consecutive `pcm_full` arrays puts the true splice point at
+exactly `chunk_size * 1920` — measured lag delta of 0 on the high-confidence
+seams, and the constant is independent of how the edge loss splits between
+head and tail, because both decodes lose the same amount.
+
+**So the deficit is real speech, deleted.** Median RMS of the deleted span is
+0.078-0.147 against a whole-utterance RMS of 0.094-0.124 — the same order as
+the utterance's own level — with peaks to 0.57. It is not silence, and it is
+not padding.
+
+This has shipped since Story 16.4. It is why `l-020` and `l-021` were flagged
+at `chunk_size = 25`: the defect was always there, and the round-1 A arm was
+never a clean reference. It is also exactly why the defects scaled with seam
+count, as §9's scope note suspected.
+
+### 11.4 Finding 3 — and a codec-state mismatch underneath it
+
+Where the two chunks decode the **same tokens**, the two decodes differ by a
+median **NRMSE of 0.35** (range 0.21-0.58) at a correlation of 0.93 (range
+0.82-0.98). Same content, same pitch, different fine structure — each decode
+starts from a cold codec state.
+
+That is mechanism (b) in isolation, measured. Alignment cannot touch it.
+
+### 11.5 Task 1's answer: the consumer crossfade is not the lever
+
+Stated plainly, as asked:
+
+* The consumer crossfade is **64 samples = 2.67 ms**.
+* Defect 1 is a **370-sample (15.4 ms) deletion** — 5.8x wider than the entire
+  crossfade. A crossfade cannot bridge a gap almost six times its own width;
+  worse, with the splice bug present the two sides of that blend are 15.4 ms
+  apart *in time*, so widening it cross-fades between two different moments
+  and smears rather than repairs.
+* Defect 2 spans the whole **9,045-sample (377 ms)** shared region — 141x the
+  crossfade width.
+
+A consumer-crossfade sweep would have been aimed at the wrong mechanism, at
+the wrong layer, and would have cost real audio (that blend consumes distinct
+content). **It was not run.**
+
+### 11.6 Task 2, at the right layer: the overlap that was never added
+
+Finding 2's discovery also supplies the fix for Finding 3. `pcm_full` extends
+`lookahead*1920 - 555` = **9,045 samples (377 ms)** past the splice point,
+covering precisely the audio the next chunk re-decodes at its head. The
+shipped code threw it away — the "overlap-add" was an overlap-*discard*.
+
+Retaining it turns the boundary into a real cross-fade **between two
+renditions of the same instant**. Unlike widening the consumer crossfade, this
+consumes no audio and no duration: output length is unchanged, because each
+chunk still advances the stream by exactly `chunk_size * 1920`.
+
+The sweep (`20-4-seam-fix-sweep.py`) re-stitched the captured `pcm_full` at
+eight widths — no GPU per width, and every variant the **same take**, so only
+the stitching varies. Seam metrics are expressed as a multiple of the same
+metric measured at 300 random non-seam positions in the same audio, so 1.00
+means *a seam is statistically indistinguishable from any other point*:
+
+| variant | step (x baseline) cs25 | cs10 | excess spectral cs25 | cs10 |
+|---|---:|---:|---:|---:|
+| shipped | 8.46 | 13.06 | +3.09 dB | +3.39 dB |
+| **alignment only, no OLA** | **18.04** | 12.32 | +4.43 dB | +2.04 dB |
+| aligned + OLA 64 | 1.31 | 1.00 | +4.36 | +1.93 |
+| aligned + OLA 256 | 1.06 | 0.75 | +4.90 | +2.36 |
+| aligned + OLA 512 | 1.19 | 0.97 | +4.52 | +2.03 |
+| **aligned + OLA 1024** | **1.25** | **0.85** | **+0.71** | +1.99 |
+| aligned + OLA 2048 | 1.46 | 0.83 | +1.27 | +1.63 |
+| aligned + OLA 4096 | 1.50 | 0.96 | +1.59 | +1.23 |
+| aligned + OLA 9045 (all of it) | 1.46 | 0.80 | +2.21 | +1.81 |
+
+**Fixing the alignment alone is not enough, and at `chunk_size = 25` it makes
+the click measurably worse** (8.46x -> 18.04x). That is the result that
+settles the design: correcting the splice butts two genuinely different
+waveforms together at the same instant, where before they were at least
+offset. The two fixes are not independent — either alone is worse than both.
+
+**Chosen: `_OVERLAP_ADD_SAMPLES = 1024` (42.7 ms).** The step metric reaches
+the baseline by 64-256; the spectral metric keeps improving to ~1024-4096.
+1024 is the smallest width at the plateau on **both**.
+
+**Its cost, stated as asked.** The blend is free in duration and content, but
+not in every sense: inside the window the signal is the average of two
+decodes, which mildly softens fine structure. That cost scales with the
+fraction of the stream inside a blend — `1024/(10*1920)` = **5.3 %** at
+`chunk_size = 10`, 2.1 % at 25. Taking the whole 9,045-sample budget would put
+47 % of the stream at `chunk_size = 10` inside a blend for no measured gain,
+which is why the smallest sufficient width is the right pick rather than the
+largest.
+
+A **linear** ramp, not equal-power: the two decodes correlate at ~0.93, so
+they add coherently and a linear ramp preserves amplitude, where an
+equal-power ramp would bulge the level mid-blend.
+
+### 11.7 End-to-end verification on the shipped path
+
+Re-captured after the fix. These are the arrays `StreamingDecoderWorker`
+actually handed downstream, not a simulation:
+
+| fixture | posted full-chunk length | seam step before | after | non-seam baseline |
+|---|---|---:|---:|---:|
+| l-020 cs10 | 18,830 -> **19,200 = cs*1920** | 12.31 | **1.32** | 1.00 |
+| l-020 cs25 | 47,537 -> **48,000 = cs*1920** | 8.87 | **0.49** | 0.87 |
+| m-020 cs10 | 18,830 -> **19,200** | 11.83 | **1.24** | 1.03 |
+| m-021 cs10 | 18,830 -> **19,200** | 14.51 | **1.06** | 0.98 |
+
+The click is gone: every seam is now at the non-seam baseline, a ~10x
+reduction.
+
+The spectral picture is **honestly mixed**, and this matters for what round 2
+can be expected to show:
+
+| fixture | seam spectral before | after | baseline |
+|---|---:|---:|---:|
+| m-020 cs10 (the blocking row) | 14.87 dB | **9.60** | 9.26 |
+| l-020 cs10 | 13.62 | **10.16** | 11.00 |
+| m-021 cs10 | 12.84 | 11.63 | 9.56 |
+| l-020 cs25 | 13.37 | 13.06 | 10.77 |
+
+Fully resolved on two of four, improved on the others. That residual is
+mechanism (b) — the crossfade **masks** the codec-state mismatch, it does not
+remove it. Only carrying codec state across chunks would (§11.9).
+
+### 11.8 Task 4: the `chunk_size = 15` retreat is NOT the right move here
+
+Not run, and the reason is not that it would be inconvenient:
+
+**`chunk_size = 15` does not fix the defect. It halves how often you meet it.**
+The splice bug is per-seam and geometry-independent — it is present, and
+measured, at `chunk_size = 25`, which is what ships today. Round 1 flagged
+`l-020` and `l-021` at `cs25`. Retreating to `cs15` would ship a known,
+now-understood, one-line-fixable audio defect at ~1.6x the seam density of the
+current build, and would spend the story's speed win to do it.
+
+`chunk_size = 15` remains available and unchanged in cost if round 2 fails
+(Story 20.1 §5.2: 1,157 ms perceived TTFA versus 1,015 at cs10 and 1,662 at
+cs25). It is the fallback, not the fix.
+
+### 11.9 This reframes Mary's Finding 1 from a speed item to a quality one
+
+The technical research memo
+(`planning-artifacts/research/technical-qwen3-tts-ttfa-optimization-2026-08-31.md`,
+Finding 1 / the Nari technique list) names **codec state caching across
+chunks** as something the reference implementations do and we do not. It was
+filed as a throughput optimisation.
+
+§11.4 measures the cost of not doing it: **every chunk boundary reconciles two
+renditions of the same audio that differ by ~35 % NRMSE.** Story 20.4's fix
+cross-fades that mismatch rather than eliminating it, which is why the
+spectral metric improves without reaching the baseline everywhere (§11.7), and
+why `tonal_distortion` — not `click` — was the defect vocabulary Commander
+reached for on the worst rows.
+
+Recommendation: **re-file Finding 1 as an audio-quality item.** Its case is
+materially stronger than the speed framing suggested, it is the only fix that
+addresses the cause rather than the symptom, and it is well outside this
+story. Fixing it would also let `_OVERLAP_ADD_SAMPLES` shrink or disappear.
+
+### 11.10 What changed, and what it is guarded by
+
+`src/myvoice/services/tts_streaming/streaming_decoder.py` only.
+
+* Two measured constants, `_CODEC_SAMPLES_PER_FRAME = 1920` and
+  `_CODEC_EDGE_LOSS_SAMPLES = 555`, with the derivation recorded at the
+  definition.
+* The splice point is `chunk_size * 1920` when the identity
+  `len(pcm_full) == 1920*frames - 555` holds — **verified on every chunk, not
+  trusted**. If it ever fails the session falls back to the pre-20.4
+  proportional trim with no overlap-add and emits a
+  `decode_geometry_unverified` metric. A codec or pin change therefore
+  degrades to today's behaviour loudly, rather than mis-cutting audio
+  silently, which would be worse than the bug being replaced.
+* The retained tail is cross-faded into the next chunk's head over
+  `_OVERLAP_ADD_SAMPLES`, clamped to the audio the two chunks actually share.
+* The residual chunk is still posted whole **and** still blended — it starts
+  at a seam like any other chunk, and missing it would leave one untreated
+  click per utterance, right before the audio ends.
+
+Eight new rows in `tests/unit/services/tts_streaming/test_streaming_decoder.py`,
+using a `decode_fn` that reproduces the real codec geometry and makes each
+sample's **value its absolute position**, so time-contiguity is asserted
+directly: a dropped span shows as a jump in an arithmetic sequence, a
+duplicated one as a repeat. Rows cover the exact splice (pinning the 370-sample
+delta against the legacy value), contiguity across seams, the blend ramp, the
+clamp, residual handling, the fallback-plus-telemetry path, and the constants
+themselves.
+
+The pre-existing tests still pass **unchanged** and still pin the legacy trim:
+their synthetic `decode_fn` returns one sample per token, which does not
+satisfy the identity, so they exercise the fallback — which is exactly what
+that path is for.
+
+### 11.11 Round-2 audition fixture
+
+`20-4-perceptual-fixtures-r2/`, built by `20-4-regen-audition-fixture-r2.py`.
+
+* **Reference arm = round 1's `cs25` WAVs, copied byte-for-byte.** Commander
+  has already judged those exact files, so his round-1 calls act as a
+  calibration anchor: if `l-020`/`l-021` draw the same calls again, the
+  session is internally consistent. It also leaves round 1's evidence
+  undisturbed.
+* **Reference is deliberately the PRE-FIX stitching** — what ships today. AC
+  #5 asks whether the candidate is free of seam artefacts with the current
+  build as reference; fixing the reference would answer a more academic
+  question.
+* **Candidate arm = `chunk_size = 10` with the fix.**
+* Same 7 utterances, same voice, same machinery, fresh randomisation (a
+  different seed, so a listener who has just done round 1 cannot carry an
+  ordering expectation into round 2).
+* The generator preflights the committed geometry **and** the presence of the
+  fix, so it cannot silently rebuild round 1.
+
+The helper now takes a round argument and reads `candidate`/`reference` from
+the truth table's `_meta` block; round 1 remains re-runnable via
+`12_Story_20.4_AC5_Audition.bat L1 r1`.
+
+### 11.12 Regression status after the fix
+
+| surface | result | vs. the §9.1 baseline |
+|---|---|---|
+| `tests/unit/services` + observability + models | **960 passed, 0 failed** | 953 -> 960 (+7 decoder rows) |
+| `tests/integration` + `test_qwen_tts_internals.py` | 175 passed, **4 failed** | unchanged pre-existing set |
+| `tests/unit/services/tts_streaming/test_streaming_decoder.py` | **44 passed** | 36 -> 44 |
+
+> **A pre-existing cross-suite ordering hazard, found while checking this.**
+> Running `tests/unit/services` and `tests/integration` in ONE pytest
+> invocation produces 5 extra failures in `test_clear_comms_dispatch.py` and
+> `test_clear_comms_d5_invariant.py` that do not occur when either directory
+> is run alone. Verified **pre-existing**: the same 5 fail the same way on the
+> stashed pre-Story-20.4 tree. Every sweep in this file (and in Stories 20.2 /
+> 20.3) runs the surfaces as separate invocations, which is why it had not
+> surfaced. Not this story's to fix; worth a ticket.
+

@@ -1132,3 +1132,301 @@ def test_metrics_record_ttfa_first_decode_complete_only_for_first_chunk(
         "guard must be per-instance"
     )
     assert boundary_all[1]["session_id"] == "def-456"
+
+
+# ============================================================================
+# Story 20.4 — exact splice + decoder-side overlap-add.
+#
+# The pre-20.4 tests above all use ``_make_decoded_pcm``, which returns ONE
+# sample per token. That does not satisfy the codec's output-length identity
+# (``1920*frames - 555``), so those tests exercise the legacy proportional
+# trim — deliberately, and they still pin it, because it is the live
+# fallback for an unrecognised codec geometry.
+#
+# The rows below use a decode_fn that reproduces the REAL codec's geometry,
+# so they cover the path production actually takes.
+# ============================================================================
+
+
+SPF = _streaming_decoder._CODEC_SAMPLES_PER_FRAME
+EDGE = _streaming_decoder._CODEC_EDGE_LOSS_SAMPLES
+
+
+def _codec_like_decode(chunk):
+    """A decode_fn with the real codec's measured output geometry.
+
+    Returns ``1920*N - 555`` samples for N frames, and — importantly for
+    the alignment assertions — makes the sample VALUE a function of the
+    absolute audio position, so two chunks decoding the same moment produce
+    the same value. Token ``t`` stands in for codec frame index ``t``.
+
+    The fixed edge loss is taken off the TAIL here. Which end it actually
+    comes off does not matter to the splice arithmetic (the cross-
+    correlation lag is ``chunk_size*1920`` either way, because both decodes
+    lose the same amount), and this file cannot observe it.
+    """
+    n = len(chunk)
+    first_frame = int(chunk[0])
+    total = SPF * n - EDGE
+    start = first_frame * SPF
+    return np.arange(start, start + total, dtype=np.float32)
+
+
+def _frames(first, count):
+    return list(range(first, first + count))
+
+
+def test_exact_splice_advances_by_chunk_size_frames_of_audio():
+    """Story 20.4 defect 1 — the posted chunk must be cs*1920 samples.
+
+    The pre-20.4 arithmetic posted ``1920*(cs+la) - 555 - round(la*(...)/(cs+la))``
+    = ``cs*1920 - 555*cs/(cs+la)``, i.e. 370 samples short at chunk_size=10.
+    Those samples are real speech, and they were deleted at every seam.
+    """
+    cs, la = 10, 5
+    streamer = _build_streamer(chunk_size=cs, lookahead=la)
+    fake_post = _RecordingPostMutation()
+    streamer.queue.put(_frames(0, cs + la))
+    streamer.queue.put(_frames(cs, cs + la))
+    streamer.queue.put(END_OF_STREAM)
+
+    worker = StreamingDecoderWorker(
+        streamer=streamer, decode_fn=_codec_like_decode,
+        post_mutation=fake_post, session_id="abc-123",
+    )
+    worker.start()
+    worker.join(timeout=5.0)
+
+    posted = [c[2] for c in fake_post.calls if c[0] == "append_chunk"]
+    assert len(posted) == 2
+    assert posted[0].size == cs * SPF == 19200
+    # The pre-20.4 value, pinned so a revert is unmistakable.
+    legacy = (SPF * (cs + la) - EDGE) - round(
+        la * (SPF * (cs + la) - EDGE) / (cs + la)
+    )
+    assert legacy == 18830
+    assert posted[0].size - legacy == 370
+
+
+def test_stitched_stream_is_time_contiguous_across_the_seam():
+    """No audio is dropped or duplicated at a chunk boundary.
+
+    ``_codec_like_decode`` makes each sample's VALUE its absolute position,
+    so a contiguous stitch is an arithmetic sequence with step 1 straight
+    through the seam. A dropped span shows as a jump; a duplicated one as a
+    repeat. This is the property the cross-correlation established on real
+    audio, asserted directly here.
+    """
+    cs, la = 10, 5
+    streamer = _build_streamer(chunk_size=cs, lookahead=la)
+    fake_post = _RecordingPostMutation()
+    for k in range(3):
+        streamer.queue.put(_frames(k * cs, cs + la))
+    streamer.queue.put(END_OF_STREAM)
+
+    worker = StreamingDecoderWorker(
+        streamer=streamer, decode_fn=_codec_like_decode,
+        post_mutation=fake_post, session_id="abc-123",
+    )
+    worker.start()
+    worker.join(timeout=5.0)
+
+    posted = [c[2] for c in fake_post.calls if c[0] == "append_chunk"]
+    stitched = np.concatenate(posted)
+    # Both decodes agree on the shared audio, so the blend is an identity
+    # here and the whole stream must be exactly position-valued.
+    expected = np.arange(stitched.size, dtype=np.float32)
+    # atol is float32-ULP-aware, not slack: at these magnitudes (3e4) one
+    # ULP is ~2e-3 and the blend rounds once. A single dropped or
+    # duplicated sample would show as an error of 1.0 - twenty times this
+    # tolerance - so the assertion still has all its teeth.
+    np.testing.assert_allclose(stitched, expected, rtol=0, atol=0.05)
+
+
+def test_overlap_add_blends_the_previously_discarded_tail():
+    """Story 20.4 defect 2 — the retained tail is cross-faded, not dropped.
+
+    Alignment alone butts two independently-decoded renditions of the same
+    instant together and measurably makes the click WORSE (8.5x -> 18.0x
+    the non-seam baseline at chunk_size=25). The tail this module used to
+    discard is that same instant, decoded with future context, so it is
+    retained and ramped in.
+
+    Here the second chunk's decode is offset by a constant, so the blended
+    head must be a linear ramp between the two renditions rather than
+    either one of them.
+    """
+    cs, la = 10, 5
+    offset = 100.0
+
+    def _offset_decode(chunk):
+        pcm = _codec_like_decode(chunk)
+        # Only the SECOND chunk is offset, so the seam has something to
+        # reconcile.
+        return pcm + offset if int(chunk[0]) == cs else pcm
+
+    streamer = _build_streamer(chunk_size=cs, lookahead=la)
+    fake_post = _RecordingPostMutation()
+    streamer.queue.put(_frames(0, cs + la))
+    streamer.queue.put(_frames(cs, cs + la))
+    streamer.queue.put(END_OF_STREAM)
+
+    worker = StreamingDecoderWorker(
+        streamer=streamer, decode_fn=_offset_decode,
+        post_mutation=fake_post, session_id="abc-123",
+    )
+    worker.start()
+    worker.join(timeout=5.0)
+
+    posted = [c[2] for c in fake_post.calls if c[0] == "append_chunk"]
+    w = _streaming_decoder._OVERLAP_ADD_SAMPLES
+    head = posted[1][:w]
+    base = np.arange(cs * SPF, cs * SPF + w, dtype=np.float32)
+    ramp = np.linspace(0.0, 1.0, w, dtype=np.float32)
+    # previous chunk's rendition = base; this chunk's = base + offset.
+    np.testing.assert_allclose(head, base + offset * ramp, rtol=0, atol=1e-2)
+    # First sample takes the PREVIOUS chunk's value, last takes this one's:
+    # that is what makes the transition continuous with what was already
+    # posted rather than stepping to the new rendition instantly.
+    assert abs(float(head[0]) - float(base[0])) < 1e-2
+    assert abs(float(head[-1]) - float(base[-1] + offset)) < 1e-1
+    # Past the blend the segment is untouched.
+    np.testing.assert_allclose(
+        posted[1][w:w + 5],
+        np.arange(cs * SPF + w, cs * SPF + w + 5, dtype=np.float32) + offset,
+        rtol=0, atol=1e-2,
+    )
+
+
+def test_overlap_add_is_clamped_to_the_audio_the_chunks_actually_share():
+    """The blend can never read past the shared region.
+
+    The two chunks only both cover ``lookahead*1920 - 555`` samples. A
+    larger ``_OVERLAP_ADD_SAMPLES`` must clamp to that rather than reaching
+    into audio the previous chunk never decoded.
+    """
+    cs, la = 10, 5
+    shared = la * SPF - EDGE
+    assert shared == 9045
+    streamer = _build_streamer(chunk_size=cs, lookahead=la)
+    fake_post = _RecordingPostMutation()
+    streamer.queue.put(_frames(0, cs + la))
+    streamer.queue.put(_frames(cs, cs + la))
+    streamer.queue.put(END_OF_STREAM)
+
+    worker = StreamingDecoderWorker(
+        streamer=streamer, decode_fn=_codec_like_decode,
+        post_mutation=fake_post, session_id="abc-123",
+    )
+    # Far wider than the shared region.
+    worker._pending_overlap = None
+    original = _streaming_decoder._OVERLAP_ADD_SAMPLES
+    try:
+        _streaming_decoder._OVERLAP_ADD_SAMPLES = 1_000_000
+        worker.start()
+        worker.join(timeout=5.0)
+    finally:
+        _streaming_decoder._OVERLAP_ADD_SAMPLES = original
+
+    posted = [c[2] for c in fake_post.calls if c[0] == "append_chunk"]
+    assert len(posted) == 2
+    assert posted[0].size == cs * SPF
+    # Still contiguous — the clamp did not corrupt the splice.
+    stitched = np.concatenate(posted)
+    np.testing.assert_allclose(
+        stitched[:cs * SPF + 100],
+        np.arange(cs * SPF + 100, dtype=np.float32), rtol=0, atol=0.05,
+    )
+
+
+def test_residual_chunk_still_posted_whole_and_still_blended():
+    """The residual carries no trim, but it DOES start at a seam.
+
+    Its head covers the same audio the previous full chunk's retained tail
+    does, so it must be blended like any other chunk head. Missing this
+    would leave one un-treated seam per utterance — the last one, right
+    before the audio ends, which is a conspicuous place for a click.
+    """
+    cs, la = 10, 5
+    streamer = _build_streamer(chunk_size=cs, lookahead=la)
+    fake_post = _RecordingPostMutation()
+    streamer.queue.put(_frames(0, cs + la))
+    streamer.queue.put(_frames(cs, 6))          # residual: 6 < cs + la
+    streamer.queue.put(END_OF_STREAM)
+
+    worker = StreamingDecoderWorker(
+        streamer=streamer, decode_fn=_codec_like_decode,
+        post_mutation=fake_post, session_id="abc-123",
+    )
+    worker.start()
+    worker.join(timeout=5.0)
+
+    posted = [c[2] for c in fake_post.calls if c[0] == "append_chunk"]
+    assert len(posted) == 2
+    assert posted[0].size == cs * SPF
+    assert posted[1].size == SPF * 6 - EDGE      # posted whole, no trim
+    stitched = np.concatenate(posted)
+    np.testing.assert_allclose(
+        stitched, np.arange(stitched.size, dtype=np.float32),
+        rtol=0, atol=0.05,
+    )
+
+
+def test_unrecognised_codec_geometry_falls_back_and_says_so(monkeypatch):
+    """A codec/pin change must degrade to the old behaviour LOUDLY.
+
+    The exact splice is only correct while ``decode(N) == 1920*N - 555``.
+    If that identity ever stops holding, computing a splice from it would
+    mis-cut every chunk — silently, and worse than the bug this replaces.
+    So the identity is verified per chunk, and its failure drops the
+    session to the pre-20.4 proportional trim with a metric.
+    """
+    cs, la = 4, 2
+    streamer = _build_streamer(chunk_size=cs, lookahead=la)
+    fake_post = _RecordingPostMutation()
+    recorder = _RecordingMetrics()
+    monkeypatch.setattr("myvoice.observability.metrics.record", recorder)
+
+    streamer.queue.put([1, 2, 3, 4, 5, 6])
+    streamer.queue.put([5, 6, 7, 8, 9, 10])
+    streamer.queue.put(END_OF_STREAM)
+
+    worker = StreamingDecoderWorker(
+        streamer=streamer,
+        decode_fn=_make_decoded_pcm,   # one sample per token: identity fails
+        post_mutation=fake_post, session_id="abc-123",
+    )
+    worker.start()
+    worker.join(timeout=5.0)
+
+    posted = [c[2] for c in fake_post.calls if c[0] == "append_chunk"]
+    # Legacy proportional trim: 6 samples - round(2*6/6) = 4.
+    assert [p.size for p in posted] == [4, 4]
+
+    names = [c["metric_name"] for c in recorder.calls]
+    assert "decode_geometry_unverified" in names, (
+        "an unrecognised codec geometry must be visible in telemetry, not "
+        "silently absorbed"
+    )
+    # And exactly once per session, not once per chunk.
+    assert names.count("decode_geometry_unverified") == 1
+
+
+def test_codec_geometry_constants_match_the_measured_model():
+    """Pin the two measured numbers and the invariants that depend on them.
+
+    ``1920`` samples/frame is 12.5 Hz, not the 12 Hz this codebase's prose
+    assumed from Story 16.3 to Story 20.3. Both constants were solved from
+    posted chunk lengths and cross-checked against 14 residual lengths
+    (``20-4-seam-analysis.py``). A change to either without re-running that
+    measurement is a silent audio-quality regression.
+    """
+    assert SPF == 1920
+    assert EDGE == 555
+    assert 24000 / SPF == 12.5
+    # The overlap-add width must fit the audio two chunks actually share at
+    # the committed lookahead, or the blend would be clamped and the swept
+    # value would not be the value in effect.
+    from myvoice.services.tts_streaming import codec_token_streamer
+    shared = codec_token_streamer.DEFAULT_LOOKAHEAD * SPF - EDGE
+    assert _streaming_decoder._OVERLAP_ADD_SAMPLES <= shared

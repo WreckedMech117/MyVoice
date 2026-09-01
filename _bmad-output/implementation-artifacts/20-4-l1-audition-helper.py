@@ -1,11 +1,27 @@
 """Story 20.4 AC #5 - NFR3 perceptual audition helper (Windows-only).
 
-Walks Commander through a blinded A/B audition of the chunk-size retune, on
-the fixture ``20-4-regen-audition-fixture.py`` produces. Seven utterances,
-three short / two medium / two long, all on the CLONED Sarira-F voice, all
-rendered through the production TRUE_STREAM path so the streamer's chunk
-boundaries, the decoder's overlap-add and the consumer's crossfade are all
-in the signal.
+Walks Commander through a blinded A/B audition of the chunk-size retune.
+Seven utterances, three short / two medium / two long, all on the CLONED
+Sarira-F voice, all rendered through the production TRUE_STREAM path so the
+streamer's chunk boundaries, the decoder's overlap-add and the consumer's
+crossfade are all in the signal.
+
+ROUNDS
+------
+Round 1 (``20-4-perceptual-fixtures/``) FAILED: m-020 was clean at
+chunk_size=25 and carried ``tonal_distortion`` at chunk_size=10. Its
+fixture, truth table and results CSV are preserved unchanged - that round
+is a recorded result, and round 2 reuses its cs25 files verbatim as the
+reference arm so the two rounds share a calibration anchor.
+
+Round 2 (``20-4-perceptual-fixtures-r2/``, the default) auditions the seam
+fix: the reference arm is chunk_size=25 with the shipped pre-fix stitching,
+the candidate arm is chunk_size=10 with the fix. Which side of each pair is
+which is recorded in the truth table's ``_meta`` block, and the helper only
+consults it when unblinding at the end.
+
+Pass a round as the second CLI argument (``r1``/``r2``) to re-run an
+earlier round.
 
 Commander solo is the protocol AC #5 specifies - it mirrors the Story
 18.1 / 18.2 discipline, not Story 17.1's three-listener packet. This
@@ -44,9 +60,24 @@ import winsound
 from pathlib import Path
 
 ARTIFACTS_DIR = Path(__file__).resolve().parent
-FIXTURE_DIR = ARTIFACTS_DIR / "20-4-perceptual-fixtures"
-TRUTH_TABLE_PATH = FIXTURE_DIR / "_perlistener_truthtable.json"
-CANONICAL_CSV = ARTIFACTS_DIR / "20-4-chunk-retune-audition.csv"
+
+# Round -> (fixture dir, results CSV). Round 1's entries are frozen: its
+# result is recorded in the Story 20.4 evidence file and must stay
+# reproducible.
+ROUNDS = {
+    "r1": ("20-4-perceptual-fixtures", "20-4-chunk-retune-audition.csv"),
+    "r2": ("20-4-perceptual-fixtures-r2", "20-4-chunk-retune-audition-r2.csv"),
+}
+DEFAULT_ROUND = "r2"
+
+# Fallback for round 1, whose truth table predates the ``_meta`` block.
+_LEGACY_META = {
+    "round": 1,
+    "candidate": "cs10",
+    "reference": "cs25",
+    "candidate_desc": "chunk_size=10 (pre-fix stitching)",
+    "reference_desc": "chunk_size=25 (pre-fix stitching)",
+}
 
 # Story 17.1's controlled vocabulary, with the two entries this story's
 # defect class needs made explicit. ``audible_seam`` remains the primary
@@ -118,7 +149,7 @@ def _existing_rows_for_listener(listener_id: str):
     return seen
 
 
-def _verdict(listener_id: str, truth) -> None:
+def _verdict(listener_id: str, truth, meta) -> None:
     """Unblind and print the verdict once every utterance is recorded."""
     if not CANONICAL_CSV.exists():
         return
@@ -128,9 +159,12 @@ def _verdict(listener_id: str, truth) -> None:
     ]
     if not rows:
         return
+    cand, ref = meta["candidate"], meta["reference"]
     print("\n=== UNBLINDED VERDICT ===")
-    blocking = []
-    shared = []
+    print("  candidate = {} ({})".format(cand, meta.get("candidate_desc", "")))
+    print("  reference = {} ({})".format(ref, meta.get("reference_desc", "")))
+    print()
+    blocking, shared = [], []
     for row in rows:
         utt = row["utterance_id"]
         entry = truth[listener_id].get(utt)
@@ -140,46 +174,54 @@ def _verdict(listener_id: str, truth) -> None:
             entry["trial_A_geometry"]: row["a_defects_observed"],
             entry["trial_B_geometry"]: row["b_defects_observed"],
         }
-        cs10, cs25 = by_geom.get("cs10", "none"), by_geom.get("cs25", "none")
-        print("  {:<7} cs25(pre-20.4)={:<24} cs10(committed)={}".format(
-            utt, cs25, cs10))
-        if cs10 in BLOCKING_DEFECTS:
-            (shared if cs25 in BLOCKING_DEFECTS else blocking).append(
-                (utt, cs10, cs25)
-            )
+        c, r_ = by_geom.get(cand, "none"), by_geom.get(ref, "none")
+        print("  {:<7} reference={:<26} candidate={}".format(utt, r_, c))
+        if c in BLOCKING_DEFECTS:
+            (shared if r_ in BLOCKING_DEFECTS else blocking).append((utt, c, r_))
     print()
     if blocking:
-        print("  VERDICT: FAIL - chunk-boundary defect on the COMMITTED")
-        print("  geometry that the pre-20.4 geometry does not carry:")
-        for utt, cs10, cs25 in blocking:
-            print("    {}: cs10={} vs cs25={}".format(utt, cs10, cs25))
+        print("  VERDICT: FAIL - chunk-boundary defect on the CANDIDATE that")
+        print("  the reference does not carry:")
+        for utt, c, r_ in blocking:
+            print("    {}: candidate={} vs reference={}".format(utt, c, r_))
         print("  AC #5 makes this BLOCKING. Do not close the story.")
     elif shared:
         print("  VERDICT: PASS with a pre-existing finding.")
-        print("  These utterances carry the same defect class on BOTH")
-        print("  geometries, so it predates Story 20.4 - record it, raise it")
-        print("  separately, do not block on it:")
-        for utt, cs10, cs25 in shared:
-            print("    {}: cs10={} cs25={}".format(utt, cs10, cs25))
+        print("  These utterances carry the same defect class on BOTH arms,")
+        print("  so it is not something this change introduced - record it,")
+        print("  raise it separately, do not block on it:")
+        for utt, c, r_ in shared:
+            print("    {}: candidate={} reference={}".format(utt, c, r_))
     else:
         print("  VERDICT: PASS - no chunk-boundary defect flagged on the")
-        print("  committed geometry across {} utterances.".format(len(rows)))
+        print("  candidate across {} utterances.".format(len(rows)))
     prefs = [r["a_or_b_preferred"] for r in rows]
     print("\n  Preference tally (blinded labels): " + ", ".join(
         "{}={}".format(p, prefs.count(p)) for p in PREFERENCE_VOCAB))
     print("  (Preference is informational. The gate is the defect column.)")
 
 
-def main(listener_id: str) -> int:
-    if not TRUTH_TABLE_PATH.exists():
-        print("FATAL: truth-table not found at {}".format(TRUTH_TABLE_PATH),
-              file=sys.stderr)
-        print("Run 20-4-regen-audition-fixture.py first.", file=sys.stderr)
+def main(listener_id: str, round_id: str = DEFAULT_ROUND) -> int:
+    global FIXTURE_DIR, CANONICAL_CSV
+    if round_id not in ROUNDS:
+        print("FATAL: unknown round {!r}; known: {}".format(
+            round_id, sorted(ROUNDS)), file=sys.stderr)
         return 2
-    truth = json.loads(TRUTH_TABLE_PATH.read_text(encoding="utf-8"))
+    fixture_name, csv_name = ROUNDS[round_id]
+    FIXTURE_DIR = ARTIFACTS_DIR / fixture_name
+    CANONICAL_CSV = ARTIFACTS_DIR / csv_name
+    truth_path = FIXTURE_DIR / "_perlistener_truthtable.json"
+
+    if not truth_path.exists():
+        print("FATAL: truth-table not found at {}".format(truth_path),
+              file=sys.stderr)
+        print("Run 20-4-regen-audition-fixture-r2.py first.", file=sys.stderr)
+        return 2
+    truth = json.loads(truth_path.read_text(encoding="utf-8"))
+    meta = truth.get("_meta", _LEGACY_META)
     if listener_id not in truth:
         print("FATAL: listener_id {!r} not in truth-table. Known: {}".format(
-            listener_id, sorted(truth)), file=sys.stderr)
+            listener_id, [k for k in truth if k != "_meta"]), file=sys.stderr)
         return 2
 
     listener_block = truth[listener_id]
@@ -187,16 +229,19 @@ def main(listener_id: str) -> int:
     already_done = _existing_rows_for_listener(listener_id)
 
     print()
-    print("=== Story 20.4 chunk-size retune audition ===")
+    print("=== Story 20.4 chunk-size retune audition - round {} ===".format(
+        meta.get("round", "?")))
     print("Listener id: {}".format(listener_id))
     print("Total utterances: {}".format(len(order)))
     if already_done:
         print("Already recorded: {} -- will skip.".format(sorted(already_done)))
     print()
     print("What you are listening FOR:")
-    print("  This change moves the streamer's chunk boundary from 30 frames")
-    print("  to 15, so every generation is stitched together from twice as")
-    print("  many pieces. The defect class is therefore at the SEAMS:")
+    print("  Round 1 found seam defects, and the cause turned out to be a")
+    print("  splice bug: every chunk boundary was deleting 15-19 ms of real")
+    print("  speech, on BOTH geometries. That is fixed, and the boundary is")
+    print("  now cross-faded rather than butt-spliced. So this round asks")
+    print("  whether the fix worked. The defect class is still at the SEAMS:")
     print("    - a click or tick partway through a word")
     print("    - a momentary discontinuity or 'stutter' in a held vowel")
     print("    - prosody that resets mid-phrase, as if two takes were cut")
@@ -251,9 +296,12 @@ def main(listener_id: str) -> int:
             print("  recorded.")
 
     print("\nAll rows recorded -> {}".format(CANONICAL_CSV))
-    _verdict(listener_id, truth)
+    _verdict(listener_id, truth, meta)
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1] if len(sys.argv) > 1 else "L1"))
+    raise SystemExit(main(
+        sys.argv[1] if len(sys.argv) > 1 else "L1",
+        sys.argv[2] if len(sys.argv) > 2 else DEFAULT_ROUND,
+    ))
