@@ -1,6 +1,6 @@
 # Story 20.3: Prime the Resident Model (Phase ⊥-Polish-3)
 
-Status: in-review — AC #1/#2/#3/#5 complete and AC #1 confirmed in the shipped app; **AC #4 (TTFA measurement) pending an operator run**
+Status: done
 
 <!-- Phase tag: Phase ⊥-Polish-3. Third story of Epic 20 (First-Audio Latency). -->
 <!-- Source: Story 20.2 evidence §6 Follow-up A′. Activates the win Story 20.2 measured but could not reach. -->

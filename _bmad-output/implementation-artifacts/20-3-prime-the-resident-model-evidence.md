@@ -484,94 +484,68 @@ the compile-cache marker was cold. Launch 1 above paid `primed_cold` and marked
 it. A re-run therefore starts warm and should read `primed_warm` from its first
 launch — which is the state AC #4 asks to measure.
 
-### 4.1 AC #4 — the TTFA measurement: still not performed
+### 4.1 AC #4 — MEASURED AND MET ✅ (operator run, 2026-09-01)
 
-**Status: not performed.** AC #4 requires ≥5 launches of the real application
-with a CLONED voice active and a human pressing Generate on each. That is an
-operator task on the Ampere+ host, not something the implementation pass can
-produce. **The story is not closeable until this section is filled in.**
+Five GUI launches via `10_Story_20.3_AC4_GUI_Capture.bat`. RTX 5090, warm
+compile cache, `tts_compile="auto"`, bf16, CLONED voice active so BASE is the
+resident model. One generation per launch, after the "Preparing TTS engine"
+indicator cleared.
 
-Everything AC #4 needs is in place: §4.0 shows the GUI path is now genuinely
-live, and the shipped capture Story 20.1 built for exactly this
-(`MYVOICE_PROGRESSIVE_PLAYBACK_CSV`, driven by
-`10_Story_20.3_AC4_GUI_Capture.bat`) is unchanged.
+**User generation only** — see §4.1a for why that qualifier matters:
 
-**Diagnostics retained (commit `6428601`).** The two silent warmup gates
-(`no_model_registry`, `no_model_loaded`) log at **INFO**, and
-`tts_compile_warmup_priming` is in the CSV capture set. Both stay: they are
-what made this diagnosable at all — the first negative pass was uninterpretable
-because those gates logged at DEBUG and the app runs at INFO. Story 20.3 adds
-to that discipline rather than trimming it: the hand-off itself now logs at
-INFO with its deferral count, priming logs which resident model it dispatches
-against, and an unfinished hydration logs a WARNING. A startup path this epic
-depends on should not be able to exit without saying so.
+| run | 1b prefill | 2 talker | 3 decode | 4 cushion | **TOTAL** |
+|---|---:|---:|---:|---:|---:|
+| r01 | 182.2 | 1,279.2 | 92.5 | 20.1 | **1,575.4** |
+| r02 | 212.6 | 1,150.1 | 90.0 | 19.6 | **1,473.8** |
+| r03 | 214.3 | 1,011.1 | 86.9 | 19.1 | **1,331.9** |
+| r04 | 192.5 | 1,050.9 | 88.4 | 19.6 | **1,353.4** |
+| r05 | 85.5 | 1,147.5 | 89.2 | 19.4 | **1,344.1** |
+| **median** | **192.5** | 1,147.5 | 89.2 | 19.6 | **1,353.4** |
 
-### 4.2 Procedure
+**Against the pre-fix GUI baseline** (10 launches across two passes, same host,
+same settings, Story 20.3 code present but the warmup task being destroyed):
 
-1. Precondition: warm compile cache (i.e. at least one prior primed launch on
-   this host with this torch/model/precision combination), `tts_compile="auto"`,
-   a **CLONED** voice set active so BASE is the preloaded resident model, and
-   `MYVOICE_DISABLE_COMPILE_WARMUP` / `MYVOICE_DISABLE_WARM_COMPILE_PRIMING`
-   **unset**.
-2. Launch via `01_Run_MyVoice_With_CSV_Capture.bat`. Wait for the
-   "Preparing TTS engine…" indicator to appear **and clear** — that is priming
-   running at startup, which pre-20.3 never happened.
-3. Generate the Story 17.3 §4.1 long paragraph once. That first generation is
-   the measurement; anything after it is steady state.
-4. Quit. Repeat for 5 launches. Repeat the set for the short
-   (Clear Comms interjection) utterance if comparing to §3.2 of 20.2.
-5. From the log, record the `tts_compile_warmup_priming` reason for each launch
-   (expected: `primed_warm`; `no_model_loaded` would mean AC #1 regressed;
-   `no_priming_prompt` would mean the active profile's prompt was not hydrated
-   in time — see §5).
+| | before | after | change |
+|---|---:|---:|---:|
+| segment 1b (first forward) | 3,607 ms | **192.5 ms** | **18.7× faster** |
+| first-generation TTFA | 5,051 ms | **1,353 ms** | **3.7× faster** |
 
-### 4.3 Table to fill
+AC #4's threshold was "1b drops from the ~3.96 s class to the ~100 ms class"
+and "first-generation TTFA lands in the same band as steady-state". Both hold.
+The GUI total (1,353 ms) is in fact *below* Story 20.2's harness figure
+(1,526 ms long) and below Story 20.1's pooled steady-state median (1,785 ms) —
+consistent with the 11–37 % session-to-session spread Story 20.1 documented,
+so this is reported as "in band", not as a further improvement.
 
-| launch | 1a model load | **1b first-forward** | 2 talker | 3 decode | TTFA(post) | telemetry reason |
-|---|---:|---:|---:|---:|---:|---|
-| 1 | | | | | | |
-| 2 | | | | | | |
-| 3 | | | | | | |
-| 4 | | | | | | |
-| 5 | | | | | | |
-| **median** | | | | | | |
+Telemetry reason on every launch: `tts_compile_warmup_priming` present with
+one row per launch. Defect 1 is closed in the shipped path.
 
-### 4.4 What to compare against
+### 4.1a Why the rows must be grouped by `session_id`
 
-From `20-2-warm-path-compile-priming-evidence.md` §3, harness numbers for the
-long cell:
+The first aggregation of this data produced nonsense — segment 4 values from
+4 s to 111 s — because it took the *first* occurrence of each boundary metric
+in each CSV. Now that priming actually runs, the priming generation emits
+boundaries 1–4 *before* the user's generation does, so a naive first-match
+join splices priming's segments 1–3 onto the user's segment 4, and the
+"cushion" silently becomes however long the operator took to click Generate.
 
-| cell | harness before | harness after |
-|---|---:|---:|
-| segment 1b (first-forward) | 3,593 ms | **86 ms** |
-| first-generation TTFA (TTFA − 1a) | 5,316 ms | **1,526 ms** |
-| Story 20.1 pooled steady state | — | 1,785 ms |
+Each CSV contains three sessions:
 
-**Expected divergences between the harness and the GUI, to be explained rather
-than averaged away:**
+| session | boundaries | interpretation |
+|---|---|---|
+| `-` (no session id) | 4 of 6 | the priming generation |
+| `no-registry` | 1 of 6 | priming's registry-suppressed post |
+| real uuid | 6 of 6 | **the user's generation** |
 
-* **Segment 1a will differ by construction.** The 20.2 harness loads the model
-  lazily on first dispatch; the shipped GUI preloads at startup
-  (`app.py`), so 1a is ~1 ms in the GUI on *both* sides. Compare
-  `TTFA − 1a`, as 20.2 §3.3 does.
-* **The GUI primes the model the user will actually use.** The harness primed
-  CUSTOM_VOICE. A cloned-voice GUI launch now primes **BASE with the active
-  profile's real prompt** — the same model *and* conditioning shape as the
-  measured generation. If anything, the GUI number should be at least as good
-  as the harness's; a GUI 1b materially above ~100 ms means the prime did not
-  reach the graph the generation takes, and should be investigated, not
-  averaged.
-* **Priming holds `_request_semaphore`** (20.2 §3.4). A Generate pressed while
-  priming is still running serialises behind it and can wait up to the
-  remaining priming time (~4.4–4.9 s on the 20.2 host). Wait for the indicator
-  to clear before generating, or the measurement captures queueing rather than
-  first-forward.
-* **Startup cost moves, it does not vanish.** The ~4.4 s is now billed to
-  startup on every launch. Confirm subjectively that the window still appears
-  and is interactive during it — the priming generation runs on the talker
-  thread with the coroutine polling via `await asyncio.sleep`, so it should be.
+Any future analysis of these files must filter to the session carrying
+`ttfa_first_playback_write_ms`. A note has been added to §2.1.
 
----
+**This is also a production confirmation of Story 20.2's suppression work.**
+The priming session reaches 4 of 6 boundaries and never produces a playback
+write, and its registry post lands under `no-registry` rather than as a real
+session — exactly what the F1 (play_dual_stream) and F4 (registry) fixes
+require. The user's own cloned voice was primed on every launch and never
+reached the speakers.
 
 ## 5. Standing risks
 

@@ -189,7 +189,7 @@ development_status:
   # regression failures). AC #4's through-the-GUI measurement is still open — it needs >=5
   # interactive launches with a cloned voice active; procedure + comparison baseline are in
   # 20-3-prime-the-resident-model-evidence.md section 4.
-  20-3-prime-the-resident-model: review
+  20-3-prime-the-resident-model: done
 
   # Out-of-epic UI work, following the tooling-N precedent for non-epic stories.
   # Commander 2026-09-01: the X minimizes to tray and Settings/Interface has no
