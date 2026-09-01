@@ -1,6 +1,6 @@
 # Story 20.5: Codec State Caching Across Chunks (Phase ⊥-Polish-3)
 
-Status: ready-for-dev
+Status: **AT THE GATE** — Phase 1 complete, verdict **GO** on both stated thresholds (2026-09-01). Phases 2–3 await Commander approval; not self-authorised.
 
 <!-- Phase tag: Phase ⊥-Polish-3. Fifth story of Epic 20. -->
 <!-- Source: Mary's research Finding 1 (re-filed as audio-quality per 20-4 evidence §11.9); Story 20.4 §11/§13/§17. -->
@@ -148,8 +148,8 @@ pre-existing failures are unchanged in count and identity
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Phase 1 bench** (AC: #1, #2) — chunked-with-state vs whole-sequence, error attributed per sub-stack, cost and CUDA-graph interaction reported. **No `src/` changes.**
-- [ ] **Task 2 — GATE.** Report to Commander. Stop.
+- [x] **Task 1 — Phase 1 bench** (AC: #1, #2) — chunked-with-state vs whole-sequence, error attributed per sub-stack, cost and CUDA-graph interaction reported. **No `src/` changes.** ✅ `git diff --stat -- src/` empty.
+- [x] **Task 2 — GATE.** Reported. **Stopped.** Verdict GO; Phase 2 not begun.
 - [ ] **Task 3 — Phase 2** (AC: #3), gated.
 - [ ] **Task 4 — Phase 3 audition prep** (AC: #4), gated.
 - [ ] **Task 5 — Regression** (AC: #6).
@@ -201,8 +201,72 @@ was built for a retune that did not ship, and this would be its real justificati
 
 ## Dev Agent Record
 
-_(to be filled by dev agent)_
+### Phase 1 result — 2026-09-01 (RTX 5090, bf16 shipping precision, 25-frame chunks)
+
+Full evidence: `20-5-codec-state-caching-evidence.md`. Bench: `20-5-state-cache-bench.py`;
+stage-attribution probe: `20-5-stage-probe.py`; run log: `20-5-bench-run03.log`.
+
+**AC #1 — GO on both thresholds.**
+
+| | ships today (INDEP) | state carried | threshold |
+|---|---|---|---|
+| edge loss | `1920·N − 555` per chunk (−4,995 over l-020's 9 seams) | **`1920·N`, +0 samples vs whole-sequence** | zero → met |
+| head NRMSE (1024 samples, median over seams) | 115–144 % | **0.56–0.82 %** (fp32: 0.03–0.05 %) | < ~5 % → met |
+| correlation, first 1024 samples | 0.165–0.959 med / 0.009 min | **1.0000 med / 0.9916 min** | vs 0.55 / 0.11 |
+| lag jitter | −1200 … +1165 samples | **0 samples, every seam** | vs ±35 |
+
+Error-by-position is **flat** under carried state (0.014 / 0.009 / 0.007 / 0.008 / 0.010 / 0.011
+across 0–8192 samples), not head-weighted — Story 20.4's cold-start signature is removed, not reduced.
+With TF32 disabled in fp32 the streaming decode is **bit-exact** against `decoder(codes)`
+(final-output NRMSE 7.7e-07, every intermediate stage ≤ 2.6e-06). The 0.8 % bf16 residual
+enters at the transformer stage and is rounding, not mechanism.
+
+**Per-sub-stack attribution.** Full 2³ ablation (head NRMSE, l-020): none 1.440 · conv 1.567 ·
+tconv 1.036 · transformer 1.420 · conv+tconv 0.244 · conv+xf 1.542 · tconv+xf 0.931 · **all 0.008**.
+The 555-sample edge loss is **100 % transposed conv** — every arm carrying tconv state reaches +0,
+every arm without it stays at −555/seam. Leave-one-out cost from the full arm: tconv largest
+(→1.54), then causal conv (→0.93), then the KV cache (→0.24). All three necessary, none sufficient.
+Transformer isolated at latent level: no-cache 0.300 vs KV-cached 5.8e-03 (bf16) / 1.8e-04 (fp32).
+
+**AC #2 — cost.** 37 tensors, **≤ 2.52 MiB per session** in bf16 (21 conv/tconv buffers = 276 KiB;
+KV cache 2.25 MiB, **self-bounded** because all 8 layers are `sliding_attention` window 72 —
+measured 2.22 MiB at 231 frames, constant in utterance length). Strictly **per session**: one plain
+state object, no module- or class-level storage, so concurrent HTTP-API generations are safe.
+Decode time **does not regress** — carried state measured 21–30 % *faster* per chunk
+(3.4–5.1 ms), partly from skipping `F.pad` and a `Module.__call__` layer.
+Expressible as a **wrapper** (~130 lines re-walking `Decoder.forward`, calling the loaded
+submodules' inner `nn.Conv1d`/`nn.ConvTranspose1d`) — **no vendoring**. This is a story, not an
+architecture pass. A monkey-patch would be process-global and is ruled out by the per-session rule.
+
+**CUDA-graph interaction — the feared trade does not exist.** On the loaded model
+`_compiled_forward` is set (`reduce-overhead`) but `_cuda_graph` is `None`, and the production
+TRUE_STREAM path never reaches `forward_optimized`: `_build_true_stream_decode_fn` →
+`speech_tokenizer.decode` → `Qwen3TTSTokenizerV2Model.decode` → `chunked_decode` → plain
+`forward`. The compiled decoder graph is **not on our decode path today**; Story 18.4's win comes
+from the talker/code-predictor compiles. Nothing is traded away. Carried state is in fact *more*
+graph-friendly (every chunk after the first is a single static 25-frame → 48,000-sample shape).
+D-25 stays decorative, per Story 20.1 §5.4.
+
+**One correctness trap Phase 2 must carry.** `nn.ConvTranspose1d` adds its bias to every output
+position of each partial convolution, so a naive overlap-add **double-counts it**. Uncorrected it
+leaves a bias-shaped transient decaying over ~2,000 samples that survives an fp32 pass and reads
+as a 17–21 % residual cold start — i.e. it looks exactly like NO-GO. Subtracting one copy of
+`conv.bias` in the overlap region is what makes the result bit-exact. Localised with
+`20-5-stage-probe.py` to `decoder[1].block[1]`, the first stride-8 transposed conv.
+
+**Scoping inputs for Phase 2** (evidence §4, not authorisations): the 5-frame lookahead and the
+post-decode trim may both become unnecessary — which is also a TTFA effect (first chunk at 25
+talker steps instead of 30) and is *not* a chunk-size retune; the Story 20.4 seam blend **and**
+the 64-sample `StreamingChunkBuffer` crossfade both become suspect together and both need
+evidence rather than assumption; Phase 2 can assert correctness **exactly** (single-chunk ==
+`forward` bit-for-bit; fp32 chunked == whole to ~1e-06) rather than statistically; and a
+trip-wire extension in `tests/test_qwen_tts_internals.py` should pin the module chain the
+wrapper walks.
+
+**AC #1 "no production code modified" — verified.** `git diff --stat -- src/` empty;
+`git status --porcelain -- src/ tests/ tools/ build_tools/` empty.
 
 ## Change Log
 
+- 2026-09-01 — Phase 1 executed. Bench + stage probe built and run on RTX 5090. Verdict **GO**: the 555-sample edge loss reaches zero exactly, head NRMSE falls 115–144 % → 0.56–0.82 % (bit-exact in fp32 with TF32 off), lag jitter ±1200 → 0, cost ≤ 2.52 MiB/session with no decode-time regression, expressible as a wrapper, and no CUDA-graph trade because the compiled decoder graph is not on the production decode path. Stopped at the gate per the story's phase rule; Phase 2 not begun.
 - 2026-09-01 — Drafted by Winston after Story 20.4 closed the chunk-size question at `cs25` and named this as the thing that would reopen it. Phase-gated deliberately: the mechanism is understood but the reachable state may not determine the output, and that is answerable on a bench for a fraction of the cost of finding out in the dispatch chain.

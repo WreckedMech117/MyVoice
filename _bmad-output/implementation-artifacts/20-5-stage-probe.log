@@ -1,0 +1,95 @@
+'sox' is not recognized as an internal or external command,
+operable program or batch file.
+SoX could not be found!
+
+    If you do not have SoX, proceed here:
+     - - - http://sox.sourceforge.net/ - - -
+
+    If you do (or think that you should) have SoX, double-check your
+    path variables.
+    
+`torch_dtype` is deprecated! Use `dtype` instead!
+
+********
+Warning: flash-attn is not installed. Will only run the manual PyTorch version. Please install flash-attn for faster inference.
+********
+ 
+Fetching 4 files:   0%|          | 0/4 [00:00<?, ?it/s]Fetching 4 files: 100%|##########| 4/4 [00:00<?, ?it/s]
+[Tokenizer] Enabling streaming optimizations...
+  use_compile=True, compile_mode=reduce-overhead
+  use_cuda_graphs=True (manual)
+[Decoder] Compiling forward with mode=reduce-overhead, backend=inductor...
+[Decoder] Note: mode='reduce-overhead' includes CUDA graphs automatically
+[Decoder] Compilation complete
+[Tokenizer] Note: compile_mode='reduce-overhead' already includes CUDA graphs
+[Tokenizer] Manual CUDA graph capture skipped (not needed)
+[CodePredictor] Compiling model with mode=reduce-overhead...
+==============================================================================
+Story 20.5 stage probe -- l-020 (231 frames)
+==============================================================================
+
+  bf16 (shipping) -- stage divergence (streaming-chunked vs whole)
+  stage                       len whole  len chunk    NRMSE all   NRMSE head
+  00 pre_conv_out                   231        231    2.634e-05    0.000e+00
+  01 pre_transformer_out            231        231    5.793e-03    5.647e-03  <== JUMP
+  02 up.0.0                         462        462    5.450e-03    5.337e-03
+  02 up.0.1                         462        462    7.912e-03    7.716e-03
+  02 up.1.0                         924        924    6.824e-03    6.501e-03
+  02 up.1.1                         924        924    9.167e-03    8.199e-03
+  03 dec.0                          924        924    5.337e-03    4.864e-03
+  03 dec.1.block.0                  924        924    7.400e-03    7.045e-03
+  03 dec.1.block.1                 7384       7384    4.803e-02    2.263e-01  <== JUMP
+  03 dec.1.block.2                 7384       7384    4.449e-02    2.044e-01
+  03 dec.1.block.3                 7384       7384    5.652e-02    2.606e-01
+  03 dec.1.block.4                 7384       7384    6.507e-02    2.780e-01
+  03 dec.2.block.0                 7384       7384    7.335e-02    3.347e-01
+  03 dec.2.block.1                36915      36915    3.411e-02    1.505e-01
+  03 dec.2.block.2                36915      36915    4.042e-02    1.657e-01
+  03 dec.2.block.3                36915      36915    4.774e-02    1.975e-01
+  03 dec.2.block.4                36915      36915    4.932e-02    2.119e-01
+  03 dec.3.block.0                36915      36915    5.953e-02    2.537e-01
+  03 dec.3.block.1               147656     147656    3.314e-02    1.457e-01
+  03 dec.3.block.2               147656     147656    5.286e-02    2.116e-01
+  03 dec.3.block.3               147656     147656    7.184e-02    3.205e-01
+  03 dec.3.block.4               147656     147656    4.968e-02    2.261e-01
+  03 dec.4.block.0               147656     147656    5.293e-02    2.279e-01
+  03 dec.4.block.1               442965     442965    2.162e-02    1.082e-01
+  03 dec.4.block.2               442965     442965    2.964e-02    1.121e-01
+  03 dec.4.block.3               442965     442965    2.763e-02    1.058e-01
+  03 dec.4.block.4               442965     442965    5.758e-02    1.307e-01
+  03 dec.5                       442965     442965    5.780e-02    1.316e-01
+  03 dec.6                       442965     442965    2.877e-02    9.653e-02
+
+  TF32 disabled: matmul=False cudnn=False
+
+  fp32, TF32 off -- stage divergence (streaming-chunked vs whole)
+  stage                       len whole  len chunk    NRMSE all   NRMSE head
+  00 pre_conv_out                   231        231    0.000e+00    0.000e+00
+  01 pre_transformer_out            231        231    3.411e-07    3.393e-07
+  02 up.0.0                         462        462    3.718e-07    3.784e-07
+  02 up.0.1                         462        462    6.123e-07    6.217e-07
+  02 up.1.0                         924        924    6.629e-07    6.453e-07
+  02 up.1.1                         924        924    9.751e-07    9.765e-07
+  03 dec.0                          924        924    7.781e-07    7.754e-07
+  03 dec.1.block.0                  924        924    9.708e-07    1.001e-06
+  03 dec.1.block.1                 7384       7384    4.764e-02    2.264e-01  <== JUMP
+  03 dec.1.block.2                 7384       7384    4.369e-02    2.042e-01
+  03 dec.1.block.3                 7384       7384    5.577e-02    2.610e-01
+  03 dec.1.block.4                 7384       7384    6.429e-02    2.781e-01
+  03 dec.2.block.0                 7384       7384    7.216e-02    3.349e-01
+  03 dec.2.block.1                36915      36915    3.323e-02    1.503e-01
+  03 dec.2.block.2                36915      36915    3.872e-02    1.633e-01
+  03 dec.2.block.3                36915      36915    4.523e-02    1.978e-01
+  03 dec.2.block.4                36915      36915    4.655e-02    2.135e-01
+  03 dec.3.block.0                36915      36915    5.577e-02    2.509e-01
+  03 dec.3.block.1               147656     147656    3.120e-02    1.435e-01
+  03 dec.3.block.2               147656     147656    4.928e-02    2.064e-01
+  03 dec.3.block.3               147656     147656    6.577e-02    3.055e-01
+  03 dec.3.block.4               147656     147656    4.512e-02    2.166e-01
+  03 dec.4.block.0               147656     147656    4.773e-02    2.228e-01
+  03 dec.4.block.1               442965     442965    1.985e-02    1.039e-01
+  03 dec.4.block.2               442965     442965    2.723e-02    1.104e-01
+  03 dec.4.block.3               442965     442965    2.598e-02    1.063e-01
+  03 dec.4.block.4               442965     442965    5.321e-02    1.327e-01
+  03 dec.5                       442965     442965    5.326e-02    1.336e-01
+  03 dec.6                       442965     442965    2.699e-02    9.704e-02

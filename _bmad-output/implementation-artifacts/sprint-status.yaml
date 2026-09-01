@@ -212,7 +212,7 @@ development_status:
   # PHASE-GATED: Phase 1 is a bench spike with a hard go/no-go and zero src changes.
   # The fork's decode_streaming looks like the answer and is not - it is a speed
   # path carrying no state. This is ours to build.
-  20-5-codec-state-caching: ready-for-dev
+  20-5-codec-state-caching: in-progress
 
   # Out-of-epic UI work, following the tooling-N precedent for non-epic stories.
   # Commander 2026-09-01: the X minimizes to tray and Settings/Interface has no
