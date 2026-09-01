@@ -1,0 +1,11 @@
+metric_name,value,session_id,chunk_index,is_final,audio_data_size
+ttfa_generation_start_ms,1788276524557.725,6f62c2d4-b57e-4719-97f5-aa25a5856d76,,,
+ttfa_talker_thread_start_ms,1788276524559.2297,6f62c2d4-b57e-4719-97f5-aa25a5856d76,,,
+ttfa_first_decode_step_ms,1788276532271.2815,6f62c2d4-b57e-4719-97f5-aa25a5856d76,,,
+ttfa_first_chunk_emit_ms,1788276533539.2224,6f62c2d4-b57e-4719-97f5-aa25a5856d76,,,
+ttfa_first_decode_complete_ms,1788276533742.742,6f62c2d4-b57e-4719-97f5-aa25a5856d76,0,,
+progressive_chunk_emit_ms,1788276533742.742,6f62c2d4-b57e-4719-97f5-aa25a5856d76,0,,
+ttfa_first_playback_write_ms,1788276533762.8718,6f62c2d4-b57e-4719-97f5-aa25a5856d76,0,,
+first_chunk_latency_ms,9185.016632080078,6f62c2d4-b57e-4719-97f5-aa25a5856d76,,,
+progressive_chunk_playback_arrival_ms,1788276535827.45,6f62c2d4-b57e-4719-97f5-aa25a5856d76,0,False,45525
+progressive_chunk_audio_duration_ms,1896.875,6f62c2d4-b57e-4719-97f5-aa25a5856d76,0,,

@@ -2166,7 +2166,7 @@ class QwenTTSService(BaseService):
 
         # Gate 3: model_registry must be wired.
         if self._model_registry is None:
-            self.logger.debug(
+            self.logger.info(
                 "torch.compile warmup skipped: no model_registry wired"
             )
             metrics.record(
@@ -2183,7 +2183,7 @@ class QwenTTSService(BaseService):
         # generation will trigger engage + compile + lazy cache write.
         loaded_model = self._model_registry.get_loaded_model()
         if loaded_model is None:
-            self.logger.debug(
+            self.logger.info(
                 "torch.compile warmup skipped: no model loaded yet "
                 "(lazy fallback path — first generation will prime the cache)"
             )

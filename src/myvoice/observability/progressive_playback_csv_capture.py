@@ -108,6 +108,10 @@ _CAPTURED_METRIC_NAMES = frozenset(
         "ttfa_first_chunk_emit_ms",
         "ttfa_first_decode_complete_ms",
         "ttfa_first_playback_write_ms",
+        # Story 20.3 AC #4 diagnostic: warmup_compile_async records this on
+        # EVERY exit path with a `reason` tag, so a capture run reveals which
+        # gate the warmup took even when the branch itself logs nothing.
+        "tts_compile_warmup_priming",
     }
 )
 

@@ -1,0 +1,11 @@
+metric_name,value,session_id,chunk_index,is_final,audio_data_size
+ttfa_generation_start_ms,1788276570979.2317,ca44cc9d-8be5-47c7-8f84-99e93f2ed5fc,,,
+ttfa_talker_thread_start_ms,1788276570981.2473,ca44cc9d-8be5-47c7-8f84-99e93f2ed5fc,,,
+ttfa_first_decode_step_ms,1788276574616.7017,ca44cc9d-8be5-47c7-8f84-99e93f2ed5fc,,,
+ttfa_first_chunk_emit_ms,1788276575786.3467,ca44cc9d-8be5-47c7-8f84-99e93f2ed5fc,,,
+ttfa_first_decode_complete_ms,1788276575961.597,ca44cc9d-8be5-47c7-8f84-99e93f2ed5fc,0,,
+progressive_chunk_emit_ms,1788276575962.7253,ca44cc9d-8be5-47c7-8f84-99e93f2ed5fc,0,,
+ttfa_first_playback_write_ms,1788276575981.841,ca44cc9d-8be5-47c7-8f84-99e93f2ed5fc,0,,
+first_chunk_latency_ms,4983.493804931641,ca44cc9d-8be5-47c7-8f84-99e93f2ed5fc,,,
+progressive_chunk_playback_arrival_ms,1788276577875.792,ca44cc9d-8be5-47c7-8f84-99e93f2ed5fc,0,False,43605
+progressive_chunk_audio_duration_ms,1816.875,ca44cc9d-8be5-47c7-8f84-99e93f2ed5fc,0,,
