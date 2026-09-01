@@ -177,6 +177,14 @@ def _build_true_stream_service(registry, coordinator):
     )
     service._model_registry.get_loaded_model = MagicMock(return_value=mock_model)
     service._model_registry.device = "cpu"
+    # Story 20.3 AC #2 — priming now targets the RESIDENT model type, read
+    # from the registry. The pre-20.3 rig stubbed `get_loaded_model` while
+    # leaving `current_model_type` at None, a state the real registry cannot
+    # be in (`get_loaded_model` returns None exactly when it has no resident
+    # type). Declaring CUSTOM_VOICE resident makes the rig self-consistent and
+    # keeps every row below exercising the same request shape Story 18.4
+    # shipped.
+    service._model_registry._current_model_type = QwenModelType.CUSTOM_VOICE
     return service, mock_model
 
 

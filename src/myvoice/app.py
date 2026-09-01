@@ -142,6 +142,13 @@ class MyVoiceApp(QObject):
         # session ids so the callback can resolve session id from task id
         # without changing the audio-service callback signature.
         self._task_to_session: dict[str, str] = {}
+        # Story 20.3 AC #1 — handle for Story 17.2's fire-and-forget
+        # voice_clone_prompt hydration task. The compile-priming worker,
+        # scheduled after the model preload, waits on this so a resident BASE
+        # model is primed with the active profile's cached prompt rather than
+        # skipped for want of one. None until _initialize_services_async
+        # wires it.
+        self._voice_clone_prompt_hydration_task = None
         # Story 13.2 follow-up: bounded dedup set (FIFO-evicting at 256
         # entries) prevents unbounded growth across long-running sessions.
         # The dual-fire callback window is milliseconds; 256 entries is
@@ -563,9 +570,15 @@ class MyVoiceApp(QObject):
             # for transcription-status updates). Hydration runs as a
             # fire-and-forget background task because (i) it scans disk
             # for .pt files and (ii) it must not block the rest of startup.
+            #
+            # Story 20.3 AC #1 — the returned future is retained so the
+            # compile-priming worker scheduled *after* the model preload can
+            # wait for hydration to finish. Priming a resident BASE model
+            # needs the active profile's cached voice_clone_prompt, and that
+            # cache is exactly what this task fills.
             try:
                 self._tts_service.set_voice_profile_manager(self._voice_manager)
-                self._run_async_task(
+                self._voice_clone_prompt_hydration_task = self._run_async_task(
                     self._tts_service.hydrate_voice_clone_prompt_cache(),
                     on_success=lambda result: self.logger.info(
                         f"Voice clone prompt cache hydration: {result}"
@@ -575,33 +588,9 @@ class MyVoiceApp(QObject):
                     ),
                 )
             except Exception as exc:
+                self._voice_clone_prompt_hydration_task = None
                 self.logger.warning(
                     f"Voice clone prompt cache wiring failed: {exc}"
-                )
-
-            # Story 18.4 / D-23 — fire-and-forget torch.compile warmup
-            # worker. Skips entirely when MYVOICE_DISABLE_COMPILE_WARMUP=1,
-            # on CPU / pre-Ampere hosts, or before the model is loaded
-            # (in which case the first user-facing generation triggers
-            # compile inline — the lazy fallback path per architecture D-23).
-            # On Ampere+ CUDA with cache cold, runs one short synthetic
-            # priming generation with a "Preparing TTS engine…" indicator
-            # visible; on cache warm, logs a steady-state breadcrumb and
-            # returns. Mirrors Story 17.2's hydrate_voice_clone_prompt_cache
-            # fire-and-forget hook discipline.
-            try:
-                self._run_async_task(
-                    self._tts_service.warmup_compile_async(),
-                    on_success=lambda result: self.logger.debug(
-                        "torch.compile warmup task completed"
-                    ),
-                    on_error=lambda error: self.logger.warning(
-                        f"torch.compile warmup task failed: {error}"
-                    ),
-                )
-            except Exception as exc:
-                self.logger.warning(
-                    f"torch.compile warmup wiring failed: {exc}"
                 )
 
             # Preload the appropriate model based on cached active voice profile
@@ -628,6 +617,40 @@ class MyVoiceApp(QObject):
                         self.logger.warning(f"Failed to preload CustomVoice model: {error}")
                 except Exception as e:
                     self.logger.warning(f"Error preloading default model: {e}")
+
+            # Story 18.4 / D-23 + Story 20.3 AC #1 — fire-and-forget
+            # torch.compile warmup worker, scheduled HERE, *after* the model
+            # preload has been awaited.
+            #
+            # Story 20.2 §6 pinned the defect this placement fixes: the
+            # warmup used to be scheduled above the preload, and
+            # ``_run_async_task`` only *schedules* (``asyncio.ensure_future``).
+            # The coroutine therefore first ran at the enclosing coroutine's
+            # next suspension point — the ``await preload_model(...)`` itself —
+            # at which instant no model was loaded, so every launch exited at
+            # ``reason="no_model_loaded"``. Story 18.4's cold priming and
+            # Story 20.2's warm priming had both never run in the shipped app.
+            #
+            # The wrapper coroutine below also waits for Story 17.2's
+            # voice_clone_prompt hydration, because a resident BASE model is
+            # primed with the active profile's cached prompt (Story 20.3
+            # AC #2). Scheduling (not awaiting) keeps the Qt main thread free:
+            # startup continues into UI construction immediately, exactly as
+            # it did when the warmup was scheduled above.
+            try:
+                self._run_async_task(
+                    self._warmup_compile_after_preload(),
+                    on_success=lambda result: self.logger.debug(
+                        "torch.compile warmup task completed"
+                    ),
+                    on_error=lambda error: self.logger.warning(
+                        f"torch.compile warmup task failed: {error}"
+                    ),
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    f"torch.compile warmup wiring failed: {exc}"
+                )
 
             # Note: Whisper Service will be initialized on-demand due to DLL conflicts with PyQt6
             # See _initialize_whisper_service_on_demand method
@@ -957,6 +980,69 @@ class MyVoiceApp(QObject):
         self._services[service_name] = service
         self.logger.debug(f"Registered service: {service_name}")
 
+    # Story 20.3 — startup compile-priming sequencing
+    _HYDRATION_WAIT_TIMEOUT_S = 120.0
+
+    async def _warmup_compile_after_preload(self) -> None:
+        """Story 20.3 AC #1 — run the compile warmup once the model is up.
+
+        Scheduled fire-and-forget *after* ``preload_model`` has been awaited,
+        so ``QwenTTSService.warmup_compile_async`` finds a resident model
+        instead of exiting at ``reason="no_model_loaded"`` (Story 20.2 §6).
+
+        Before handing off, it waits for Story 17.2's voice_clone_prompt
+        hydration task. That ordering is load-bearing for the common startup
+        state the Commander described: BASE resident with a cloned voice
+        active. Priming BASE needs the active profile's cached prompt, and the
+        cache is populated by hydration; racing it would make priming skip
+        with ``no_priming_prompt`` on exactly the launches the story exists to
+        speed up.
+
+        The wait is bounded and never fatal:
+
+        * ``asyncio.shield`` means a timeout abandons the *wait*, not the
+          hydration task — hydration keeps running and still fills the cache
+          for the user's first generation.
+        * A timeout, a cancelled hydration task, or an exception all fall
+          through to the warmup, which then decides for itself (a BASE
+          resident with no cached prompt skips with its own telemetry
+          reason — it never falls back to priming a different model).
+
+        Explicit sequencing, not a sleep or a retry loop, per Task 1.1. The
+        Qt main thread is untouched: this coroutine runs on the qasync loop
+        and every step inside it is an ``await``.
+        """
+        task = self._voice_clone_prompt_hydration_task
+        if task is not None:
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(task), timeout=self._HYDRATION_WAIT_TIMEOUT_S
+                )
+            except asyncio.TimeoutError:
+                self.logger.warning(
+                    "voice_clone_prompt hydration still running after %.0fs; "
+                    "starting compile warmup anyway (a BASE prime with no "
+                    "cached prompt skips itself, it does not switch models)",
+                    self._HYDRATION_WAIT_TIMEOUT_S,
+                )
+            except asyncio.CancelledError:
+                # The hydration task was cancelled (shutdown). Do not swallow
+                # a cancellation aimed at *this* coroutine.
+                if task.cancelled():
+                    self.logger.info(
+                        "voice_clone_prompt hydration cancelled; continuing "
+                        "to compile warmup"
+                    )
+                else:
+                    raise
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning(
+                    f"Waiting for voice_clone_prompt hydration failed: {exc}; "
+                    "continuing to compile warmup"
+                )
+
+        await self._tts_service.warmup_compile_async()
+
     def _run_async_task(self, coro, on_success=None, on_error=None):
         """
         Helper to run async tasks from sync Qt signal handlers.
@@ -971,6 +1057,15 @@ class MyVoiceApp(QObject):
             coro: Coroutine to execute
             on_success: Optional callback for successful completion
             on_error: Optional callback for errors
+
+        Returns:
+            The scheduled ``asyncio.Future`` for the wrapper coroutine. Story
+            20.3 AC #1: callers that must sequence work *after* a
+            fire-and-forget task (the compile-priming worker waiting on the
+            voice_clone_prompt hydration) await this handle. The wrapper
+            swallows exceptions, so awaiting it means "the task finished",
+            never "the task succeeded" — the ``on_error`` callback is the
+            failure channel. Existing callers ignore the return value.
         """
         async def _handle_task():
             try:
@@ -984,7 +1079,7 @@ class MyVoiceApp(QObject):
 
         # Create task in shared qasync loop
         # Use ensure_future which works both from sync and async contexts
-        asyncio.ensure_future(_handle_task())
+        return asyncio.ensure_future(_handle_task())
 
     def _on_text_generate_requested(self, text: str):
         """

@@ -337,6 +337,33 @@ class QwenTTSRequest:
     suppress_audio_output: bool = False
 
 
+class CompilePrimingSkipped(Exception):
+    """Story 20.3 AC #2 — the resident model cannot be primed, so priming is
+    skipped rather than redirected at a different model.
+
+    Raised by ``QwenTTSService._build_compile_priming_request`` and handled by
+    ``warmup_compile_async``, which turns ``.reason`` into the
+    ``tts_compile_warmup_priming`` telemetry reason and does **not** call
+    ``compile_cache.mark_warm``.
+
+    It is deliberately a distinct type rather than a return value: priming's
+    caller already distinguishes "raised" from "returned", every existing test
+    that monkeypatches ``_run_compile_priming`` returns ``None`` or a
+    ``MagicMock``, and a sentinel return would make a stubbed mock's truthy
+    return value read as a skip reason.
+
+    The invariant behind it: **priming never moves the model.** A skip costs
+    one cold cache that retries next launch; priming the wrong model costs the
+    user a ~3.4 GB unload/reload on their very first generation, which is the
+    exact cost Epic 20 exists to remove.
+    """
+
+    def __init__(self, reason: str, detail: str = "") -> None:
+        super().__init__(detail or reason)
+        self.reason = reason
+        self.detail = detail
+
+
 @dataclass
 class QwenTTSResponse:
     """
@@ -714,6 +741,14 @@ class QwenTTSService(BaseService):
         # preparing-voice indicator, so a transient owner can clear it only
         # when it is still showing its own message.
         self._last_preparing_voice_message: Optional[str] = None
+        # Story 20.3 AC #3 — the model type the last compile-priming pass
+        # actually dispatched against. ``warmup_compile_async`` resets it to
+        # None before priming and reads it back before ``mark_warm``, so a
+        # cache key computed for one model can never mark a cache the priming
+        # never compiled. None means "priming did not record a target"
+        # (a stubbed priming surface in tests), which the guard treats as
+        # "no contradiction" rather than as a mismatch.
+        self._last_priming_model_type: Optional[QwenModelType] = None
 
         self.logger.info(
             f"QwenTTSService initialized: device={device}, cache_dir={self._cache_dir}"
@@ -1952,6 +1987,15 @@ class QwenTTSService(BaseService):
     # ------------------------------------------------------------------ #
 
     _COMPILE_PRIMING_TEXT = "Hello world."
+    # Story 20.3 AC #2 — synthetic instruct used when VOICE_DESIGN is the
+    # resident model. VoiceDesign generation is a pure function of
+    # (text, instruct): it writes nothing, needs no reference audio and no
+    # profile state, so priming it is as side-effect-free as the CUSTOM_VOICE
+    # path and strictly better than skipping (a VoiceDesign user would
+    # otherwise never get a primed graph). See Dev Notes.
+    _COMPILE_PRIMING_VOICE_DESCRIPTION = (
+        "A calm, neutral narrator voice."
+    )
     _PREPARING_TTS_ENGINE_MESSAGE = "Preparing TTS engine…"
     _COMPILE_WARMUP_DISABLE_ENV = "MYVOICE_DISABLE_COMPILE_WARMUP"
     # Story 20.2 AC #6 — reversibility gate. Set to "1" to restore the exact
@@ -2016,6 +2060,21 @@ class QwenTTSService(BaseService):
         ``"no_model_registry"`` (precondition not met), and
         ``"no_model_loaded"`` (model not yet loaded; defer to first
         user-facing generation).
+
+        Story 20.3 adds three more:
+        ``"no_priming_prompt"`` (BASE is resident but the active profile has
+        no cached ``voice_clone_prompt`` — priming SKIPS rather than switching
+        models), ``"unsupported_priming_model"`` (no priming request shape for
+        the resident model type), and ``"key_model_mismatch"`` (the cold
+        path's ``mark_warm`` was vetoed because the cache key and the primed
+        model disagreed — see ``_priming_matches_cache_key``).
+
+        Story 20.3 also fixes *when* this runs. It is scheduled from
+        ``app.py`` **after** the model preload completes (and after Story
+        17.2's prompt hydration), because the pre-20.3 call site scheduled it
+        before the first ``await`` of the same startup coroutine and it
+        therefore hit ``no_model_loaded`` on every single launch — neither the
+        cold nor the warm priming path had ever run in the shipped app.
 
         Never raises — every failure path lands in a WARNING log + a
         telemetry record. The fire-and-forget caller in ``app.py`` does
@@ -2138,13 +2197,16 @@ class QwenTTSService(BaseService):
 
         from myvoice.services.tts_streaming import compile_cache
         import torch
+        # Story 20.3 AC #3 — the two identities the coherence guard compares:
+        # the model the KEY is computed from, captured here, and the model
+        # priming actually exercises, captured in ``_run_compile_priming``.
+        # Both are read off the registry, so on a correct launch they are the
+        # same model; the guard exists so that a future divergence cannot mark
+        # a cache warm for a model that was never compiled.
+        key_model_type = getattr(self._model_registry, "current_model_type", None)
         try:
             capability = torch.cuda.get_device_capability()
-            model_id = (
-                getattr(getattr(loaded_model, "model", None), "name_or_path", None)
-                or getattr(loaded_model, "name_or_path", None)
-                or "unknown"
-            )
+            model_id = self._compile_cache_model_id(loaded_model)
             model_dtype = getattr(getattr(loaded_model, "model", None), "dtype", None)
             precision_str = "bf16" if model_dtype == torch.bfloat16 else "fp32"
             key = compile_cache.compute_key(
@@ -2195,6 +2257,7 @@ class QwenTTSService(BaseService):
                 return
 
             self._emit_preparing_voice(self._PREPARING_TTS_ENGINE_MESSAGE)
+            self._last_priming_model_type = None
             try:
                 await self._run_compile_priming()
                 duration_ms = int((time.monotonic() - start_ms) * 1000)
@@ -2208,6 +2271,25 @@ class QwenTTSService(BaseService):
                     "tts_compile_warmup_priming",
                     1.0,
                     reason="primed_warm",
+                    duration_ms=duration_ms,
+                )
+            except CompilePrimingSkipped as skip:
+                # Story 20.3 AC #2 — the resident model cannot be primed
+                # (e.g. BASE resident with no cached voice_clone_prompt).
+                # Skipping is the whole point: priming a *different* model
+                # would evict the user's. The cache is already warm, so the
+                # only cost is the lazy inductor reload landing on the first
+                # user generation, exactly as it did pre-20.2.
+                duration_ms = int((time.monotonic() - start_ms) * 1000)
+                self.logger.info(
+                    "Warm-path compile priming skipped (%s): %s",
+                    skip.reason,
+                    skip,
+                )
+                metrics.record(
+                    "tts_compile_warmup_priming",
+                    0.0,
+                    reason=skip.reason,
                     duration_ms=duration_ms,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -2239,10 +2321,33 @@ class QwenTTSService(BaseService):
 
         # Cache-miss path: emit indicator + run priming + mark_warm on success.
         self._emit_preparing_voice(self._PREPARING_TTS_ENGINE_MESSAGE)
+        self._last_priming_model_type = None
         try:
             await self._run_compile_priming()
-            compile_cache.mark_warm(key)
+            # Story 20.3 AC #3 — mark_warm ONLY when the key and the primed
+            # model agree. A cold cache that retries next launch is strictly
+            # better than a warm marker for a model that was never compiled.
+            coherent, mismatch = self._priming_matches_cache_key(
+                model_id, key_model_type
+            )
             duration_ms = int((time.monotonic() - start_ms) * 1000)
+            if not coherent:
+                self.logger.warning(
+                    "Compile warmup NOT marking the cache warm: %s. The cache "
+                    "stays cold and the next launch retries — a warm marker "
+                    "for a model that was never compiled would suppress "
+                    "priming forever (Story 20.3 AC #3).",
+                    mismatch,
+                )
+                metrics.record(
+                    "tts_compile_warmup_priming",
+                    0.0,
+                    reason="key_model_mismatch",
+                    duration_ms=duration_ms,
+                    detail=mismatch,
+                )
+                return
+            compile_cache.mark_warm(key)
             self.logger.info(
                 "Compile warmup primed cache successfully (duration=%dms)",
                 duration_ms,
@@ -2251,6 +2356,22 @@ class QwenTTSService(BaseService):
                 "tts_compile_warmup_priming",
                 1.0,
                 reason="primed_cold",
+                duration_ms=duration_ms,
+            )
+        except CompilePrimingSkipped as skip:
+            # Story 20.3 AC #2 — resident model not primeable. ``mark_warm``
+            # is NOT called: nothing was compiled, so the cache must stay
+            # cold and retry on the next launch.
+            duration_ms = int((time.monotonic() - start_ms) * 1000)
+            self.logger.info(
+                "Compile warmup priming skipped (%s): %s; cache stays cold",
+                skip.reason,
+                skip,
+            )
+            metrics.record(
+                "tts_compile_warmup_priming",
+                0.0,
+                reason=skip.reason,
                 duration_ms=duration_ms,
             )
         except Exception as exc:  # noqa: BLE001
@@ -2279,20 +2400,245 @@ class QwenTTSService(BaseService):
                 self._PREPARING_TTS_ENGINE_MESSAGE
             )
 
+    def _priming_matches_cache_key(
+        self,
+        key_model_id: str,
+        key_model_type: Optional[QwenModelType],
+    ) -> Tuple[bool, str]:
+        """Story 20.3 AC #3 — may ``mark_warm(key)`` be called?
+
+        ``compile_cache.compute_key`` includes ``model_id``. Pre-20.3 the key
+        was computed from the *loaded* model while ``_run_compile_priming``
+        hard-coded CUSTOM_VOICE, so on a cloned-voice launch the cold path
+        compiled one model and marked another model's key warm — permanently,
+        because a warm marker suppresses future priming for that key.
+
+        Two independent checks, either of which vetoes the mark:
+
+        1. **Identity of the resident model, re-read after priming.** This is
+           the check that catches the real defect class end-to-end: priming a
+           model other than the resident one goes through
+           ``ensure_model_loaded``, which unloads and replaces the resident
+           model, so the model_id resident *after* priming no longer matches
+           the one the key was computed from.
+        2. **The model type priming recorded as its target.** Skipped when
+           ``_last_priming_model_type`` is None (a test that stubs the priming
+           surface records no target); a recorded target that contradicts the
+           key's model type is a mismatch.
+
+        Returns ``(True, "")`` when the mark is safe, else
+        ``(False, <human-readable mismatch>)``.
+        """
+        registry = self._model_registry
+        resident_now = (
+            registry.get_loaded_model() if registry is not None else None
+        )
+        if resident_now is None:
+            return (
+                False,
+                "no model is resident after priming; the cache key was "
+                f"computed from model_id={key_model_id!r}",
+            )
+        resident_id = self._compile_cache_model_id(resident_now)
+        if resident_id != key_model_id:
+            return (
+                False,
+                f"cache key was computed from model_id={key_model_id!r} but "
+                f"model_id={resident_id!r} is resident after priming — "
+                "priming exercised a different model",
+            )
+        primed_type = self._last_priming_model_type
+        if (
+            primed_type is not None
+            and isinstance(key_model_type, QwenModelType)
+            and primed_type != key_model_type
+        ):
+            return (
+                False,
+                f"cache key was computed for {key_model_type!r} but priming "
+                f"dispatched against {primed_type!r}",
+            )
+        return True, ""
+
+    def _compile_cache_model_id(self, loaded_model: Any) -> str:
+        """The ``model_id`` dimension of ``compile_cache.compute_key``.
+
+        Extracted (Story 20.3 AC #3) so the key computation and the
+        post-priming coherence check read the identity of a model the same
+        way. Two call sites deriving "which model is this" independently is
+        precisely how the key and the primed model drifted apart.
+        """
+        return (
+            getattr(getattr(loaded_model, "model", None), "name_or_path", None)
+            or getattr(loaded_model, "name_or_path", None)
+            or "unknown"
+        )
+
+    def _active_profile_voice_clone_prompt(self) -> Optional[Any]:
+        """Story 20.3 AC #2 — the active profile's cached ``voice_clone_prompt``.
+
+        **In-memory lookup only.** It reads the cache Story 17.2's
+        ``hydrate_voice_clone_prompt_cache`` fills at startup (validated
+        against the current ref-audio mtime/size and ``.txt`` sidecar by
+        ``_cache_lookup_validated``). It never computes, never transcribes,
+        never touches disk beyond the ``stat`` that validation already does —
+        priming must not drag Whisper or a prompt precompute into startup.
+
+        Returns the prompt on hit, ``None`` on any miss: no profile manager,
+        no active profile, a non-CLONED active profile, a missing ref audio,
+        or a cold/stale cache entry. The caller turns ``None`` into a skip,
+        never into a different model.
+        """
+        try:
+            manager = self._voice_profile_manager
+            if manager is None:
+                return None
+            profile = manager.get_active_profile()
+            if profile is None:
+                return None
+            from myvoice.models.voice_profile import VoiceType
+            if getattr(profile, "voice_type", None) != VoiceType.CLONED:
+                return None
+            ref_audio = getattr(profile, "file_path", None)
+            if not isinstance(ref_audio, Path) or not ref_audio.exists():
+                return None
+            tier = self._model_registry.quality_tier.value
+            cache_key = (str(ref_audio.resolve()), tier)
+            return self._cache_lookup_validated(cache_key, ref_audio)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(
+                "Compile priming could not resolve the active profile's "
+                "voice_clone_prompt (%s: %s); priming will skip rather than "
+                "prime a different model",
+                type(exc).__name__,
+                exc,
+            )
+            return None
+
+    def _build_compile_priming_request(self) -> QwenTTSRequest:
+        """Story 20.3 AC #2 — build the priming request for the RESIDENT model.
+
+        The model type is read from ``ModelRegistry.current_model_type``; it is
+        never hard-coded. This is the story's central invariant, and it is
+        structural rather than incidental: ``_dispatch_by_streaming_mode``
+        ultimately calls ``ensure_model_loaded(request.model_type,
+        checkpoint_path=...)``, and ``ModelRegistry`` keeps exactly one model
+        resident, unloading the current one before loading another. A request
+        whose ``model_type`` differs from the resident one therefore *evicts
+        the user's model* — turning Epic 20's win into a multi-second loss on
+        the user's first generation.
+
+        ``checkpoint_path`` is carried across for the same reason: the
+        registry's already-loaded fast path requires the checkpoint to match
+        as well, so a fine-tuned resident model primed with
+        ``checkpoint_path=None`` would be unloaded and reloaded. The raw value
+        from ``current_checkpoint_path`` is passed through **unnormalised** —
+        the dispatch chain hands it back to the registry as
+        ``str(request.checkpoint_path)`` and the registry compares it by
+        equality, so a ``Path`` round-trip (which rewrites separators on
+        Windows) would silently defeat the match.
+
+        Per resident model type:
+
+        * **BASE** — the common startup state (cloned voice active, BASE
+          resident). Primed with the active profile's cached
+          ``voice_clone_prompt``, which exercises the same model *and* the
+          same conditioning regime the user's first generation will take.
+          Wrapped in a list per the qwen-tts library contract (a bare
+          ``VoiceClonePromptItem`` is passed straight through and crashes on
+          subscripting).
+        * **CUSTOM_VOICE** — the canonical default speaker, exactly as
+          Story 18.4 shipped.
+        * **VOICE_DESIGN** — a synthetic instruct (see
+          ``_COMPILE_PRIMING_VOICE_DESCRIPTION``). Both ``instruct`` and
+          ``voice_description`` are set because the TRUE_STREAM dispatch reads
+          ``request.instruct`` while the BATCH fallback reads
+          ``request.voice_description``.
+
+        Raises ``CompilePrimingSkipped`` — never a fallback to another model —
+        when the resident model cannot be primed.
+        """
+        registry = self._model_registry
+        if registry is None:
+            raise CompilePrimingSkipped(
+                "no_model_registry", "no ModelRegistry wired"
+            )
+        resident = getattr(registry, "current_model_type", None)
+        if not isinstance(resident, QwenModelType):
+            raise CompilePrimingSkipped(
+                "no_model_loaded",
+                f"registry reports no resident model type ({resident!r})",
+            )
+
+        # Pass the registry's own value through untouched — see docstring.
+        checkpoint_path = getattr(registry, "current_checkpoint_path", None)
+
+        common = dict(
+            text=self._COMPILE_PRIMING_TEXT,
+            language="English",
+            streaming=True,
+            checkpoint_path=checkpoint_path,
+            suppress_audio_output=True,
+        )
+
+        if resident == QwenModelType.CUSTOM_VOICE:
+            return QwenTTSRequest(
+                model_type=QwenModelType.CUSTOM_VOICE,
+                speaker="Ryan",
+                **common,
+            )
+
+        if resident == QwenModelType.BASE:
+            prompt = self._active_profile_voice_clone_prompt()
+            if prompt is None:
+                raise CompilePrimingSkipped(
+                    "no_priming_prompt",
+                    "BASE is resident but the active profile has no cached "
+                    "voice_clone_prompt; skipping rather than switching models",
+                )
+            return QwenTTSRequest(
+                model_type=QwenModelType.BASE,
+                voice_clone_prompt=[prompt],
+                **common,
+            )
+
+        if resident == QwenModelType.VOICE_DESIGN:
+            return QwenTTSRequest(
+                model_type=QwenModelType.VOICE_DESIGN,
+                instruct=self._COMPILE_PRIMING_VOICE_DESCRIPTION,
+                voice_description=self._COMPILE_PRIMING_VOICE_DESCRIPTION,
+                **common,
+            )
+
+        raise CompilePrimingSkipped(
+            "unsupported_priming_model",
+            f"no priming request shape for resident model {resident!r}",
+        )
+
     async def _run_compile_priming(self) -> None:
-        """Story 18.4 — run one synthetic priming generation.
+        """Story 18.4 / Story 20.3 — run one synthetic priming generation
+        against the **resident** model.
 
         Separated from ``warmup_compile_async`` so the gating, cache
         check, indicator emission, and ``mark_warm`` logic stay independently
         testable (tests monkeypatch this method to succeed/fail without
         spinning up a real model or audio output).
 
-        The priming dispatches a short text with the canonical default
-        speaker ("Ryan") through the same three-mode dispatch fork
-        ``generate_custom_voice`` uses, so the talker's first forward pass
-        triggers ``torch.compile``'s graph capture and the inductor compile
-        that PyTorch's per-key cache directory absorbs — and, on an
-        already-warm cache (Story 20.2), the lazy inductor reload.
+        The priming dispatches a short text through the same three-mode
+        dispatch fork the user-facing generators use, so the talker's first
+        forward pass triggers ``torch.compile``'s graph capture and the
+        inductor compile that PyTorch's per-key cache directory absorbs —
+        and, on an already-warm cache (Story 20.2), the lazy inductor reload.
+
+        **Story 20.3 — which model.** Pre-20.3 this method hard-coded
+        ``QwenModelType.CUSTOM_VOICE`` while ``warmup_compile_async`` computed
+        the compile-cache key from whichever model was *loaded*. On a
+        cloned-voice launch (BASE resident) that primed one model and marked
+        another model's key warm — and, once the startup ordering was fixed,
+        would have evicted the user's model to do it.
+        ``_build_compile_priming_request`` now reads the resident type from
+        the registry, so the primed model, the cache key, and the model the
+        user is about to generate with are the same model by construction.
 
         **Audio safety (Story 20.2 AC #2).** The request carries
         ``suppress_audio_output=True``, and every chunk-emit site resolves
@@ -2301,42 +2647,24 @@ class QwenTTSService(BaseService):
         request-scoped: it holds even when ``set_audio_chunk_ready_callback``
         has already wired a consumer before priming starts, and it does not
         touch a concurrent user-facing generation (whose own request is not
-        suppressed). The pre-20.2 docstring claimed safety from startup
-        ordering plus "the generation is short enough that any audible
-        artifact is bounded" — neither was a guarantee, and the
-        ``tts_compile="off"`` gate below records the launch where the
-        ordering assumption lost and spurious "Hello world." audio reached a
-        user's speakers.
+        suppressed). This matters more after Story 20.3 than before it: the
+        BASE priming path carries the user's own cloned-voice prompt, so an
+        unsuppressed prime would speak "Hello world." in the user's own voice.
 
         The architecture's D-23 acceptance: "warm = compile-priming
         generation completed without error". The caller's ``mark_warm``
         call lands on the cold path's success branch (the warm path does not
-        re-mark). Any raised exception bubbles up and the caller's
-        ``except`` lands the ``priming_failed`` telemetry.
+        re-mark). ``CompilePrimingSkipped`` bubbles up to the caller's skip
+        branch; any other exception lands the ``priming_failed`` telemetry.
         """
-        # Use a bundled CustomVoice speaker for priming. The default
-        # speaker ("Ryan") is canonical; if it's unavailable, the priming
-        # generation raises and the caller routes to priming_failed (NOT
-        # a fatal — the next run will retry; eager-mode generation stays
-        # available). The custom-voice API does NOT require a voice file;
-        # it dispatches via the same TRUE_STREAM path the user-facing
-        # generation will take, so the talker's first forward pass
-        # triggers torch.compile's graph capture.
-        #
-        # The request is built here rather than via ``generate_custom_voice``
-        # so ``suppress_audio_output`` stays off that public signature — it is
-        # not a knob any caller outside compile priming should reach for. The
-        # construction + dispatch below mirror ``generate_custom_voice``
-        # exactly (same model_type, same ``_resolve_streaming_mode()`` fork),
-        # so priming still exercises the production dispatch chain.
-        request = QwenTTSRequest(
-            text=self._COMPILE_PRIMING_TEXT,
-            language="English",
-            model_type=QwenModelType.CUSTOM_VOICE,
-            speaker="Ryan",
-            streaming=True,
-            suppress_audio_output=True,
-        )
+        # The request is built here rather than via a public generator so
+        # ``suppress_audio_output`` stays off those signatures — it is not a
+        # knob any caller outside compile priming should reach for. The
+        # construction mirrors the public generators' request shapes exactly
+        # (same model_type, same ``_resolve_streaming_mode()`` fork), so
+        # priming still exercises the production dispatch chain.
+        request = self._build_compile_priming_request()
+
         # Story 20.2 review F6 - fail LOUDLY rather than silently
         # un-suppressing. ``_is_suppressed`` reads the flag through
         # ``getattr(..., False)``, which fails open by design (an
@@ -2355,6 +2683,15 @@ class QwenTTSService(BaseService):
                 "speakers (Story 20.2 AC #2)"
             )
         assert self._audio_chunk_sink(request) is None
+
+        # Story 20.3 AC #3 — record the model priming is about to exercise,
+        # BEFORE dispatch, so the caller's ``mark_warm`` guard sees the
+        # target even if the dispatch raises.
+        self._last_priming_model_type = request.model_type
+        self.logger.info(
+            "Compile priming: dispatching against the resident model %s",
+            request.model_type.display_name,
+        )
         await self._dispatch_by_streaming_mode(
             request, self._resolve_streaming_mode()
         )

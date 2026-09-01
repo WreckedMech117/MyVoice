@@ -1,6 +1,6 @@
 # Story 20.2: Warm-Path Compile Priming (Phase ⊥-Polish-3)
 
-Status: review
+Status: done
 
 <!-- Phase tag: Phase ⊥-Polish-3. Second story of Epic 20 (First-Audio Latency). -->
 <!-- Source: Story 20.1 evidence §2.5 + §6.4 Follow-up A (the highest value-per-hour item the spike identified). -->
