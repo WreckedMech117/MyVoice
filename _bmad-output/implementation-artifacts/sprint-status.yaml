@@ -190,6 +190,18 @@ development_status:
   # interactive launches with a cloned voice active; procedure + comparison baseline are in
   # 20-3-prime-the-resident-model-evidence.md section 4.
   20-3-prime-the-resident-model: done
+  # Story 20.4 added 2026-09-01 from Story 20.1 Follow-ups B + C, shipped as ONE story
+  # because 20.1 found them coupled: chunk_size=10 worsens the sub-16GiB
+  # cushion-to-talker ratio from 2.5x to 4.0x, since the talker shrinks while the 10s
+  # MAX_PRE_DELAY cap does not. B alone would speed up large-VRAM hosts and leave the
+  # RTX 30xx tier pinned at the cap.
+  # Carries the D-25 trap from 20.1 5.4: engage_compile_optimizations hard-codes
+  # streamer_chunk_size=25/lookahead=5 and model_registry.py:591 passes neither, so
+  # retuning the constant without threading real geometry silently violates the very
+  # invariant the assertion protects.
+  # First Epic 20 story to carry an NFR3 perceptual gate - chunk boundaries change for
+  # every generation, so chunk-stitching is in scope.
+  20-4-chunk-size-and-adaptive-cushion: ready-for-dev
 
   # Out-of-epic UI work, following the tooling-N precedent for non-epic stories.
   # Commander 2026-09-01: the X minimizes to tray and Settings/Interface has no
