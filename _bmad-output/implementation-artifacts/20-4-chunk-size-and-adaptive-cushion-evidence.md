@@ -1,0 +1,794 @@
+# Story 20.4 — Chunk-Size Retune + Adaptive-Cushion Fix: evidence
+
+Phase ⊥-Polish-3. Fourth story of Epic 20 (First-Audio Latency).
+Follow-ups **B** and **C** from Story 20.1 §6.4, shipped together because
+Story 20.1 found them coupled.
+
+## 0. Headline
+
+| | before | after | source |
+|---|---|---|---|
+| streamer geometry | `chunk_size=25`, `lookahead=5` (window 30, 2.5 s of audio before first emit) | **`chunk_size=10`**, `lookahead=5` (window 15, **1.25 s**) | Story 20.1 §5.2/§5.3 four-point sweep |
+| compile-path `decode_window_frames` | pinned at **30** regardless of the streamer, at **three** sites | derived from `codec_token_streamer` at **all three** | §1.1 |
+| sub-16 GiB first audio, `P = 0.5`, cs10 | **10.00 s** — released by the `MAX_PRE_DELAY` guardrail | **1.67 s** | §3, `20-4-adaptive-cushion-sim.txt` |
+| sub-16 GiB cushion / talker ratio, cs10 | 4.00× (worse than cs25's 2.50×) | **0.67×** | §3 |
+| `T_a` estimator error, long fixture | +44.5 % | **+2.0 %** | §2.3 |
+| `MAX_PRE_DELAY_SECONDS` | 10.0 s | **10.0 s — unchanged** | §2.2 |
+
+**Status.** AC #1, #2, #3, #4 and #7 are complete and verified. AC #5 and
+AC #6 need Commander at the keyboard — the fixture, the launchers, the
+utterance texts and the validated aggregator are all in place. **§8 is the
+single consolidated hand-off**; nothing else is asked of the operator.
+
+| AC | what it asks | status |
+|---|---|---|
+| #1 | retune + thread the geometry where it is read | **DONE** — §1 |
+| #2 | cushion policy + the T_a overshoot | **DONE** — §2 |
+| #3 | coupling re-derived at `chunk_size = 10` | **DONE** — §3 |
+| #4 | OFR-E producer ratio re-measured | **DONE, PASSES** — §4 |
+| #5 | NFR3 perceptual audition | fixture **DONE**, audition **needs operator** — §5, §8 |
+| #6 | GUI capture on the reachable tier | tooling **DONE**, capture **needs operator** — §6, §8 |
+| #7 | no regressions | **DONE, zero new failures** — §9 |
+
+---
+
+## 1. AC #1 — the chunk geometry, and where it is actually read
+
+### 1.1 The D-25 trap was worse than Story 20.1 §5.4 found: three sites, not two
+
+Story 20.1 §5.4 identified two halves of one trap:
+
+* `torch_runtime.engage_compile_optimizations` declared
+  `streamer_chunk_size: int = 25, streamer_lookahead: int = 5` as **hard-coded
+  defaults**, and
+* the sole production call site, `model_registry._load_model_sync`, passed
+  **neither**.
+
+so `decode_window_frames` resolved to 30 no matter what the streamer emitted.
+
+Implementing the retune surfaced a **third** site the spike did not name:
+
+```
+src/myvoice/services/qwen_tts_service.py:2217   decode_window_frames=30,
+```
+
+inside `warmup_compile_async`'s cache-key construction — the method whose
+docstring says it "mirrors `engage_compile_optimizations`' construction so
+the warmup and the engage path share state". It mirrored the *literal*, not
+the *source*. This one is not decorative: `decode_window_frames` is one of
+`compile_cache`'s seven key dimensions (`compile_cache.py:88`), so with the
+literal left in place Story 20.4 would have had **Story 20.3's startup
+priming warm a cache key the engage path never reads** — silently reverting
+the ~4.0 s first-generation win Story 20.3 just certified, with no error and
+no log line saying so.
+
+### 1.2 What changed
+
+| file | change |
+|---|---|
+| `services/tts_streaming/codec_token_streamer.py` | `DEFAULT_CHUNK_SIZE` 25 → **10**. `DEFAULT_LOOKAHEAD` unchanged at 5. The sweep table and the "why 10, not 5" reasoning are recorded at the constants so the next person to touch them sees the evidence, not just the number. |
+| `services/tts_streaming/torch_runtime.py` | `streamer_chunk_size` / `streamer_lookahead` default to **`None`**, resolved from the live `codec_token_streamer` module constants at call time. No second literal survives. |
+| `services/model_registry.py` | the call site now passes both, read from `codec_token_streamer.DEFAULT_*`. |
+| `services/qwen_tts_service.py` | the warmup cache key derives the window from the same constants. |
+
+The `None`-resolution and the call-site pass-through are deliberately
+redundant. The resolution is what makes the invariant hold for *any* caller
+(including a future one that forgets); the pass-through is what makes the
+dependency visible at the exact call site the trap was found at.
+
+### 1.3 The tests, and why they are shaped this way
+
+`tests/unit/services/test_decode_window_geometry_coherence.py` (new, 6 rows)
+splits into a runtime arm and a static arm, because either alone can pass
+while the trap is re-introduced through the other.
+
+| row | what fails it |
+|---|---|
+| `test_warmup_cache_key_uses_the_live_streamer_window` | the warm-path priming key drifting from the committed geometry |
+| `test_warmup_cache_key_moves_with_a_streamer_retune` | **the exact bug class** — monkeypatches the constants to 17+3 and requires the key to move to 20. Restoring the `=30` literal fails here, and only here. |
+| `test_warmup_key_and_engage_key_agree` | the two independent key constructions diverging on any dimension |
+| `test_no_source_file_passes_a_literal_decode_window_frames` | any new literal, anywhere under `src/myvoice`, at `compute_key` or `enable_streaming_optimizations` |
+| `test_engage_compile_optimizations_has_no_hard_coded_geometry_defaults` | a regression to non-`None` defaults |
+| `test_model_registry_threads_the_streamer_geometry_into_the_compile_call` | the call site going quiet again, or restating the numbers as literals |
+
+Plus, in the existing suites:
+
+* `test_torch_runtime.py::test_engage_compile_resolves_window_from_live_streamer_constants`
+  (new) — asserts the resolved window equals the live constants, that
+  monkeypatching them moves it, and that the D-25 hard-fail still fires
+  **against the retuned geometry** (so the invariant is live, not decorative).
+* `test_codec_token_streamer.py::test_committed_chunk_geometry_is_story_20_4_optimum`
+  (new) — pins 10 + 5 and the `chunk_size ≥ 6` watermark-no-op condition.
+  Its sibling `test_default_construction_uses_documented_constants` was
+  changed from asserting `25` to asserting *the module constants*, so it
+  tests the wiring rather than re-pinning the value in a second place.
+* `test_torch_runtime.py`'s two cache/window rows now derive the window from
+  the streamer module (`_STREAMER_WINDOW`) instead of restating `30`.
+
+---
+
+## 2. AC #2 — the cushion policy
+
+### 2.1 What was actually wrong
+
+Story 20.1 §2.7 drove the shipped `StreamingChunkBuffer` with an injected
+clock and found the τ_min comparison was **the last of five escapes** and
+effectively unreachable on the ship-target tier: for every `P ≲ 0.78` the
+`MAX_PRE_DELAY_SECONDS = 10.0` clamp put the required cushion above anything
+the buffer would accumulate, so release fell through to the elapsed escape —
+and because that escape is only evaluated inside `push`, the effective wait
+at `P = 0.5` was **12.5 s**, not 10 s.
+
+The framing that makes the fix obvious: **at `P = 0.5` the old policy
+delivered a 12.5 s wait *and gaps anyway*.** Gaplessness on a 19.3 s
+utterance at `P = 0.5` needs 19.3 s of cushion. Clamping the requirement to
+10 s did not make gaplessness achievable; it just capped how much latency was
+spent failing to achieve it. That outcome is strictly dominated — there is no
+value of the trade-off dial at which "wait 12.5 s and still gap" is the right
+answer.
+
+### 2.2 The policy
+
+`_cushion_decision(P)` now returns `(cushion_seconds, regime)`:
+
+| regime | condition | cushion |
+|---|---|---|
+| `producer_keeps_up` | `P ≥ 1.0` | 0 — unchanged |
+| `gapless_feasible` | `τ_gapless ≤ cushion_budget_seconds` | the full `τ_gapless` — unchanged behaviour in this band |
+| `gapless_unreachable` | `τ_gapless > cushion_budget_seconds` | the **static watermark** (500 ms) |
+
+where `τ_gapless = T_a × (1/P − 1)` is computed **unclamped**, so the
+feasibility test asks the real question ("can gaplessness be bought inside
+the budget?") rather than the clamped one.
+
+`cushion_budget_seconds = 2.0` (`audio_coordinator._DEFAULT_STREAMING_CUSHION_BUDGET_SECONDS`).
+Justification, against numbers rather than assertion:
+
+* **4× the static watermark** (500 ms) that the ≥16 GiB tier already accepts
+  as the price of smoothing.
+* **Above the whole ≥16 GiB first-audio budget.** Story 20.3 §4.1 measured
+  the RTX 5090 at 1,353 ms *total* TTFA. A 2.0 s consumer cushion is already
+  more than the entire fast-tier experience; spending more than that on the
+  slow tier is not a latency budget, it is a different product.
+* **Below the guardrail**, by design and by test
+  (`test_cushion_budget_constant_is_below_the_guardrail`). If the budget ever
+  reached the cap, the guardrail would become binding again and this fix
+  would silently revert.
+
+The unreachable branch compares **bytes**, not seconds — it is literally the
+same predicate as the `enable_adaptive_pre_buffer=False` path in `push`, so
+the two branches cannot disagree at the boundary through a float round-trip.
+The intent is that when gaplessness is out of reach, the slow tier's consumer
+behaves exactly like the fast tier's: hold 500 ms, then start.
+
+**`MAX_PRE_DELAY_SECONDS` and `max_hold_chunks` are untouched.** The story
+forbids removing the guardrail and this change does not: it stops the
+guardrail from being the *policy*, which is a different thing.
+`test_max_pre_delay_cap_kicks_in` still proves the guardrail fires (with the
+budget raised out of the way so the new policy cannot release first), and
+`test_max_pre_delay_is_not_the_binding_escape_across_the_p_sweep` proves it
+is no longer the binding escape anywhere on a P sweep from 0.50 to 0.95.
+
+### 2.3 The T_a estimator — ADDRESSED, not deferred
+
+`CHARS_TO_AUDIO_SECONDS = 0.08` was a single proportional constant calibrated
+from **one** 19-character 3060 smoke utterance. Story 20.1 §2.7 measured it
++44.5 % on the canonical long fixture.
+
+Two measured points are available, and they do not lie on a line through the
+origin — short utterances carry proportionally more non-speech time (onset
+silence, the 0.5 s reference padding Story 20.1 §4.3 documents, final decay):
+
+| fixture | chars | measured `T_a` | old estimate | **new estimate** |
+|---|---:|---:|---:|---:|
+| long (Epic 18 canonical) | 349 | 19.32 s | 27.92 s (**+44.5 %**) | **19.70 s (+2.0 %)** |
+| short (Clear Comms class) | 33 | 2.30 s | 2.64 s (+14.8 %) | **2.32 s (+0.7 %)** |
+
+Replaced by an affine estimator, `estimate_target_audio_seconds(chars)`:
+
+```
+T_a ≈ 0.5 s + 0.055 s/char
+```
+
+The exact two-point fit is `0.523 + 0.0539`; the shipped constants are
+rounded so the estimator stays *slightly* conservative (over-estimating) on
+both fixtures rather than centred — a marginally larger cushion is the safer
+direction for a thin calibration.
+
+**Stated as a limitation, not hidden:** two points is a thin calibration and
+the intercept is doing real work at short lengths. It is also much less
+load-bearing than it was — under the two-regime policy `T_a` only changes
+behaviour inside the *feasible* band; once gaplessness is unreachable the
+buffer falls back to the watermark and `T_a` drops out of the decision
+entirely. Story 20.1 §2.7 had already shown the old estimator changed nothing
+at the 3060's documented `P ≈ 0.5`, because the cap dominated there.
+
+### 2.4 The product trade, stated explicitly (AC #2 requires this)
+
+**Total silence is conserved.** Playback cannot outrun the producer, so it
+ends at `max(cushion + T_a, T_gen)` where `T_gen = T_a / P`. Accumulated
+mid-utterance gap is therefore `max(0, T_gen − T_a − cushion)`: every second
+of cushion not spent up front reappears, one for one, as gap later. The
+choice is **only about where the silence lands**.
+
+MyVoice's answer, and the one this implementation takes: **the front is the
+worst place for it.** Clear Comms is a voice-chat interjection cue
+(`memory/clear_comms_purpose_framing.md`) — a tool for grabbing attention in
+a live conversation. A ten-second lead-in does not make an interjection
+smoother; it makes it not an interjection. A mid-utterance gap degrades the
+delivery but the message still lands, in the conversational window it was
+meant for.
+
+**Where this is a real regression, reported rather than averaged away.** The
+sweep in §3 shows a band — roughly `0.70 ≤ P ≤ 0.90` on the long fixture —
+where the old policy *did* reach gaplessness, by waiting 4.9–11.9 s for it.
+The new policy starts in ~1 s there and accepts 1.2–7.1 s of accumulated gap.
+That is a genuine loss on the gaplessness axis, and it is the direction AC #2
+names as preferred. Two things bound it:
+
+1. It is **not** the ship-target operating point. `streaming_chunk_buffer.py`
+   documents the RTX 3060 12 GB at `P ≈ 0.5`, where the old policy achieved
+   neither low latency nor gaplessness.
+2. `cushion_budget_seconds` is a single named constant with a test pinning it
+   below the guardrail. If the deferred RTX 3060 confirmation (§7) finds real
+   hardware living in the 0.70–0.90 band, raising the budget is a one-line
+   change with an obvious meaning.
+
+### 2.5 The ≥16 GiB static path is untouched
+
+Nothing in the static branch of `push` changed. Two tests prove it rather
+than asserting it:
+
+* `test_cushion_budget_has_no_effect_on_the_static_path` — drives an
+  eight-push trace with crossfade on through
+  `cushion_budget_seconds ∈ {0.0, 2.0, 1000.0}` and requires **byte-identical
+  output**.
+* `test_static_release_point_is_exactly_the_watermark` — release on the 5th
+  100 ms push and not before, and `last_release_reason is None` because no
+  adaptive decision is ever taken on that path.
+
+The gate that selects the branch (`text_length` present **and** VRAM < 16 GiB)
+is unchanged.
+
+---
+
+## 3. AC #3 — the coupling, re-derived at `chunk_size = 10`
+
+`20-4-adaptive-cushion-sim.py` drives the **shipped** `StreamingChunkBuffer`
+with an injected clock, exactly as Story 20.1 §2.7 did. It reproduces the
+pre-20.4 policy by subclassing the buffer and restoring the old
+`_cushion_decision` body, so the before/after columns come out of one driver.
+
+**The legacy reproduction is cross-checked against every number Story 20.1
+§2.7 published — 10 of 10 match to 0.02 s.** If it had not, every "before"
+figure below would be untrustworthy, and the script says so and exits 1.
+
+```
+  cs=10  P=0.50  published  10.00s   reproduced 10.00s   OK
+  cs=10  P=0.75  published  10.00s   reproduced 10.00s   OK
+  cs=10  P=0.90  published   2.78s   reproduced  2.78s   OK
+  cs=25  P=0.50  published  12.50s   reproduced 12.50s   OK
+  cs=25  P=0.70  published  11.90s   reproduced 11.90s   OK
+  cs=25  P=0.75  published  11.11s   reproduced 11.11s   OK
+  cs=25  P=0.80  published   7.81s   reproduced  7.81s   OK
+  cs=25  P=0.85  published   4.90s   reproduced  4.90s   OK
+  cs=25  P=0.90  published   2.31s   reproduced  2.31s   OK
+  cs=25  P=0.95  published   2.19s   reproduced  2.19s   OK
+  legacy reproduction: VERIFIED
+```
+
+### 3.1 Long fixture at the COMMITTED geometry (`chunk_size = 10`)
+
+DERIVED — simulated against the shipped buffer's own logic, never observed on
+sub-16 GiB hardware. See §7.
+
+| `P` | segment 4 before | released by | segment 4 after | released by | ratio before | ratio after | gap before | gap after |
+|---:|---:|---|---:|---|---:|---:|---:|---:|
+| 0.50 | **10.00 s** | 10 s cap | **1.67 s** | unreachable → watermark | 4.00× | **0.67×** | 9.32 s | 17.65 s |
+| 0.60 | 11.11 s | 10 s cap | 1.39 s | unreachable | 5.33× | 0.67× | 1.77 s | 11.49 s |
+| 0.70 | 10.71 s | 10 s cap | 1.19 s | unreachable | 6.00× | 0.67× | 0.00 s | 7.09 s |
+| 0.75 | 10.00 s | 10 s cap | 1.11 s | unreachable | 6.00× | 0.67× | 0.00 s | 5.33 s |
+| 0.80 | 8.33 s | τ_min | 1.04 s | unreachable | 5.33× | 0.67× | 0.00 s | 3.79 s |
+| 0.85 | 4.90 s | τ_min | 0.98 s | unreachable | 3.33× | 0.67× | 0.00 s | 2.43 s |
+| 0.90 | 2.78 s | τ_min | 0.93 s | unreachable | 2.00× | 0.67× | 0.00 s | 1.22 s |
+| 0.95 | 0.88 s | τ_min | 0.88 s | **feasible** | 0.67× | 0.67× | 0.14 s | 0.14 s |
+
+"ratio" is segment 4 / talker segment, on Story 20.1 §2.7's own denominator
+`((chunk_size + lookahead)/12)/P`. "gap" is accumulated mid-utterance silence,
+`max(0, T_a/P − T_a − cushion)`.
+
+### 3.2 What the coupling actually did, and what it does now
+
+Story 20.1 predicted that `chunk_size = 10` would make the sub-16 GiB
+cushion-to-talker ratio **worse**, 2.50× → 4.00×, because the talker segment
+shrinks while the cap does not. The simulation confirms that exactly: the
+`P = 0.50` cs10 "before" row is 4.00×, against 2.50× at cs25.
+
+With the AC #2 fix in place at `chunk_size = 10`, the ratio is **0.67× at
+every P on the sweep** — better than cs25 ever was, before or after. The
+reason is structural rather than lucky: once the cushion is the static
+watermark, release lands on the first chunk that both carries ≥ 500 ms and
+permits a producer-rate reading, which is chunk 2. Segment 4 becomes one
+chunk-arrival, `(chunk_size/12)/P`, and the talker segment is
+`((chunk_size+5)/12)/P`, so the ratio collapses to `10/15 = 0.67` independent
+of `P` and independent of the geometry. Shrinking the chunk now shrinks the
+cushion *with* it, which is precisely the coupling Story 20.1 was worried
+about running backwards.
+
+### 3.3 Interactions the derivation did **not** predict
+
+AC #3 asks for these to be reported rather than averaged away. Three:
+
+1. **The 0.70–0.90 gaplessness band described in §2.4.** Story 20.1's ranked
+   list framed Follow-up C as "sub-16 GiB hosts are pinned at the cap", which
+   is true at `P ≈ 0.5` but not across the whole range: between 0.70 and 0.90
+   the old policy was buying real gaplessness with that wait. The fix trades
+   it away deliberately.
+2. **The `P = 0.60` before-row is 11.11 s, not ≤ 10 s.** The cap is evaluated
+   only inside `push`, so the effective wait is the first chunk arrival at or
+   after 10 s — which at cs10/`P = 0.60` is 11.11 s. Story 20.1 §2.7 recorded
+   this mechanism at cs25/`P = 0.5` (12.5 s); it recurs at other rates and
+   geometries, and it means the pre-20.4 "10 s cap" was never actually a 10 s
+   bound.
+3. **The short class barely engages the adaptive path at all.** At
+   `T_a ≈ 2.3 s` and cs10 the whole utterance is 3 chunks, so several rows
+   never reach a release decision before `is_final` fires — and the pre-20.4
+   `P = 0.50` short row *never releases on a chunk arrival at all*. The
+   Clear Comms class was being carried entirely by the `is_final` escape on a
+   slow host, which is another way of saying it was batch playback.
+
+### 3.4 Neither change is committed without the other
+
+Both land in this one change, and the tests couple them: the AC #2 policy
+rows in `TestCushionFeasibilityPolicy` are written at the cs10 chunk geometry
+(`_CS10_CHUNK_SAMPLES = 20000`, i.e. 10/12 s at 24 kHz), and
+`test_committed_chunk_geometry_is_story_20_4_optimum` pins the geometry those
+rows assume.
+
+---
+
+## 4. AC #4 — OFR-E producer gate, RE-MEASURED
+
+_Status: **MEASURED AND MET.** RTX 5090, headless
+`tools/ttfa_spike_harness.py`, post-20.3 code with the retune applied,
+`tts_compile="auto"`, bf16, CLONED Sarira-F, `--prime` (Story 20.3's startup
+priming), 5 measured runs + 1 discarded warm-up per cell._
+
+AC #4 requires the ratio to be **re-measured, not carried over** — the
+0.776× figure in Story 20.1 §5.2 predates Stories 20.2/20.3 and the
+compile-priming change. Both geometries were run back-to-back on the same
+host in the same session, so the comparison is contemporaneous rather than
+cross-session.
+
+| cell | producer ratio (median) | min | max | gate `< 1.0×` |
+|---|---:|---:|---:|---|
+| long, `chunk_size = 25` (pre-20.4) | **0.585** | 0.577 | 0.589 | PASS |
+| long, `chunk_size = 10` (committed) | **0.619** | 0.612 | 0.637 | **PASS** |
+| short, `chunk_size = 10` | 0.348 – 0.508 (n = 3 of 5; see note) | — | — | PASS |
+
+The retune costs **+0.034 on the ratio** (0.585 → 0.619) and leaves a **38 %
+margin** to the gate. Story 20.1 predicted 0.665 → 0.676 for the same move;
+the direction and the magnitude both reproduce, and the whole curve has
+shifted down on post-20.3 code.
+
+> Short-cell note: the ratio needs at least three `progressive_chunk_emit_ms`
+> samples to take a median of inter-chunk intervals. A 33-character utterance
+> at `chunk_size = 10` produces 2–3 chunks total, so 2 of the 5 runs report
+> `n/a`. This is a measurement-resolution limit, not a failure — and it is
+> also the point: the short class is now *three chunks of genuine streaming*
+> where at `chunk_size = 25` it was frequently one batch-equivalent chunk.
+
+### 4.1 The rest of the headline, measured on the same runs
+
+| metric | cs25 (pre-20.4) | **cs10 (committed)** | change |
+|---|---:|---:|---:|
+| long TTFA(post), median | 1,491 ms | **829 ms** | **−44 %** |
+| long segment 2 (talker) | 1,346 ms | 675 ms | −50 % |
+| long segment 4 (consumer cushion) | 0–1 ms | 0–1 ms | unchanged |
+| long generation wall | 11,619 ms | 12,319 ms | +6 % (inside Story 20.1's ±20 % band) |
+| long chunk count | 10 | 25 | — |
+| **short TTFA(post), median** | **1,409 ms** | **784 ms** | **−44 %** |
+| **short first-emit path** | `residual_flush` **3 of 5** | **`threshold` 5 of 5** | the degeneration is gone |
+
+Story 20.1 §5.2/§5.3 predicted 1,785 → 875 ms long and 1,651 → 921 ms short.
+Measured here: 1,491 → 829 and 1,409 → 784. Both baselines and both results
+are lower than the spike's — consistent with Stories 20.2/20.3 having removed
+the ~4 s first-forward cost and with the 11–37 % session-to-session spread
+Story 20.1 §2.4(d) documented — and the **relative** improvement (−44 % on
+both classes) reproduces almost exactly.
+
+**The short-utterance degeneration reproduces and is closed.** At
+`chunk_size = 25`, 3 of 5 short runs (4 of 6 counting the warm-up) fell to
+`residual_flush` — the batch-equivalent path where the only token chunk the
+generation ever produces is the terminal residual. Story 20.1 measured 11 of
+20. At `chunk_size = 10`, **6 of 6 took the `threshold` path**, matching the
+spike's 5 of 5.
+
+**Segment 4 is 0–1 ms at both geometries on this host**, confirming Story
+20.1 §5.4's watermark analysis from the other direction: at `chunk_size = 10`
+each chunk carries 833 ms of audio, comfortably over the 500 ms static
+watermark, so the consumer hands nothing back. This is the `chunk_size ≥ 6`
+condition, and it is why 10 rather than 5 is the optimum.
+
+Raw CSVs: `20-4-ratio-long-cs10.csv`, `20-4-ratio-long-cs25.csv`,
+`20-4-ratio-short-cs10.csv`, `20-4-ratio-short-cs25.csv`.
+
+### 4.2 A free validation of the new T_a estimator
+
+The harness reports `total_audio_ms` per run. Across the five long runs the
+median is **19,527 ms** for the 349-character fixture — an independent
+measurement of the quantity §2.3's estimator predicts.
+
+| estimator | prediction | error vs 19,527 ms |
+|---|---:|---:|
+| pre-20.4, `chars × 0.08` | 27,920 ms | **+43.0 %** |
+| **Story 20.4, `0.5 + chars × 0.055`** | **19,695 ms** | **+0.9 %** |
+
+This is not a fitted point — the affine constants were calibrated against
+Story 20.1's 19.32 s figure, and this run independently produced 19.53 s.
+
+---
+
+## 5. AC #5 — NFR3 perceptual gate
+
+_Status: **fixture GENERATED and verified; the audition itself is PENDING an
+operator.** See §8._
+
+### 5.1 Why this story needed a gate the previous three did not
+
+Stories 20.2 and 20.3 changed *when* work happens (priming at startup rather
+than on the first utterance). This story changes *how the audio is cut*: the
+streamer's chunk boundary moves from 30 frames to 15, and
+`streaming_decoder.py` trims a lookahead-sized tail per chunk, so every
+generation is now stitched from roughly twice as many pieces. That is a
+per-generation change to the waveform, and Story 20.1's sweep says nothing
+about how it sounds.
+
+### 5.2 The fixture
+
+`20-4-regen-audition-fixture.py` → `20-4-perceptual-fixtures/` (14 WAVs).
+
+Story 18.4's fixture generator could not be reused: it drives
+`generate_voice_clone`, the **batch** API, which never touches the streamer,
+the decoder's overlap-add, or the consumer crossfade — i.e. it skips exactly
+the part under audition. The Story 20.4 generator drives the production
+`_generate_true_stream` dispatch path and pushes every chunk through a real
+`StreamingChunkBuffer` with the shipped consumer constants, so what lands on
+disk is what a user's speakers receive.
+
+| | |
+|---|---|
+| utterances | 7 — three short (incl. the Clear Comms interjection shape), two medium, two long |
+| renditions | `{utt}-cs25.wav` (pre-20.4) and `{utt}-cs10.wav` (committed) |
+| voice | CLONED Sarira-F, the Story 17.2 precomputed prompt every prior audition used |
+| verified | all 14 non-silent, RMS 2,828–4,287, peak ≤ 31,103 (no clipping) |
+| blinding | `_perlistener_truthtable.json`, fixed seed, A/B randomised per utterance |
+
+Sibilant- and plosive-dense lines are deliberate: fricatives and stops are
+where a seam is most audible. Both utterance classes are covered because the
+short class changes dispatch path entirely (§4.1).
+
+**Two controls worth recording.** (a) Both renditions were produced in one
+process, from one model load, under **one** compiled state — the geometry was
+switched between passes via the streamer constants only. That is the tight
+control for an audition of chunk stitching specifically, and it is sound
+precisely because Story 20.1 §5.4 established that `decode_window_frames`
+never reaches a runtime shape decision on our decode path. (b) qwen-tts
+sampling is stochastic, so A and B are two renditions, not one waveform cut
+two ways. The audition question is therefore "does the committed geometry
+carry seam artefacts the old one does not", not "are these identical" —
+the same standard Story 18.4 used.
+
+### 5.3 The gate
+
+Commander solo, mirroring Story 18.1/18.2 rather than Story 17.1's
+multi-listener protocol, as AC #5 specifies.
+
+**FAIL if any chunk-boundary artefact is flagged on a cs10 trial** —
+`audible_seam`, `click_or_discontinuity`, or `prosody_break_at_stitch`. The
+helper unblinds at the end and prints the verdict itself. A defect flagged on
+**both** geometries is recorded as a pre-existing pipeline property and does
+not block; that distinction is made by the helper, not by hand.
+
+---
+
+## 6. AC #6 — GUI measurement on the reachable tier
+
+_Status: **PENDING an operator.** Everything else is in place: the launcher,
+the utterance texts, and the aggregator (validated — see below). See §8._
+
+### 6.1 What will be measured, and against what
+
+The baseline is Story 20.3 §4.1, established 2026-09-01 on this host:
+**1b 192.5 ms / TOTAL 1,353.4 ms** long-form, median of 5 GUI launches. Not
+the pre-20.3 5,051 ms figure.
+
+`11_Story_20.4_AC6_GUI_Capture.bat` — a new launcher rather than a re-use of
+`10_Story_20.3_AC4_GUI_Capture.bat`, for three reasons, each of which would
+have corrupted the comparison:
+
+1. **It writes `20-4-gui-r0N.csv`.** The 20.3 launcher writes
+   `20-3-gui-r0N.csv` — the baseline files themselves. Running it would have
+   overwritten the numbers this story is measured against.
+2. **Six launches, not five.** The retune moves `decode_window_frames`
+   30 → 15, a compile-cache key dimension, so the first launch after this
+   ships pays exactly one cold compile (§9.2). Launch 1 is a declared
+   throwaway; launches 2–6 are the five warm launches that compare
+   like-for-like.
+3. **Two generations per launch — long, then short.** AC #6 asks for both
+   classes, and the short class is the one the retune changes most (§4.1).
+
+It also preflights the committed geometry (`(10, 5)`), so a reverted retune
+cannot produce numbers filed under a Story 20.4 name, and it tells the
+operator to **let each utterance finish playing** — Story 20.3's captures
+stop after chunk 0, which is why they carry no producer-ratio data.
+
+### 6.2 The aggregator, validated against the baseline it will be compared to
+
+`20-4-aggregate-gui.py` groups strictly by `session_id` and keeps only
+sessions carrying `ttfa_first_playback_write_ms`, per Story 20.3 §4.1a. Run
+against the **Story 20.3 captures** it reproduces that story's published
+table exactly:
+
+```
+== long (n=5) ==
+  1b prefill   median=  192.465   TOTAL  median= 1353.375
+```
+
+— i.e. 192.5 ms / 1,353.4 ms, the numbers §4.1 of the 20.3 evidence
+published. An aggregator that could not reproduce the baseline would not be
+trustworthy on the new captures either.
+
+---
+
+## 7. AC #6 — the sub-16 GiB tier: derived, and the deferred confirmation
+
+Everything in §3 is **DERIVED** from the shipped buffer's own logic driven by
+an injected clock. Nothing in this story was observed on sub-16 GiB hardware.
+The RTX 3060 remains on a second PC with no hot-swap (Story 20.3 AC #2b
+Phase 3, still deferred).
+
+**What the deferred 3060 run would now check**, updated for what this story
+changed:
+
+1. **The `P` assumption itself.** Every derived number keys off
+   `streaming_chunk_buffer.py`'s documented `P ≈ 0.5` for the 3060 12 GB.
+   `P` is recoverable directly from a capture as
+   `progressive_chunk_audio_duration_ms / Δ progressive_chunk_emit_ms`
+   (Story 20.1 §2.8). If the real 3060 lives in the 0.70–0.90 band instead,
+   §2.4's trade is the one that needs revisiting — raise
+   `cushion_budget_seconds`.
+2. **That the release regime is `gapless_unreachable`, not a guardrail.**
+   The buffer now records `last_release_reason`; a 3060 capture should never
+   show `max_pre_delay` or `max_hold_chunks` on a healthy generation. Either
+   of those appearing means something pathological, which is exactly what
+   those escapes are now reserved for.
+3. **Segment 4 ≈ one chunk arrival.** The derivation says
+   `(10/12)/P` seconds — 1.67 s at `P = 0.5`. A materially larger observed
+   segment 4 falsifies the model.
+4. **Whether the accumulated gap is tolerable in practice.** §2.4's
+   conservation argument says the gap total is set by `P`, not by policy; the
+   open question is perceptual, and only a real slow host can answer it.
+5. **The `T_a` estimator on that host.** The affine fit is calibrated on
+   5090 renditions. Audio duration for a given text should be
+   hardware-independent, but this has never been checked across tiers.
+
+Phase 3 is still unblocked and still needs no new build:
+`progressive_playback_csv_capture` is wired at `app.py` via
+`maybe_enable_from_env`. Verify it is present in the bundled artifact before
+trusting a shipped-exe run on that host.
+
+---
+
+## 8. Operator hand-off
+
+Two things need Commander at the keyboard. They are independent — either
+order works — and together they are about **35 minutes**. Everything else in
+this story is done and verified.
+
+Both launchers preflight themselves and stop with a clear message rather than
+producing misleading data, so there is nothing to check by hand first.
+
+---
+
+### Task 1 — AC #6: GUI capture (~25 min)
+
+```
+11_Story_20.4_AC6_GUI_Capture.bat
+```
+
+Six launches. **Launch 1 is a declared throwaway** — the retune changes the
+compile-cache key, so it pays exactly one cold compile and its "Preparing TTS
+engine" indicator will sit there noticeably longer than usual. Do both
+generations anyway; the analysis drops it.
+
+Per launch:
+
+1. A **CLONED** voice must be the active profile (so BASE is the resident
+   model). Same profile every launch.
+2. **Wait for "Preparing TTS engine" to clear** before generating. Priming
+   holds the request semaphore; generating while it is up measures queueing,
+   not first-forward, and would look like a regression that is not one.
+3. Generate the **LONG** utterance. **Let it finish playing.**
+4. Generate the **SHORT** utterance. **Let it finish playing.**
+5. Close with the **X** (auto-quit is set; do not use Ctrl-C). The next
+   launch starts on its own.
+
+Both texts are in
+`_bmad-output/implementation-artifacts/20-4-gui-utterances.txt`. They are the
+canonical Story 20.1 / Epic 18 fixtures — using different text breaks the
+comparison, because segment 2 scales with utterance length.
+
+> "Let it finish playing" is new relative to the Story 20.3 run, and it
+> matters: those captures stop after chunk 0 because the app was closed
+> early, which is why they carry no producer-ratio data. Letting playback
+> complete gives the full chunk stream.
+
+Then, one command:
+
+```
+python310\python.exe _bmad-output\implementation-artifacts\20-4-aggregate-gui.py --skip-first-launch
+```
+
+Hand back that output. Two things are also worth grabbing from
+`logs\myvoice.log` (the .bat prints them at the end): whether launch 1 shows
+a cold compile and launches 2–6 show `primed_warm`.
+
+---
+
+### Task 2 — AC #5: perceptual audition (~10 min)
+
+```
+12_Story_20.4_AC5_Audition.bat
+```
+
+The 14-WAV fixture is **already generated and verified** (§5.2) — this is
+listening only, no GPU work. Seven blinded A/B pairs; the helper unblinds and
+prints the verdict itself.
+
+Headphones if available, normal Discord-call volume. **What to listen for:**
+the change stitches every generation from twice as many pieces, so the defect
+class is at the **seams** — a click or tick partway through a word, a
+momentary discontinuity in a held vowel, prosody that resets mid-phrase as if
+two takes were cut together.
+
+**What NOT to judge:** timbre, loudness, accent, or wording rhythm. The two
+takes are different samples, not one waveform cut two ways, so they will
+differ in delivery. That is expected and is not the gate.
+
+The gate is blocking: any seam artefact on the committed geometry that the
+old geometry does not carry **fails AC #5 and the story does not close**. The
+helper distinguishes that case from a defect present on both (pre-existing,
+recorded, not blocking) automatically.
+
+Hand back the verdict block it prints.
+
+---
+
+### What happens with the results
+
+§4 (AC #4) already passes on its own, so neither task can turn the producer
+gate red. Task 1 fills §6 and closes AC #6; Task 2 fills §5 and closes AC #5.
+If Task 2 fails, the retune is the thing that reverts — a one-line change to
+`DEFAULT_CHUNK_SIZE`, with the D-25 wiring from §1 correctly following it
+back.
+
+---
+
+## 9. AC #7 — regression sweep
+
+`python310\python.exe -m pytest -q`, portable interpreter per
+`memory/test_interpreter_portable_python310.md`.
+
+### 9.1 Zero new failures; the pre-existing set is unchanged in count and identity
+
+| surface | result | vs. the Story 20.3 baseline |
+|---|---|---|
+| `tests/unit/services tests/unit/observability tests/unit/models` | **953 passed, 0 failed** | 928 → 953 (+25 new rows); **still zero failures** |
+| `tests/unit` (whole tree) | 1,574 passed, **30 failed, 4↔5 errors** | 1,548 → 1,574 passed; failure count **and identity** identical. The error count flakes 4↔5 across runs on the Windows temp-file lock in `test_audio_player_widget.py` — the same flake Stories 20.2 and 20.3 both recorded; observed at 4 and at 5 in two runs here |
+| `tests/integration tests/test_qwen_tts_internals.py` | 175 passed, **4 failed** | 174 → 175; exactly 20.3's 4 pre-existing rows |
+| `tests/services tests/settings tests/utils` | 288 passed, **7 failed** | identical |
+| `tests/ui` | 735 passed, **7 failed** | identical |
+| the whole story surface in one invocation | **291 passed** | — |
+
+Every remaining failure is in the same UI / voice-profile / session-manager
+drift set `20-2-warm-path-compile-priming-evidence.md` §5 documents. None of
+it touches the streaming dispatch chain.
+
+### 9.1a Three integration rows the retune turned red, and why that was correct
+
+`tests/integration/test_streaming_tts_smoke.py` failed three assertions on
+the first run after the retune:
+
+| assertion | was | why it moved |
+|---|---|---|
+| `response.chunks_generated == 4` | 100 tokens / (25 + 5) | 10 at (10 + 5) |
+| `chunk_emit[0][2]["frames"] == 30` | the window | 15 |
+| `step_count=20 must produce exactly one chunk` | 20 was below the 30-frame window | 20 is now **above** the 15-frame window |
+
+The third is the interesting one: the literal `20` did not merely fail, it
+**silently changed the test's meaning** — it would have exercised the
+threshold path while asserting residual-flush behaviour. Fixed by deriving
+all three from the streamer constants (`_STREAMER_WINDOW`,
+`_expected_chunk_count(n)`, `_SUB_THRESHOLD_STEPS = window - 1`), plus a
+self-check row that pins the helper against **both** shipped geometries so a
+helper that computes the wrong expectation cannot hide behind looking
+principled. This is the same discipline applied to the source in §1.2:
+derive, do not re-type the new number.
+
+### 9.2 The compile cache gains exactly one key — confirmed, not predicted
+
+`decode_window_frames` is one of `compile_cache`'s seven key dimensions
+(`compile_cache.py:88`), so 30 → 15 must produce exactly one new key and one
+cold compile.
+
+Before the first post-retune run, `%LOCALAPPDATA%\MyVoice\torch_compile_cache\`
+held two key directories (`391c2f2be3340b07`, `a514f2c991e58200`). After it:
+
+```
+391c2f2be3340b07   (2026-09-01 09:47 — the window-30 key, meta.json present)
+a514f2c991e58200   (2026-05-11)
+a58fe999b1fca2f3   (2026-09-01 11:19 — NEW: the window-15 key)
+```
+
+**Exactly one new key directory.** It carries no `meta.json` yet: the
+directory is created by `compile_cache.set_torchinductor_cache_dir`, but
+`mark_warm` — which writes the sidecar — is called by the application's
+warm-up priming path, not by the headless harness. So the operator's launch 1
+(§8) is where `mark_warm` lands, and its `meta.json` is the artifact that
+proves **Story 20.3's priming warms the NEW key**, which is the specific
+thing AC #7 asks to confirm. The §1.1 fix is what makes that true: with the
+`decode_window_frames=30` literal still in `warmup_compile_async`, priming
+would have gone on warming the old key while the engage path used the new
+one, with no error anywhere.
+
+---
+
+## 10. File list
+
+### Source (6 files)
+
+| file | change |
+|---|---|
+| `src/myvoice/services/tts_streaming/codec_token_streamer.py` | `DEFAULT_CHUNK_SIZE` 25 → 10; the sweep evidence and the retune contract recorded at the constants |
+| `src/myvoice/services/tts_streaming/torch_runtime.py` | geometry params default to `None`, resolved from the streamer module at call time |
+| `src/myvoice/services/model_registry.py` | the call site threads the real geometry through |
+| `src/myvoice/services/qwen_tts_service.py` | warm-path cache key derives the window; one stale comment corrected |
+| `src/myvoice/services/streaming_chunk_buffer.py` | two-regime cushion policy, `cushion_budget_seconds`, `last_release_reason` |
+| `src/myvoice/services/audio_coordinator.py` | affine `estimate_target_audio_seconds`, budget constant wired through |
+
+### Tests
+
+| file | change |
+|---|---|
+| `tests/unit/services/test_decode_window_geometry_coherence.py` | **new** — 6 rows, runtime + static arms |
+| `tests/unit/services/test_streaming_chunk_buffer.py` | +1 construction row, +9 policy rows in two new classes; 4 pre-existing rows re-scoped to the feasible regime with the reason recorded inline |
+| `tests/unit/services/test_audio_coordinator.py` | +7 estimator rows |
+| `tests/unit/services/tts_streaming/test_torch_runtime.py` | +1 resolution row; two window literals derived |
+| `tests/unit/services/tts_streaming/test_codec_token_streamer.py` | +1 committed-geometry row; the defaults row now tests the wiring |
+| `tests/integration/test_streaming_tts_smoke.py` | three literals derived + helper self-check row |
+
+### Tooling and artifacts
+
+| file | purpose |
+|---|---|
+| `tools/ttfa_spike_harness.py` | `--chunk-size` now defaults to the committed geometry instead of a literal 25 |
+| `11_Story_20.4_AC6_GUI_Capture.bat` | **new** — the AC #6 capture launcher |
+| `12_Story_20.4_AC5_Audition.bat` | **new** — the AC #5 audition launcher |
+| `_bmad-output/.../20-4-adaptive-cushion-sim.py` + `.txt` | **new** — AC #2/#3 re-derivation, with the legacy-policy cross-check |
+| `_bmad-output/.../20-4-aggregate-gui.py` | **new** — session-grouped GUI aggregator |
+| `_bmad-output/.../20-4-regen-audition-fixture.py` | **new** — TRUE_STREAM audition fixture generator |
+| `_bmad-output/.../20-4-l1-audition-helper.py` | **new** — blinded A/B helper + verdict |
+| `_bmad-output/.../20-4-perceptual-fixtures/` | **new** — 14 WAVs + truth table |
+| `_bmad-output/.../20-4-gui-utterances.txt` | **new** — the exact texts for the GUI capture |
+| `_bmad-output/.../20-4-ratio-{long,short}-cs{10,25}.csv` | **new** — the AC #4 raw captures |
+| `_bmad-output/.../20-1-adaptive-cushion-sim.py` | header note: superseded; it no longer reproduces its own `.txt` against current code |
+
+### Untouched, deliberately
+
+* `MAX_PRE_DELAY_SECONDS` (10.0 s) and `max_hold_chunks` (16) — guardrails.
+* `_DEFAULT_STREAMING_WATERMARK_MS` (500) and
+  `_DEFAULT_STREAMING_CROSSFADE_SAMPLES` (64) — the ≥16 GiB static path.
+* `DEFAULT_LOOKAHEAD` (5) — held fixed across Story 20.1's whole sweep.
+* The dispatch chain, PORT-b, the qasync call-site audit, and the 0.5 s
+  reference-padding lift (Follow-up D) — all out of scope per the story.

@@ -516,8 +516,8 @@ def engage_compile_optimizations(
     model: Any,
     *,
     app_settings: Optional[Any] = None,
-    streamer_chunk_size: int = 25,
-    streamer_lookahead: int = 5,
+    streamer_chunk_size: Optional[int] = None,
+    streamer_lookahead: Optional[int] = None,
     decode_window_frames: Optional[int] = None,
     qwen_tts_pin_hash: Optional[str] = None,
     reload_cycle_idx: int = 0,
@@ -526,10 +526,11 @@ def engage_compile_optimizations(
 
     Story 18.4 — Phase ⊥-Polish-2 of D-20, Cluster E of
     ``architecture-streaming-acceleration-and-lightning-tier.md`` (sealed
-    2026-05-10). Executes architecture decisions D-21 (decode_window=30
-    fixed), D-22 Branch B (calls the upstream-blessed API the pin-bump
-    engaged), D-25 (decode-window invariant), and P-12 (capability
-    verification probe).
+    2026-05-10). Executes architecture decisions D-21 (decode_window
+    bound to the streamer geometry -- 30 through Story 20.3, **15** from
+    Story 20.4's chunk_size retune), D-22 Branch B (calls the
+    upstream-blessed API the pin-bump engaged), D-25 (decode-window
+    invariant), and P-12 (capability verification probe).
 
     The function gates engagement on:
 
@@ -544,8 +545,9 @@ def engage_compile_optimizations(
          must be callable (the pin-bump should have ensured this; the
          assertion catches a hypothetical silent pin reversion per P-11).
       4. **D-25 decode-window invariant** — ``decode_window_frames`` must
-         equal ``streamer_chunk_size + streamer_lookahead`` (today 30;
-         architecture-bound). Hard-fail on mismatch (not a warning log —
+         equal ``streamer_chunk_size + streamer_lookahead``, and those two
+         default to the **live** ``codec_token_streamer`` module constants
+         (today 10 + 5 = 15). Hard-fail on mismatch (not a warning log —
          silent fallthrough produces wrong audio).
       5. **P-12 capability probe** — after the API returns, verify that
          compile actually engaged (the API didn't no-op silently).
@@ -583,12 +585,18 @@ def engage_compile_optimizations(
             function reads ``app_settings.tts_compile`` via ``getattr`` for
             defensive access (mirrors Story 18.3's ``tts_precision``
             precedent at ``model_registry.py:137``).
-        streamer_chunk_size: ``codec_token_streamer.DEFAULT_CHUNK_SIZE``
-            (= 25 today). The architecture-bound value drives the D-25
-            invariant; future streamer re-tunes pass explicit values here
-            and the cache key auto-invalidates via D-24.
-        streamer_lookahead: ``codec_token_streamer.DEFAULT_LOOKAHEAD``
-            (= 5 today).
+        streamer_chunk_size: The streamer's real chunk size. ``None`` (the
+            canonical contract) resolves it from
+            ``codec_token_streamer.DEFAULT_CHUNK_SIZE`` at call time, so the
+            compile geometry cannot drift from the streamer geometry.
+            Story 20.4 replaced a hard-coded ``25`` default here: with the
+            sole production call site passing nothing, ``decode_window_frames``
+            resolved to 30 regardless of what the streamer actually emitted
+            (Story 20.1 §5.4 — the D-25 trap). Tests may pass explicit values
+            to exercise the invariant.
+        streamer_lookahead: The streamer's real lookahead. ``None`` resolves
+            it from ``codec_token_streamer.DEFAULT_LOOKAHEAD`` (= 5 today).
+            Same drift-proofing rationale as ``streamer_chunk_size``.
         decode_window_frames: Optional explicit decode-window override. If
             ``None`` (the typical caller contract), the function computes
             ``streamer_chunk_size + streamer_lookahead`` itself. If the
@@ -611,7 +619,7 @@ def engage_compile_optimizations(
             {
                 "engaged": bool,                          # True iff compile engaged
                 "reason": str,                            # one of the eight reasons
-                "decode_window_frames": int,              # the resolved value (30)
+                "decode_window_frames": int,              # the resolved value (15 today)
                 "cuda_capability": tuple | None,          # (major, minor) or None
                 "cache_warm": bool | None,                # True/False on engage paths; None on skip
             }
@@ -619,7 +627,20 @@ def engage_compile_optimizations(
     # Lazy-import: torch (DLL ordering); compile_cache (avoid __init__.py
     # partial-init recursion since __init__.py imports both leaf modules).
     import torch
+    from myvoice.services.tts_streaming import codec_token_streamer
     from myvoice.services.tts_streaming import compile_cache
+
+    # ----- Resolve the streamer geometry from its single source of truth --- #
+    # Story 20.4 (AC #1): read the LIVE module constants rather than carrying
+    # a second copy of the literals here. Before this, the defaults were a
+    # hard-coded ``25``/``5`` and ``model_registry`` passed neither, so a
+    # streamer retune would silently tell the compile path the wrong window
+    # (Story 20.1 §5.4). Resolving here means the two cannot diverge even if
+    # a future call site also forgets to pass them.
+    if streamer_chunk_size is None:
+        streamer_chunk_size = codec_token_streamer.DEFAULT_CHUNK_SIZE
+    if streamer_lookahead is None:
+        streamer_lookahead = codec_token_streamer.DEFAULT_LOOKAHEAD
 
     # ----- D-25 invariant (architecture-bound; P-11 "loud at startup") ----- #
     # The streamer's chunk_size + lookahead is the canonical decode-window.

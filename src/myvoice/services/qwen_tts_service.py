@@ -2196,7 +2196,21 @@ class QwenTTSService(BaseService):
             return
 
         from myvoice.services.tts_streaming import compile_cache
+        from myvoice.services.tts_streaming import codec_token_streamer
         import torch
+        # Story 20.4 AC #1 — the SECOND D-25 drift site. This method mirrors
+        # ``engage_compile_optimizations``' key construction so warmup and
+        # engage share cache state; it carried its own hard-coded
+        # ``decode_window_frames=30``. With Story 20.4's chunk_size retune
+        # (25 → 10) that literal would have computed a key for a window the
+        # engage path no longer uses, so priming would warm a key nothing
+        # reads and Story 20.3's warm-path priming would silently stop
+        # working. Derive it from the streamer's own constants, exactly as
+        # ``engage_compile_optimizations`` now does.
+        _decode_window_frames = (
+            codec_token_streamer.DEFAULT_CHUNK_SIZE
+            + codec_token_streamer.DEFAULT_LOOKAHEAD
+        )
         # Story 20.3 AC #3 — the two identities the coherence guard compares:
         # the model the KEY is computed from, captured here, and the model
         # priming actually exercises, captured in ``_run_compile_priming``.
@@ -2214,7 +2228,7 @@ class QwenTTSService(BaseService):
                 model_id=model_id,
                 precision_str=precision_str,
                 torch_version=torch.__version__,
-                decode_window_frames=30,
+                decode_window_frames=_decode_window_frames,
                 cuda_capability=capability,
                 compile_mode="reduce-overhead",
             )
@@ -4682,8 +4696,9 @@ class QwenTTSService(BaseService):
                 if buf:
                     # Story 20.1 (TTFA spike) segment boundary #2, residual
                     # variant. An utterance shorter than
-                    # ``chunk_size + lookahead`` frames (2.5 s of audio at
-                    # 12 Hz with the committed defaults) never reaches the
+                    # ``chunk_size + lookahead`` frames (1.25 s of audio at
+                    # 12 Hz with Story 20.4's committed 10 + 5 geometry;
+                    # 2.5 s under the pre-20.4 25 + 5) never reaches the
                     # streamer's first-emit threshold, so the ONLY token
                     # chunk it ever produces is this end-of-generation
                     # residual. Recording the boundary here keeps the

@@ -58,6 +58,69 @@ from myvoice.services.tts_streaming import (
     CodecTokenStreamer,
     StreamingDecoderWorker,
 )
+from myvoice.services.tts_streaming import (
+    codec_token_streamer as _codec_token_streamer,
+)
+
+
+# --------------------------------------------------------------------------- #
+# Story 20.4 — the streamer geometry is DERIVED here, once, and never restated
+# in an individual test.
+#
+# Before Story 20.4 this file carried ``25``, ``30`` and ``20`` as literals in
+# three assertions. The retune (chunk_size 25 -> 10) turned all three red at
+# once, which is the right behaviour for a smoke suite -- but the fix is to
+# derive, not to re-type the new numbers, because the next retune would
+# otherwise repeat the whole exercise.
+# --------------------------------------------------------------------------- #
+
+_STREAMER_CHUNK_SIZE = _codec_token_streamer.DEFAULT_CHUNK_SIZE
+_STREAMER_LOOKAHEAD = _codec_token_streamer.DEFAULT_LOOKAHEAD
+_STREAMER_WINDOW = _STREAMER_CHUNK_SIZE + _STREAMER_LOOKAHEAD
+
+
+def _expected_chunk_count(n_tokens: int) -> int:
+    """Chunks a stream of ``n_tokens`` yields at the committed geometry.
+
+    Mirrors ``CodecTokenStreamer``'s arithmetic rather than calling it: the
+    buffer pushes once it holds ``chunk_size + lookahead`` tokens and then
+    slides forward by ``chunk_size``, keeping the lookahead tail as the next
+    chunk's left context. So after ``n`` in-loop pushes the stream has
+    consumed ``lookahead + n * chunk_size`` tokens, and ``end()`` flushes
+    whatever remains.
+
+    At the pre-20.4 geometry (25 + 5) and n_tokens=100 this returns 4, which
+    is the number the assertions in this file used to hard-code.
+    """
+    pushes = max(0, (n_tokens - _STREAMER_LOOKAHEAD) // _STREAMER_CHUNK_SIZE)
+    residual = n_tokens - pushes * _STREAMER_CHUNK_SIZE
+    return pushes + (1 if residual > 0 else 0)
+
+
+# A step count guaranteed to fall SHORT of the first-emit threshold, so the
+# only chunk the generation produces is the terminal residual flush. This is
+# the Story 20.1 short-utterance / Clear Comms regime.
+_SUB_THRESHOLD_STEPS = max(1, _STREAMER_WINDOW - 1)
+
+
+def test_expected_chunk_count_helper_matches_both_shipped_geometries():
+    """Self-check for the helper the assertions above depend on.
+
+    A test helper that silently computes the wrong expectation is worse
+    than a hard-coded literal, because it looks principled. These two rows
+    pin it against the only two geometries this project has shipped:
+    25 + 5 (through Story 20.3) and 10 + 5 (Story 20.4). The 25 + 5 answer,
+    4, is the literal this file carried before the retune.
+    """
+    global _STREAMER_CHUNK_SIZE, _STREAMER_LOOKAHEAD
+    saved = (_STREAMER_CHUNK_SIZE, _STREAMER_LOOKAHEAD)
+    try:
+        _STREAMER_CHUNK_SIZE, _STREAMER_LOOKAHEAD = 25, 5
+        assert _expected_chunk_count(100) == 4
+        _STREAMER_CHUNK_SIZE, _STREAMER_LOOKAHEAD = 10, 5
+        assert _expected_chunk_count(100) == 10
+    finally:
+        _STREAMER_CHUNK_SIZE, _STREAMER_LOOKAHEAD = saved
 
 
 # --------------------------------------------------------------------------- #
@@ -532,8 +595,9 @@ class TestTrueStreamDispatchEndToEnd:
         monkeypatch,
     ):
         """AC #1 — fake .generate feeds 100 tokens; fake decode_fn maps
-        token_id → token_id*0.01 sample. Expect 4 chunks (100 / chunk_size=25)
-        of float32 PCM, success response, registry reaches READY_TO_PLAY,
+        token_id → token_id*0.01 sample. Expect ``_expected_chunk_count(100)``
+        chunks of float32 PCM (4 at the pre-20.4 25+5 geometry, 10 at the
+        committed 10+5), success response, registry reaches READY_TO_PLAY,
         play_dual_stream called once.
         """
         from myvoice.services.qwen_tts_service import GenerationMode, QwenModelType, QwenTTSRequest
@@ -611,9 +675,16 @@ class TestTrueStreamDispatchEndToEnd:
         )
         assert response.mode == GenerationMode.STREAMING
         assert response.audio_data is not None
-        # 100 tokens at chunk_size=25 → 4 chunks (the streamer's lookahead
-        # affects the first chunk's sample count via overlap-add trim).
-        assert response.chunks_generated == 4
+        # Chunk count is a function of the committed streamer geometry (the
+        # lookahead also affects the first chunk's sample count via the
+        # overlap-add trim). Derived, not restated -- see
+        # ``_expected_chunk_count``.
+        assert response.chunks_generated == _expected_chunk_count(100), (
+            f"100 tokens at chunk_size={_STREAMER_CHUNK_SIZE}/"
+            f"lookahead={_STREAMER_LOOKAHEAD} must yield "
+            f"{_expected_chunk_count(100)} chunks; got "
+            f"{response.chunks_generated}"
+        )
         # Audio length within ±5 of 100 samples (overlap-add trim slack).
         assert 95 <= len(response.audio_data) <= 105
 
@@ -922,7 +993,7 @@ class TestTrueStreamDispatchEndToEnd:
         """AC #9 / Subtask 7.4 — the cancel-before-first-chunk edge case.
 
         The talker has not yet produced enough tokens to fill a chunk
-        (chunk_size=25) when cancel arrives. The dispatch must not crash,
+        when cancel arrives. The dispatch must not crash,
         must not leak threads, and must produce exactly one cancel
         transition on the session.
 
@@ -937,8 +1008,9 @@ class TestTrueStreamDispatchEndToEnd:
         service, _mock_model = _build_true_stream_service(registry, coordinator)
         coordinator.play_dual_stream = AsyncMock(return_value=MagicMock())
 
-        # Talker feeds 30 tokens (so chunk_size=25 produces one chunk and
-        # the worker processes it before cancel fires), then BLOCKS on
+        # Talker feeds 30 tokens (enough to fill at least one window at any
+        # shipped geometry, so the worker processes a chunk before cancel
+        # fires), then BLOCKS on
         # cancel — guaranteeing cancel deterministically lands before
         # finalize. After cancel, talker calls end() so the worker drains.
         def fake_talker_builder(model, request, streamer):
@@ -1388,10 +1460,13 @@ def _make_streamer_aware_fake_model(
     captures codec_ids, accumulates into step_buffer, and pushes chunks
     to ``streamer.queue`` when ``chunk_size + lookahead`` steps land.
 
-    With ``CodecTokenStreamer`` defaults (chunk_size=25, lookahead=5),
-    ``step_count=100`` produces 3 chunks during generation (push points
-    at 30 / 55 / 80 steps; slide forward by 25 each time keeps last 5
-    as overlap) plus 1 residual chunk on flush — total 4 chunks.
+    The chunk count follows the committed geometry: at the pre-Story-20.4
+    defaults (chunk_size=25, lookahead=5) ``step_count=100`` produced 3
+    chunks during generation (push points at 30 / 55 / 80 steps; slide
+    forward by 25 each time keeps the last 5 as overlap) plus 1 residual
+    chunk on flush. At the committed 10 + 5 the push points are denser.
+    ``_expected_chunk_count`` is the arithmetic; no test in this file
+    restates the number.
 
     Returns ``(mock_model, hits)`` where ``hits`` is a dict captured by
     the fake methods so tests can assert on call counts.
@@ -1510,8 +1585,9 @@ class TestTrueStreamWireUpEndToEnd:
             registry, coordinator,
         )
         # Replace the placeholder mock with our forward-hook-aware fake.
-        # step_count=100 with chunk_size=25/lookahead=5 produces 3 chunks
-        # during generation + 1 residual = 4 chunks total.
+        # step_count=100 crosses the first-emit threshold repeatedly at
+        # every shipped geometry; the exact chunk count follows
+        # ``_expected_chunk_count`` and is not asserted here.
         fake_model, hits = _make_streamer_aware_fake_model(
             step_count=100, num_code_groups=4,
         )
@@ -1981,9 +2057,13 @@ class TestTtfaTalkerBoundaryInstrumentation:
     def test_talker_boundaries_fire_once_each_in_order_on_threshold_path(
         self, qapp, registry, coordinator, monkeypatch,
     ):
-        """step_count=100 crosses the 30-frame first-emit threshold, so
+        """step_count=100 crosses the first-emit threshold, so
         ``ttfa_first_chunk_emit_ms`` comes from the in-loop flush and is
         tagged ``path="threshold"``.
+
+        100 steps clears the window at every geometry this project has
+        shipped (30 pre-Story-20.4, 15 after), so the fixture stays valid
+        across the retune; only the reported ``frames`` moves.
         """
         service, _ = _build_true_stream_service(registry, coordinator)
         coordinator.play_dual_stream = AsyncMock(return_value=MagicMock())
@@ -2008,8 +2088,8 @@ class TestTtfaTalkerBoundaryInstrumentation:
         )
         assert len(chunk_emit) == 1, (
             "ttfa_first_chunk_emit_ms must be one-shot even though the "
-            f"threshold is crossed 3 times at step_count=100; got "
-            f"{len(chunk_emit)}"
+            "threshold is crossed repeatedly at step_count=100 "
+            f"(window={_STREAMER_WINDOW}); got {len(chunk_emit)}"
         )
 
         # Prefill is exactly one forward call before codec_ids appear.
@@ -2017,7 +2097,11 @@ class TestTtfaTalkerBoundaryInstrumentation:
 
         # The in-loop flush path, and the window geometry it flushed.
         assert chunk_emit[0][2]["path"] == "threshold"
-        assert chunk_emit[0][2]["frames"] == 30  # chunk_size 25 + lookahead 5
+        # The window the in-loop flush actually emitted. Derived from the
+        # streamer constants: a retune must move this number, and a retune
+        # that does NOT move it means the dispatch path stopped reading the
+        # streamer's geometry.
+        assert chunk_emit[0][2]["frames"] == _STREAMER_WINDOW
 
         # Monotonic ordering: t0 <= thread start <= first decode step <=
         # first chunk emit. These are the segment boundaries; if they can
@@ -2038,30 +2122,43 @@ class TestTtfaTalkerBoundaryInstrumentation:
     def test_residual_flush_path_emits_first_chunk_emit_boundary(
         self, qapp, registry, coordinator, monkeypatch,
     ):
-        """step_count=20 never reaches ``chunk_size + lookahead = 30``, so
-        the ONLY token chunk the generation ever produces is the terminal
-        residual flush.
+        """A sub-threshold step count never reaches ``chunk_size +
+        lookahead``, so the ONLY token chunk the generation ever produces is
+        the terminal residual flush.
 
         This is the Story 20.1 short-utterance / Clear-Comms regime, and it
         is why the boundary is emitted from ``_flush_residual_and_eos`` as
         well as from the in-loop flush: without it, 6 of 11 short-utterance
         runs produced no measurable first-audio interval at all. Every
-        other real-talker fixture in this file uses step_count > 30, so
-        this branch is otherwise unexercised.
+        other real-talker fixture in this file uses step_count > the window,
+        so this branch is otherwise unexercised.
+
+        Story 20.4: the step count is ``_STREAMER_WINDOW - 1``, derived. It
+        was the literal 20, which stopped being sub-threshold the moment the
+        window dropped from 30 to 15 -- the test then silently changed
+        meaning (it would have exercised the THRESHOLD path while asserting
+        residual-flush behaviour). Note that shrinking the window is exactly
+        what moves REAL short utterances off this path: Story 20.1 SS5.3
+        measured 11 of 20 short runs on residual_flush at chunk_size 25
+        versus 0 of 5 at chunk_size 10. This row keeps the path covered
+        anyway, because it is still reachable by anything shorter than
+        1.25 s of speech.
         """
         service, _ = _build_true_stream_service(registry, coordinator)
         coordinator.play_dual_stream = AsyncMock(return_value=MagicMock())
         recorder = _RecordingMetricsRecorder()
 
         response, _hits = self._run_dispatch(
-            qapp, service, monkeypatch, 20, recorder,
+            qapp, service, monkeypatch, _SUB_THRESHOLD_STEPS, recorder,
         )
         assert response.success is True, (
             f"short-utterance dispatch failed: {response.error_message}"
         )
         assert response.chunks_generated == 1, (
-            "step_count=20 must produce exactly one chunk (the residual "
-            f"flush); got {response.chunks_generated}"
+            f"step_count={_SUB_THRESHOLD_STEPS} is one frame short of the "
+            f"{_STREAMER_WINDOW}-frame window, so it must produce exactly "
+            f"one chunk (the residual flush); got "
+            f"{response.chunks_generated}"
         )
 
         chunk_emit = recorder.calls_for("ttfa_first_chunk_emit_ms")
@@ -2074,7 +2171,7 @@ class TestTtfaTalkerBoundaryInstrumentation:
             "threshold emission by the ``path`` tag, or the short-utterance "
             "degeneration is invisible in the captured data"
         )
-        assert chunk_emit[0][2]["frames"] == 20, (
+        assert chunk_emit[0][2]["frames"] == _SUB_THRESHOLD_STEPS, (
             "``frames`` must report the residual buffer depth so the "
             "evidence can tell how far short of the threshold the "
             f"utterance fell; got {chunk_emit[0][2]['frames']}"

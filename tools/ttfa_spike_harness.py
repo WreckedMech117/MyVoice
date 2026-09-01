@@ -34,7 +34,7 @@ Usage (portable interpreter is mandatory -
 memory/test_interpreter_portable_python310.md)::
 
     python310\\python.exe tools\\ttfa_spike_harness.py --runs 10 --utterance long --out out.csv
-    python310\\python.exe tools\\ttfa_spike_harness.py --runs 5 --utterance short --chunk-size 10 --out sweep-cs10.csv
+    python310\\python.exe tools\\ttfa_spike_harness.py --runs 5 --utterance short --chunk-size 25 --out sweep-cs25.csv
 
 Spike hygiene (Story 20.1 AC #7): this file lives in ``tools/`` and is not
 imported by anything under ``src/myvoice/``. The ``--chunk-size`` override
@@ -444,7 +444,11 @@ async def _run(args) -> int:
     from myvoice.models.service_enums import QwenModelType
     from myvoice.services.qwen_tts_service import QwenTTSRequest, QwenTTSService
 
-    _apply_chunk_size(args.chunk_size)
+    if args.chunk_size is not None:
+        _apply_chunk_size(args.chunk_size)
+    else:
+        from myvoice.services.tts_streaming import codec_token_streamer as _cts
+        args.chunk_size = _cts.DEFAULT_CHUNK_SIZE
 
     settings = _build_settings(args.precision, args.compile)
     service = QwenTTSService(
@@ -654,7 +658,14 @@ def main() -> int:
     ap.add_argument("--warmup", type=int, default=1,
                     help="discarded leading runs (cold compile / cuDNN autotune)")
     ap.add_argument("--utterance", choices=sorted(UTTERANCES), default="long")
-    ap.add_argument("--chunk-size", type=int, default=25)
+    # Story 20.4: default is now "whatever the streamer module actually
+    # commits", not a literal. Before the retune this file's own default of
+    # 25 happened to agree with the module constant; after it, a hard-coded
+    # default would have silently measured the OLD geometry while claiming
+    # to measure current code. ``None`` -> do not rebind anything.
+    ap.add_argument("--chunk-size", type=int, default=None,
+                    help="override CodecTokenStreamer.DEFAULT_CHUNK_SIZE for "
+                         "this run; omit to measure the committed geometry")
     ap.add_argument("--precision", choices=("auto", "bf16", "fp32"), default="auto")
     ap.add_argument("--compile", choices=("auto", "on", "off"), default="auto")
     ap.add_argument("--prime", action="store_true",
@@ -671,8 +682,9 @@ def main() -> int:
     print(
         "TTFA harness: utterance={u} chunk_size={c} lookahead=5 precision={p} "
         "compile={k} runs={r} (+{w} warmup)".format(
-            u=args.utterance, c=args.chunk_size, p=args.precision,
-            k=args.compile, r=args.runs, w=args.warmup,
+            u=args.utterance,
+            c="committed" if args.chunk_size is None else args.chunk_size,
+            p=args.precision, k=args.compile, r=args.runs, w=args.warmup,
         )
     )
     if torch.cuda.is_available():

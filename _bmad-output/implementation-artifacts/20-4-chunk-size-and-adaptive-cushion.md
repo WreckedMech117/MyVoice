@@ -1,6 +1,6 @@
 # Story 20.4: Chunk-Size Retune + Adaptive-Cushion Fix (Phase ⊥-Polish-3)
 
-Status: ready-for-dev
+Status: in-progress — AC #1/#2/#3/#4/#7 complete and verified; AC #5 and AC #6 blocked on the operator run (evidence §8 is the consolidated hand-off)
 
 <!-- Phase tag: Phase ⊥-Polish-3. Fourth story of Epic 20 (First-Audio Latency). -->
 <!-- Source: Story 20.1 evidence §5 (Follow-up B) + §2.6 (Follow-up C), which are COUPLED. -->
@@ -169,29 +169,29 @@ Story 20.3's priming then warms the **new** key
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Chunk geometry** (AC: #1)
-  - [ ] 1.1 Change the streamer constants to `chunk_size = 10`, `lookahead = 5`.
-  - [ ] 1.2 Thread the real geometry into `engage_compile_optimizations` from the call site, reading the streamer module rather than adding a second literal.
-  - [ ] 1.3 Test that the compile path receives the streamer's actual window and fails on divergence.
+- [x] **Task 1 — Chunk geometry** (AC: #1)
+  - [x] 1.1 Change the streamer constants to `chunk_size = 10`, `lookahead = 5`.
+  - [x] 1.2 Thread the real geometry into `engage_compile_optimizations` from the call site, reading the streamer module rather than adding a second literal. **Found and closed a THIRD site the spike did not name** — `qwen_tts_service.warmup_compile_async` carried its own `decode_window_frames=30` in the compile-cache key; left in place it would have had Story 20.3's priming warm a key the engage path never reads.
+  - [x] 1.3 Test that the compile path receives the streamer's actual window and fails on divergence. New file `test_decode_window_geometry_coherence.py` (6 rows, runtime + static arms) plus a resolution row in `test_torch_runtime.py`.
 
-- [ ] **Task 2 — Cushion policy** (AC: #2)
-  - [ ] 2.1 Revise the release policy so a low-`P` host starts materially sooner than the cap; justify against the numbers.
-  - [ ] 2.2 Address or explicitly defer the `CHARS_TO_AUDIO_SECONDS` overshoot.
-  - [ ] 2.3 Prove the `≥16 GiB` static path is untouched.
-  - [ ] 2.4 Tests for both branches, including the low-`P` release point.
+- [x] **Task 2 — Cushion policy** (AC: #2)
+  - [x] 2.1 Two-regime feasibility policy: buy the gapless cushion when it fits inside `cushion_budget_seconds = 2.0`, otherwise fall back to the static watermark. `MAX_PRE_DELAY_SECONDS` untouched as a guardrail. Justified against the simulation and the Story 20.3 TTFA baseline in evidence §2.2.
+  - [x] 2.2 **Addressed, not deferred.** `CHARS_TO_AUDIO_SECONDS = 0.08` (+44.5 %) replaced with an affine `0.5 + 0.055·chars` (+2.0 %), calibrated on both measured fixtures and independently validated against a fresh 19,527 ms measurement (evidence §4.2).
+  - [x] 2.3 Proved by two tests: byte-identical static-path output across three budget values, and an exact watermark release point with `last_release_reason is None`.
+  - [x] 2.4 Nine new rows across two classes, written at the `chunk_size = 10` chunk geometry.
 
-- [ ] **Task 3 — Coupling** (AC: #3)
-  - [ ] 3.1 Re-derive the adaptive-path behaviour at `chunk_size = 10` with the AC #2 fix in place.
+- [x] **Task 3 — Coupling** (AC: #3)
+  - [x] 3.1 `20-4-adaptive-cushion-sim.py` re-derives both policies at both geometries against the shipped buffer, and **cross-checks its pre-20.4 reproduction against all 10 numbers Story 20.1 §2.7 published (10/10 match)**. Ratio at cs10 goes 4.00× → 0.67×. Three unpredicted interactions reported in evidence §3.3.
 
-- [ ] **Task 4 — Measure** (AC: #4, #6)
-  - [ ] 4.1 Re-measure the producer emit/drain ratio on current code.
-  - [ ] 4.2 GUI capture, ≥5 launches, short + long, against the 1b 192 ms / TOTAL 1,353 ms baseline. Group by `session_id`.
-  - [ ] 4.3 Derive the sub-16 GiB effect; restate the deferred 3060 check.
-  - [ ] 4.4 Write the evidence file.
+- [~] **Task 4 — Measure** (AC: #4, #6)
+  - [x] 4.1 Re-measured on current code: **0.619× at cs10** vs 0.585× at cs25, contemporaneous, same host, same session. Gate `< 1.0×` holds with 38 % margin.
+  - [ ] 4.2 GUI capture — **OPERATOR**. `11_Story_20.4_AC6_GUI_Capture.bat` (new; the 20.3 launcher would overwrite the baseline). Aggregator validated by reproducing the 20.3 baseline exactly.
+  - [x] 4.3 Sub-16 GiB effect derived and labelled derived; the deferred 3060 check restated with five specific things it would now falsify (evidence §7).
+  - [x] 4.4 Evidence file written.
 
-- [ ] **Task 5 — Audition** (AC: #5) — Commander solo, short + long, CLONED voice.
+- [~] **Task 5 — Audition** (AC: #5) — fixture **generated and verified** (14 WAVs through the production TRUE_STREAM path, CLONED voice, short + long); the listening session is **OPERATOR**, via `12_Story_20.4_AC5_Audition.bat`.
 
-- [ ] **Task 6 — Regression sweep** (AC: #7)
+- [x] **Task 6 — Regression sweep** (AC: #7) — zero new failures on every surface; pre-existing set unchanged in count and identity. Exactly one new compile-cache key directory observed, as predicted.
 
 ## Dev Notes
 
@@ -224,16 +224,98 @@ first, then hand over a single consolidated run — do not ask for GUI launches 
 
 ### Agent Model Used
 
-_(to be filled by dev agent)_
+claude-opus-5[1m]
 
 ### Completion Notes List
 
-_(to be filled by dev agent)_
+1. **The D-25 trap had three sites, not two.** Story 20.1 §5.4 named
+   `torch_runtime`'s hard-coded defaults and `model_registry`'s silent call
+   site. Implementing the retune surfaced a third: `warmup_compile_async`
+   (`qwen_tts_service.py:2217`) carried its own `decode_window_frames=30` in
+   the compile-cache key. That one is not decorative — the window is one of
+   the seven key dimensions, so leaving it would have made Story 20.3's
+   startup priming warm a key the engage path never reads, silently
+   reverting the ~4 s first-generation win with no error and no log line.
+   Closed in the same change; `test_warmup_cache_key_moves_with_a_streamer_retune`
+   is the regression row for exactly that class.
+
+2. **The cushion fix is a feasibility test, not a lower cap.** The story
+   forbids simply moving `MAX_PRE_DELAY_SECONDS`, and this does not: the
+   guardrail is unchanged at 10 s and still tested. What changed is that
+   `τ_gapless` is now computed *unclamped* and compared against a
+   `cushion_budget_seconds = 2.0` feasibility budget. The insight that makes
+   it obvious: at `P = 0.5` the old policy paid a 12.5 s wait **and gapped
+   anyway**, because the clamped cushion was nowhere near the ~19 s
+   gaplessness actually required. That is a strictly dominated outcome.
+
+3. **The product trade is stated, and so is where it costs.** Evidence §2.4
+   records that total silence is conserved (a cushion second not spent up
+   front reappears as a gap second later), that MyVoice's answer is
+   "starting sooner", and that there is a real band — roughly
+   `0.70 ≤ P ≤ 0.90` — where the old policy *did* buy gaplessness with its
+   wait and the new one trades it away. That band is not the ship-target
+   operating point (`P ≈ 0.5`), and the budget is one named constant if the
+   deferred 3060 run says otherwise.
+
+4. **The estimator was fixed rather than deferred, and then validated by
+   accident.** The affine `0.5 + 0.055·chars` was calibrated on Story 20.1's
+   two measured fixtures. The AC #4 harness run then independently reported
+   `total_audio_ms` median 19,527 ms for the long fixture — the new
+   estimator predicts 19,695 ms (+0.9 %), the old one 27,920 ms (+43.0 %).
+
+5. **Three integration assertions went red, and one of them was the point.**
+   `test_streaming_tts_smoke.py` hard-coded `4`, `30` and `20`. The `20` case
+   is the instructive one: it did not merely fail, it *changed meaning* —
+   with the window at 15, a 20-step fixture exercises the threshold path
+   while asserting residual-flush behaviour. All three now derive from the
+   streamer constants, with a self-check row pinning the helper against both
+   shipped geometries.
+
+6. **Everything about the sub-16 GiB tier is DERIVED.** Nothing in this story
+   was observed on sub-16 GiB hardware. The simulation's credibility rests on
+   reproducing all 10 of Story 20.1 §2.7's published pre-20.4 numbers before
+   reporting any post-fix ones; it exits non-zero if that cross-check fails.
+
+7. **Operator-gated work is consolidated into evidence §8** — one GUI capture
+   run and one listening session, ~35 minutes total, with both launchers
+   preflighting themselves.
 
 ### File List
 
-_(to be filled by dev agent)_
+**Source**
+- `src/myvoice/services/tts_streaming/codec_token_streamer.py`
+- `src/myvoice/services/tts_streaming/torch_runtime.py`
+- `src/myvoice/services/model_registry.py`
+- `src/myvoice/services/qwen_tts_service.py`
+- `src/myvoice/services/streaming_chunk_buffer.py`
+- `src/myvoice/services/audio_coordinator.py`
+
+**Tests**
+- `tests/unit/services/test_decode_window_geometry_coherence.py` (new)
+- `tests/unit/services/test_streaming_chunk_buffer.py`
+- `tests/unit/services/test_audio_coordinator.py`
+- `tests/unit/services/tts_streaming/test_torch_runtime.py`
+- `tests/unit/services/tts_streaming/test_codec_token_streamer.py`
+- `tests/integration/test_streaming_tts_smoke.py`
+
+**Tooling**
+- `tools/ttfa_spike_harness.py`
+- `11_Story_20.4_AC6_GUI_Capture.bat` (new)
+- `12_Story_20.4_AC5_Audition.bat` (new)
+
+**Artifacts** (`_bmad-output/implementation-artifacts/`)
+- `20-4-chunk-size-and-adaptive-cushion-evidence.md` (new)
+- `20-4-adaptive-cushion-sim.py` + `20-4-adaptive-cushion-sim.txt` (new)
+- `20-4-aggregate-gui.py` (new)
+- `20-4-regen-audition-fixture.py` (new)
+- `20-4-l1-audition-helper.py` (new)
+- `20-4-perceptual-fixtures/` — 14 WAVs + `_perlistener_truthtable.json` (new)
+- `20-4-gui-utterances.txt` (new)
+- `20-4-ratio-long-cs10.csv`, `20-4-ratio-long-cs25.csv`,
+  `20-4-ratio-short-cs10.csv`, `20-4-ratio-short-cs25.csv` (new)
+- `20-1-adaptive-cushion-sim.py` — superseded-header note only
 
 ## Change Log
 
 - 2026-09-01 — Drafted by Winston from Story 20.1 Follow-ups B and C, shipped as one story because Story 20.1 found them coupled: `chunk_size = 10` worsens the sub-16 GiB cushion-to-talker ratio from 2.5× to 4.0×, so B alone would speed up large-VRAM hosts and leave the RTX 30xx tier pinned at the cap.
+- 2026-09-01 — Implemented. AC #1/#2/#3/#4/#7 complete and verified; AC #5 fixture generated and AC #6 tooling in place, both awaiting the operator run consolidated in evidence §8. Producer ratio re-measured at 0.619× (gate `< 1.0×`). Long-form TTFA 1,491 → 829 ms and short-form 1,409 → 784 ms on current code, with the short class off the residual-flush path 6/6. Sub-16 GiB cushion at `P = 0.5` derived at 10.00 s → 1.67 s, cushion/talker 4.00× → 0.67×.

@@ -18,6 +18,7 @@ from myvoice.services.tts_streaming import (
     CodecTokenStreamer,
     END_OF_STREAM,
 )
+from myvoice.services.tts_streaming import codec_token_streamer
 
 
 # -- AC #1: importable from package; inherits from BaseStreamer --------- #
@@ -72,15 +73,44 @@ def test_package_all_lists_expected_symbols_in_order():
 
 
 def test_default_construction_uses_documented_constants():
+    """A bare ``CodecTokenStreamer()`` picks up the module constants.
+
+    Deliberately derived, not literal: the point of this row is that the
+    constructor defaults track the module constants, which is what makes
+    a retune a one-line edit. The committed VALUES are pinned separately
+    by ``test_committed_chunk_geometry_is_story_20_4_optimum``.
+    """
     s = CodecTokenStreamer()
-    assert s.chunk_size == 25
-    assert s.lookahead == 5
+    assert s.chunk_size == codec_token_streamer.DEFAULT_CHUNK_SIZE
+    assert s.lookahead == codec_token_streamer.DEFAULT_LOOKAHEAD
     # D-10: maxsize = 4 * chunk_size
-    assert s.queue.maxsize == 100
+    assert s.queue.maxsize == (
+        codec_token_streamer.DEFAULT_QUEUE_MAX_FACTOR
+        * codec_token_streamer.DEFAULT_CHUNK_SIZE
+    )
     assert isinstance(s.queue, queue.Queue)
     assert isinstance(s._cancel_event, threading.Event)
     assert not s._cancel_event.is_set()
     assert s._buffer == []
+
+
+def test_committed_chunk_geometry_is_story_20_4_optimum():
+    """Story 20.4 AC #1 — pin the committed geometry to the measured optimum.
+
+    Story 20.1 SS5.2/SS5.3 swept {5, 10, 15, 25} on both utterance classes
+    and identified 10 as the optimum: cs=5 puts 417 ms of audio in each
+    chunk, BELOW the consumer's 500 ms static watermark, so the consumer
+    holds two chunks and hands ~270 ms back; cs>=15 pays a larger
+    first-emit threshold for nothing. A future edit that moves either
+    constant fails here and must re-run the sweep to justify itself.
+    """
+    assert codec_token_streamer.DEFAULT_CHUNK_SIZE == 10
+    assert codec_token_streamer.DEFAULT_LOOKAHEAD == 5
+    # The watermark no-op condition from Story 20.1 SS5.4: at 12 Hz a chunk
+    # carries chunk_size/12 seconds of audio, and that must clear the
+    # consumer's 500 ms static watermark or the consumer gives the gain
+    # back. chunk_size >= 6 is the boundary.
+    assert codec_token_streamer.DEFAULT_CHUNK_SIZE / 12.0 >= 0.5
 
 
 def test_custom_construction_honors_all_parameters():

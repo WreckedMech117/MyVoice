@@ -1,5 +1,14 @@
 """Story 20.1 review-response A4/A5 - simulate the REAL StreamingChunkBuffer.
 
+SUPERSEDED 2026-09-01 BY 20-4-adaptive-cushion-sim.py. This script drives
+the SHIPPED buffer, and Story 20.4 changed that buffer's release policy, so
+re-running this file today does NOT reproduce the output in
+20-1-adaptive-cushion-sim.txt - it measures the new policy through a
+`why_released` helper that still describes the old one. The .txt beside it
+remains the record of the pre-20.4 behaviour. The Story 20.4 successor
+reproduces the pre-20.4 policy by subclassing the buffer, and cross-checks
+its reproduction against every number this file published.
+
 The first draft of Follow-up C argued from the tau_min formula alone and got
 the binding constraint wrong. `_adaptive_ready_to_dispatch` has five escapes
 in priority order, and the tau_min comparison is the LAST of them:

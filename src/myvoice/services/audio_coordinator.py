@@ -65,31 +65,85 @@ _DEFAULT_STREAMING_CROSSFADE_SAMPLES = 64
 # Adaptive pre-buffer mode tuning. Activated for slow-producer hardware
 # (RTX 3060 / <16GB VRAM) where the static 500ms watermark cannot mask
 # inter-chunk gaps that grow as the generation continues. The formula
-# τ_min = T_a × (1/P − 1) computes the minimum cushion needed to finish
-# playback by gen_complete; on fast hardware (P ≥ 1) τ_min collapses
-# to 0 so this code path is a no-op there. See
-# `streaming_chunk_buffer.py` module docstring for the math.
+# τ_gapless = T_a × (1/P − 1) computes the cushion needed to finish
+# playback by gen_complete; on fast hardware (P ≥ 1) it collapses to 0 so
+# this code path is a no-op there. Story 20.4 made the buffer decide
+# whether that cushion is worth buying (see CUSHION_BUDGET_SECONDS
+# below) rather than chasing it up to the 10 s guardrail. See
+# `streaming_chunk_buffer.py` module docstring for the math and the
+# product trade.
 #
-# CHARS_TO_AUDIO_SECONDS = 0.08 — calibrated from 3060 smoke 2026-05-15
-# log (gen 1: "First Generation..." = 19 chars → 1.42 s audio → 0.075
-# s/char; round up to 0.08 for safety margin). This is a coarse heuristic
-# — pauses, punctuation, and language affect actual rate — but it is
-# cheap, available before generation starts, and only needs to estimate
-# T_a within ~25% to land in the cushion's safe range.
+# T_a ESTIMATOR (Story 20.4 AC #2, recalibrated) — T_a is estimated from
+# the character count before generation starts, and feeds tau_min directly.
 #
-# MAX_PRE_DELAY_SECONDS = 10.0 — hard upper bound on adaptive wait. If
-# the producer is so slow (e.g. cold-compile gen, CPU-only) that the
-# math wants 30+ s of cushion, we cap at 10 s and accept that the rest
-# of the generation will have gaps. The cold-compile case is a one-time
-# cost; we never want a user to wait > 10 s for first audio.
+# The 2026-05-15 estimator was a single proportional constant,
+# CHARS_TO_AUDIO_SECONDS = 0.08 s/char, calibrated from ONE 19-char 3060
+# smoke utterance. Story 20.1 §2.7 measured it against the canonical
+# fixtures and found it ~44 % high on long-form: 349 chars → 27.92 s
+# estimated against 19.32 s measured. Overshoot inflates tau_min, which
+# is exactly the wrong direction for an interjection feature.
+#
+# Two measured points are now available, and they do not sit on a line
+# through the origin — short utterances carry proportionally more
+# non-speech time (onset silence, the reference padding, final decay):
+#
+#     349 chars → 19.32 s  (Story 20.1 long fixture, measured)
+#      33 chars →  2.30 s  (Story 20.1 short / Clear Comms fixture)
+#
+# An affine fit T_a ≈ INTERCEPT + chars × SECONDS_PER_CHAR through those
+# two points gives 0.523 s + 0.0539 s/char. Rounded to 0.5 + 0.055 the
+# estimator stays very slightly conservative (over-estimating) on both:
+#
+#     349 chars → 19.70 s  (+2.0 % vs measured, was +44.5 %)
+#      33 chars →  2.32 s  (+0.7 % vs measured, was +14.8 %)
+#
+# TWO POINTS IS A THIN CALIBRATION and it is deliberately biased slightly
+# high rather than centred. It is also now much less load-bearing than it
+# was: under the Story 20.4 two-regime policy T_a only changes behaviour
+# inside the FEASIBLE band (tau_gapless ≤ cushion budget); once
+# gaplessness is out of reach the buffer falls back to the static
+# watermark and T_a drops out of the decision entirely. Story 20.1 §2.7
+# had already shown the old estimator changed nothing at the 3060's
+# documented P ≈ 0.5 because the cap dominated there.
+#
+# CUSHION_BUDGET_SECONDS = 2.0 — the most first-audio latency we will
+# spend chasing gaplessness on a slow host. Four times the static
+# watermark (0.5 s), and set against the RTX 5090's ~1.35 s total TTFA
+# (Story 20.3 §4.1) as the reference for what "fast" feels like. Past
+# this the cushion cannot be bought inside an interjection-shaped latency
+# budget, so `StreamingChunkBuffer` stops paying for it. See that class's
+# module docstring for the full trade.
+#
+# MAX_PRE_DELAY_SECONDS = 10.0 — UNCHANGED, and deliberately so. It is a
+# safety bound against unbounded waits (cold compile, CPU-only), not a
+# tuning knob; Story 20.4 explicitly does not move it. Under the
+# two-regime policy it should no longer be the binding escape on real
+# hardware.
 #
 # LOW_VRAM_THRESHOLD_BYTES = 16 GiB — matches the existing tier auto-
 # default in `hardware_probe.detect_recommended_tier`. RTX 30xx Ampere
 # line ≤ 12 GiB triggers adaptive mode; RTX 3090 / 4080+ / 5090 stay
 # on the static-watermark fast path.
-_DEFAULT_STREAMING_CHARS_TO_AUDIO_SECONDS = 0.08
+_DEFAULT_STREAMING_T_A_INTERCEPT_SECONDS = 0.5
+_DEFAULT_STREAMING_T_A_SECONDS_PER_CHAR = 0.055
+_DEFAULT_STREAMING_CUSHION_BUDGET_SECONDS = 2.0
 _DEFAULT_STREAMING_MAX_PRE_DELAY_SECONDS = 10.0
 _DEFAULT_STREAMING_LOW_VRAM_THRESHOLD_BYTES = 16 * 1024 ** 3
+
+
+def estimate_target_audio_seconds(text_length: int) -> float:
+    """Estimate total audio duration T_a (seconds) from a character count.
+
+    Affine, not proportional — see the calibration note above. Pure
+    function so the estimator can be unit-tested against the two measured
+    Story 20.1 fixtures without constructing an AudioCoordinator.
+    """
+    if text_length <= 0:
+        return 0.0
+    return (
+        _DEFAULT_STREAMING_T_A_INTERCEPT_SECONDS
+        + text_length * _DEFAULT_STREAMING_T_A_SECONDS_PER_CHAR
+    )
 
 
 def _detect_total_vram_bytes() -> Optional[int]:
@@ -1141,11 +1195,15 @@ class AudioCoordinator(BaseService):
                 provided AND the primary CUDA device reports < 16 GiB VRAM,
                 the consumer-side buffer enables adaptive pre-buffer mode:
                 playback start is delayed until enough audio is buffered
-                to bridge the producer-side deficit for the entire
-                generation. See module-level docstring on
-                `streaming_chunk_buffer.py` for the τ = T_a × (1/P − 1)
-                math. When None or VRAM ≥ 16 GiB, the buffer falls back
-                to the static 500 ms watermark.
+                to bridge the producer-side deficit — but only while that
+                cushion fits inside CUSHION_BUDGET_SECONDS. Past that,
+                Story 20.4's policy declares gaplessness unreachable and
+                falls back to the static watermark rather than spending
+                latency it cannot convert into gaplessness. See
+                module-level docstring on `streaming_chunk_buffer.py` for
+                the τ_gapless = T_a × (1/P − 1) math and the trade. When
+                None or VRAM ≥ 16 GiB, the buffer uses the static 500 ms
+                watermark and none of this applies.
             session_id: Optional registry-issued session id, threaded from
                 the progressive-playback consumer purely so the Story 20.1
                 ``ttfa_first_playback_write_ms`` boundary metric carries the
@@ -1203,14 +1261,16 @@ class AudioCoordinator(BaseService):
                     vram_bytes is not None
                     and vram_bytes < _DEFAULT_STREAMING_LOW_VRAM_THRESHOLD_BYTES
                 ):
-                    target_audio_seconds = (
-                        text_length * _DEFAULT_STREAMING_CHARS_TO_AUDIO_SECONDS
+                    target_audio_seconds = estimate_target_audio_seconds(
+                        text_length
                     )
                     enable_adaptive = True
                     self.logger.info(
                         f"Streaming buffer: adaptive pre-buffer ENABLED — "
                         f"text_length={text_length} chars, "
                         f"T_a_estimate={target_audio_seconds:.2f}s, "
+                        f"cushion_budget="
+                        f"{_DEFAULT_STREAMING_CUSHION_BUDGET_SECONDS:.1f}s, "
                         f"detected_vram={vram_bytes / (1024 ** 3):.1f} GiB "
                         f"(< {_DEFAULT_STREAMING_LOW_VRAM_THRESHOLD_BYTES / (1024 ** 3):.0f} GiB threshold)"
                     )
@@ -1225,6 +1285,9 @@ class AudioCoordinator(BaseService):
                 target_audio_seconds=target_audio_seconds,
                 enable_adaptive_pre_buffer=enable_adaptive,
                 max_pre_delay_seconds=_DEFAULT_STREAMING_MAX_PRE_DELAY_SECONDS,
+                cushion_budget_seconds=(
+                    _DEFAULT_STREAMING_CUSHION_BUDGET_SECONDS
+                ),
             )
 
             # Start streaming on monitor service

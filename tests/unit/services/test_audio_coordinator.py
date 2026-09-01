@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from myvoice.services import audio_coordinator as ac_module
 from myvoice.services.audio_coordinator import AudioCoordinator
 from myvoice.services.monitor_audio_service import MonitorAudioService
 from myvoice.services.virtual_microphone_service import VirtualMicrophoneService
@@ -908,3 +909,83 @@ class TestTtfaFirstPlaybackWriteBoundary:
         ]
         assert len(hits) == 1
         assert hits[0].session_id is None
+
+
+# --------------------------------------------------------------------------- #
+# Story 20.4 AC #2 — the T_a estimator that feeds the adaptive cushion
+# --------------------------------------------------------------------------- #
+
+
+class TestTargetAudioSecondsEstimator:
+    """The character-count -> audio-duration estimate that drives tau_gapless.
+
+    Story 20.1 §2.7 measured the shipped 0.08 s/char proportional estimator
+    at ~44 % high on the canonical long fixture (349 chars -> 27.92 s
+    estimated vs 19.32 s measured), and it feeds tau_min directly. Story
+    20.4 replaced it with an affine fit through both measured fixtures.
+    """
+
+    # The two Story 20.1 measured points the fit is calibrated on.
+    LONG_CHARS, LONG_MEASURED = 349, 19.32
+    SHORT_CHARS, SHORT_MEASURED = 33, 2.30
+
+    def test_matches_the_long_fixture_within_five_percent(self):
+        est = ac_module.estimate_target_audio_seconds(self.LONG_CHARS)
+        err = (est - self.LONG_MEASURED) / self.LONG_MEASURED
+        assert abs(err) < 0.05, f"long fixture estimate off by {err:+.1%}"
+
+    def test_matches_the_short_fixture_within_five_percent(self):
+        est = ac_module.estimate_target_audio_seconds(self.SHORT_CHARS)
+        err = (est - self.SHORT_MEASURED) / self.SHORT_MEASURED
+        assert abs(err) < 0.05, f"short fixture estimate off by {err:+.1%}"
+
+    def test_bias_stays_conservative_not_short(self):
+        # Deliberate design choice: a thin two-point calibration should err
+        # slightly LONG (a marginally larger cushion) rather than short.
+        for chars, measured in (
+            (self.LONG_CHARS, self.LONG_MEASURED),
+            (self.SHORT_CHARS, self.SHORT_MEASURED),
+        ):
+            assert ac_module.estimate_target_audio_seconds(chars) >= measured
+
+    def test_beats_the_pre_20_4_proportional_estimator(self):
+        """Regression row for the exact defect: proportional-through-origin.
+
+        A single s/char constant cannot fit both fixtures, because short
+        utterances carry proportionally more non-speech time. Any future
+        edit that reverts to ``chars * k`` fails one of the two rows above;
+        this row states why, in one comparison.
+        """
+        old = self.LONG_CHARS * 0.08
+        new = ac_module.estimate_target_audio_seconds(self.LONG_CHARS)
+        old_err = abs(old - self.LONG_MEASURED) / self.LONG_MEASURED
+        new_err = abs(new - self.LONG_MEASURED) / self.LONG_MEASURED
+        assert old_err > 0.40      # the ~44 % overshoot Story 20.1 measured
+        assert new_err < 0.05
+        assert new_err < old_err
+
+    def test_zero_and_negative_lengths_are_safe(self):
+        assert ac_module.estimate_target_audio_seconds(0) == 0.0
+        assert ac_module.estimate_target_audio_seconds(-5) == 0.0
+
+    def test_monotonic_in_character_count(self):
+        vals = [
+            ac_module.estimate_target_audio_seconds(n)
+            for n in (1, 10, 50, 200, 1000)
+        ]
+        assert vals == sorted(vals)
+        assert len(set(vals)) == len(vals)
+
+    def test_cushion_budget_constant_is_below_the_guardrail(self):
+        """The budget is a policy knob; max_pre_delay stays the guardrail.
+
+        If a future edit raised the budget to (or past) the cap, the
+        guardrail would become the binding escape again and Story 20.4's
+        fix would silently revert.
+        """
+        assert (
+            ac_module._DEFAULT_STREAMING_CUSHION_BUDGET_SECONDS
+            < ac_module._DEFAULT_STREAMING_MAX_PRE_DELAY_SECONDS
+        )
+        # And Story 20.4 does not move the guardrail itself.
+        assert ac_module._DEFAULT_STREAMING_MAX_PRE_DELAY_SECONDS == 10.0
