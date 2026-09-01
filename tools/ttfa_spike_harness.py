@@ -77,6 +77,12 @@ from myvoice.observability.metrics import MetricRecord  # noqa: E402
 # Fixtures
 # --------------------------------------------------------------------------- #
 
+# Story 20.2 Task 3 - the priming utterance (matches
+# ``QwenTTSService._COMPILE_PRIMING_TEXT``). Deliberately short: the point of
+# priming is to trigger the first forward pass (inductor reload + CUDA-graph
+# record), not to produce audio.
+PRIMING_TEXT = "Hello world."
+
 # Long-form: the canonical Story 17.3 section 4.1 step-3 paragraph. Every Epic
 # 18 measurement (18.1 / 18.2 / 18.3 / 18.4) used this exact string, so the
 # numbers produced here are directly comparable to the 5,929.4 ms Branch-A
@@ -205,6 +211,10 @@ class ConsumerSim:
             sample_width=2,
         )
         self.collector: Optional[RunCollector] = None
+        # Story 20.2 Task 3 - counts EVERY chunk this consumer is handed,
+        # regardless of which run it belongs to. Used to prove the startup
+        # priming generation reached no consumer (AC #2) on real hardware.
+        self.total_chunks_seen = 0
 
     def reset(self, collector: RunCollector) -> None:
         self._buffer.reset()
@@ -212,6 +222,7 @@ class ConsumerSim:
 
     def on_chunk(self, chunk: Any) -> None:
         """Sync trampoline - runs on the StreamingDecoderWorker thread."""
+        self.total_chunks_seen += 1
         col = self.collector
         if (
             col is not None
@@ -455,6 +466,31 @@ async def _run(args) -> int:
     prompt = _load_voice_clone_prompt(service)
     text = UTTERANCES[args.utterance]
 
+    # Story 20.2 Task 3 - startup compile priming. Stands in for
+    # ``warmup_compile_async``'s warm-cache branch: one short generation
+    # dispatched with ``suppress_audio_output=True`` BEFORE the measured
+    # runs, so PyTorch's lazy inductor-cache reload + CUDA-graph record is
+    # paid here rather than on the first measured (i.e. user-facing)
+    # generation. The BASE model + the same voice_clone_prompt are used so
+    # the primed graph is the one the measured run exercises.
+    if getattr(args, "prime", False):
+        t_prime = time.time()
+        prime_req = QwenTTSRequest(
+            text=PRIMING_TEXT,
+            language="English",
+            model_type=QwenModelType.BASE,
+            streaming=True,
+            voice_clone_prompt=prompt,
+            suppress_audio_output=True,
+        )
+        prime_resp = await service._generate_true_stream(prime_req)
+        prime_ms = (time.time() - t_prime) * 1000.0
+        await asyncio.sleep(0.15)
+        print("  startup priming: {ok} in {ms:.0f}ms; consumer chunks seen "
+              "during priming = {n}".format(
+                  ok="ok" if prime_resp.success else "FAILED",
+                  ms=prime_ms, n=consumer.total_chunks_seen))
+
     rows: List[Dict[str, Any]] = []
     total_runs = args.runs + args.warmup
     try:
@@ -621,6 +657,10 @@ def main() -> int:
     ap.add_argument("--chunk-size", type=int, default=25)
     ap.add_argument("--precision", choices=("auto", "bf16", "fp32"), default="auto")
     ap.add_argument("--compile", choices=("auto", "on", "off"), default="auto")
+    ap.add_argument("--prime", action="store_true",
+                    help="Story 20.2: run one suppressed priming generation "
+                         "at startup before the measured runs (stands in for "
+                         "warmup_compile_async's warm-cache branch)")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 

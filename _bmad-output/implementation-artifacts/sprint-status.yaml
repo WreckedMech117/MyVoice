@@ -170,3 +170,9 @@ development_status:
   # env-var CSV capture (no new build). Gate B is not hardware-blocked.
   epic-20: in-progress
   20-1-ttfa-spike-faster-qwen3-tts: done
+  # Story 20.2 added 2026-08-31 from Story 20.1 evidence 6.4 Follow-up A - the largest
+  # single TTFA term (~3.96s in-process inductor reload handed to the user's first
+  # utterance on every launch, because warmup_compile_async primes only on a COLD cache).
+  # Sequenced first because it is independent: Follow-ups B (chunk_size) and C (adaptive
+  # cushion) are coupled to each other and ship together in a later story.
+  20-2-warm-path-compile-priming: review

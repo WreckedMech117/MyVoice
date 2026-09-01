@@ -2,9 +2,15 @@
 
 Five paths covered (mirrors the AC #7 test obligations):
 
-  1. Cache-hit path: ``compile_cache.is_warm(key)`` → True. Assert no
-     priming generation runs; assert telemetry records ``reason="cache_hit"``
-     with value=0.0. The indicator must NOT fire (cache-hit is silent).
+  1. Cache-hit path: ``compile_cache.is_warm(key)`` → True. **Story 20.2
+     changed this path**: it now runs the same priming generation as the
+     cold path (so PyTorch's lazy inductor-cache reload is paid at startup
+     rather than on the user's first utterance), records
+     ``reason="primed_warm"`` with value=1.0, and does NOT call
+     ``mark_warm``. Three rows cover it: the warm prime, a failed warm
+     prime (non-fatal, ``priming_failed``), and the AC #6 env-var gate
+     ``MYVOICE_DISABLE_WARM_COMPILE_PRIMING=1`` which restores the exact
+     pre-20.2 silent ``reason="cache_hit"`` early return.
   2. Cache-miss + priming-success path: ``is_warm`` → False; the priming
      surface succeeds. Assert the indicator callback fires with
      ``"Preparing TTS engine…"`` and clears with None; assert ``mark_warm``
@@ -108,14 +114,12 @@ def _compile_records(records: List[metrics.MetricRecord]) -> List[metrics.Metric
     return [r for r in records if r.name == "tts_compile_warmup_priming"]
 
 
-# -- Path 1: cache-hit ------------------------------------------------------- #
+# -- Path 1: cache-hit (Story 20.2 — now the warm-priming path) ------------- #
 
 
-@pytest.mark.asyncio
-async def test_warmup_cache_hit_skips_priming(
-    monkeypatch, metric_records, _restore_compile_warmup_env
-):
-    """is_warm → True; no priming generation; telemetry reason=cache_hit."""
+def _patch_warm_cache(monkeypatch) -> MagicMock:
+    """Common Ampere+CUDA + warm-cache monkeypatch set. Returns the mark_warm
+    mock so callers can assert it was never invoked."""
     monkeypatch.setattr("torch.cuda.is_available", lambda: True)
     monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (8, 9))
     monkeypatch.setattr(
@@ -131,6 +135,97 @@ async def test_warmup_cache_hit_skips_priming(
         "myvoice.services.tts_streaming.compile_cache.mark_warm",
         mark_warm_mock,
     )
+    return mark_warm_mock
+
+
+@pytest.fixture
+def _restore_warm_priming_env():
+    """Ensure the test never leaks MYVOICE_DISABLE_WARM_COMPILE_PRIMING."""
+    name = "MYVOICE_DISABLE_WARM_COMPILE_PRIMING"
+    snapshot = os.environ.get(name)
+    yield
+    if snapshot is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = snapshot
+
+
+@pytest.mark.asyncio
+async def test_warmup_cache_hit_primes_warm_path(
+    monkeypatch, metric_records, _restore_compile_warmup_env,
+    _restore_warm_priming_env,
+):
+    """Story 20.2 AC #1 — is_warm → True now RUNS priming.
+
+    Telemetry reason is the distinct ``primed_warm`` (separable from
+    ``primed_cold`` and ``cache_hit`` in the metric stream), and
+    ``mark_warm`` is NOT called — the key is already warm and the cold
+    path's mark-on-success contract is unchanged.
+    """
+    os.environ.pop("MYVOICE_DISABLE_WARM_COMPILE_PRIMING", None)
+    mark_warm_mock = _patch_warm_cache(monkeypatch)
+    service = _make_service()
+    priming_calls: List[int] = []
+
+    async def _priming_succeeds():
+        priming_calls.append(1)
+
+    monkeypatch.setattr(service, "_run_compile_priming", _priming_succeeds)
+    indicator_calls = []
+    service.set_preparing_voice_callback(lambda msg: indicator_calls.append(msg))
+
+    await service.warmup_compile_async()
+
+    assert priming_calls == [1]
+    mark_warm_mock.assert_not_called()
+    # Indicator fires and clears, as on the cold path.
+    assert indicator_calls == ["Preparing TTS engine…", None]
+    rec = _compile_records(metric_records)
+    assert len(rec) == 1
+    assert rec[0].value == 1.0
+    assert rec[0].tags["reason"] == "primed_warm"
+
+
+@pytest.mark.asyncio
+async def test_warm_priming_failure_is_not_fatal_and_leaves_cache_warm(
+    monkeypatch, metric_records, caplog, _restore_compile_warmup_env,
+    _restore_warm_priming_env,
+):
+    """Story 20.2 AC #1 — a failed warm prime lands ``priming_failed``,
+    clears the indicator, never calls ``mark_warm``, never raises."""
+    os.environ.pop("MYVOICE_DISABLE_WARM_COMPILE_PRIMING", None)
+    mark_warm_mock = _patch_warm_cache(monkeypatch)
+    service = _make_service()
+
+    async def _priming_raises():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(service, "_run_compile_priming", _priming_raises)
+    indicator_calls = []
+    service.set_preparing_voice_callback(lambda msg: indicator_calls.append(msg))
+
+    with caplog.at_level(logging.WARNING):
+        await service.warmup_compile_async()  # must not raise
+
+    mark_warm_mock.assert_not_called()
+    assert indicator_calls == ["Preparing TTS engine…", None]
+    rec = _compile_records(metric_records)
+    assert len(rec) == 1
+    assert rec[0].value == 0.0
+    assert rec[0].tags["reason"] == "priming_failed"
+    assert rec[0].tags["error"] == "RuntimeError"
+    assert any("Warm-path compile priming failed" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_warm_priming_env_gate_restores_pre_story_cache_hit(
+    monkeypatch, metric_records, _restore_compile_warmup_env,
+    _restore_warm_priming_env,
+):
+    """Story 20.2 AC #6 — MYVOICE_DISABLE_WARM_COMPILE_PRIMING=1 restores the
+    exact pre-20.2 behavior: no priming, silent indicator, reason=cache_hit."""
+    monkeypatch.setenv("MYVOICE_DISABLE_WARM_COMPILE_PRIMING", "1")
+    mark_warm_mock = _patch_warm_cache(monkeypatch)
     service = _make_service()
     priming_mock = MagicMock()
     monkeypatch.setattr(service, "_run_compile_priming", priming_mock)
@@ -141,7 +236,7 @@ async def test_warmup_cache_hit_skips_priming(
 
     priming_mock.assert_not_called()
     mark_warm_mock.assert_not_called()
-    # Indicator must NOT fire on cache-hit (silent steady-state).
+    # Indicator must NOT fire on the gated cache-hit (silent steady-state).
     assert indicator_calls == []
     rec = _compile_records(metric_records)
     assert len(rec) == 1
@@ -394,3 +489,38 @@ async def test_warmup_no_model_loaded_defers_to_first_generation(
     rec = _compile_records(metric_records)
     assert len(rec) == 1
     assert rec[0].tags["reason"] == "no_model_loaded"
+
+
+# -- Defensive row 2: model_registry not wired ------------------------------ #
+
+
+@pytest.mark.asyncio
+async def test_warmup_no_model_registry_skips(
+    monkeypatch, metric_records, _restore_compile_warmup_env
+):
+    """Story 20.2 Task 2.4 — the fifth existing fast-exit still fires.
+
+    ``self._model_registry`` is None: skip with reason=no_model_registry,
+    above (and therefore unaffected by) the warm-path priming branch."""
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (8, 9))
+    monkeypatch.setattr(
+        "myvoice.services.tts_streaming.is_ampere_or_newer",
+        lambda: True,
+    )
+    is_warm_mock = MagicMock()
+    monkeypatch.setattr(
+        "myvoice.services.tts_streaming.compile_cache.is_warm",
+        is_warm_mock,
+    )
+    service = _make_service(with_model_registry=False)
+    priming_mock = MagicMock()
+    monkeypatch.setattr(service, "_run_compile_priming", priming_mock)
+
+    await service.warmup_compile_async()
+
+    is_warm_mock.assert_not_called()
+    priming_mock.assert_not_called()
+    rec = _compile_records(metric_records)
+    assert len(rec) == 1
+    assert rec[0].tags["reason"] == "no_model_registry"

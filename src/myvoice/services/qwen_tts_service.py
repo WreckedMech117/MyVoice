@@ -304,6 +304,12 @@ class QwenTTSRequest:
         streaming: Whether to use streaming mode (progressive chunk generation)
         checkpoint_path: Path to fine-tuned checkpoint (OPTIMIZED voices only)
         voice_clone_prompt: Pre-computed voice clone prompt tensor for embedding-based generation (QA5)
+        suppress_audio_output: Story 20.2 AC #2 — when True, NO chunk emitted
+            by this request reaches ``_audio_chunk_ready_callback``. Scoped to
+            the request object (not to a time window, not to a service-wide
+            flag) so a concurrent user-facing generation dispatched while a
+            suppressed one is in flight still reaches the user's speakers
+            (AC #3). Set by ``_run_compile_priming`` only.
     """
     text: str
     language: str = "Auto"
@@ -322,6 +328,13 @@ class QwenTTSRequest:
     # carries it — enabling the HTTP API to correlate its stream deterministically.
     # None (default) preserves the existing auto-generate behavior.
     session_id: Optional[str] = None
+    # Story 20.2 AC #2 — per-generation audio-output suppression. See the
+    # class docstring. Read ONLY through
+    # ``QwenTTSService._audio_chunk_sink(request)``; no emit site may consult
+    # ``self._audio_chunk_ready_callback`` directly (a source-invariant test
+    # in tests/unit/services/test_compile_priming_audio_suppression.py
+    # enforces this).
+    suppress_audio_output: bool = False
 
 
 @dataclass
@@ -1914,6 +1927,13 @@ class QwenTTSService(BaseService):
 
     _COMPILE_PRIMING_TEXT = "Hello world."
     _COMPILE_WARMUP_DISABLE_ENV = "MYVOICE_DISABLE_COMPILE_WARMUP"
+    # Story 20.2 AC #6 — reversibility gate. Set to "1" to restore the exact
+    # pre-20.2 warm-path behavior (log the steady-state breadcrumb, emit
+    # ``reason="cache_hit"``, and let the inductor cache reload lazily on the
+    # user's first generation). Deliberately a separate switch from
+    # ``_COMPILE_WARMUP_DISABLE_ENV``: that one disables warmup entirely,
+    # including the cold-path priming Story 18.4 shipped.
+    _WARM_COMPILE_PRIMING_DISABLE_ENV = "MYVOICE_DISABLE_WARM_COMPILE_PRIMING"
 
     async def warmup_compile_async(self) -> None:
         """Story 18.4 / D-23 — background warmup for the torch.compile cache.
@@ -1922,9 +1942,19 @@ class QwenTTSService(BaseService):
         between two paths based on ``compile_cache.is_warm(key)``:
 
           * Cache HIT — log the steady-state breadcrumb + emit a
-            ``cache_hit`` telemetry record; do NOT trigger a priming
-            generation (the inductor cache reloads from disk lazily on
-            first user-facing generation).
+            ``primed_warm`` telemetry record after running the SAME
+            priming generation as the cold path, but WITHOUT calling
+            ``compile_cache.mark_warm`` (the key is already warm).
+            Story 20.2 / Epic 20 Follow-up A: the pre-20.2 behavior was to
+            return early here and let the inductor cache reload lazily on
+            the first user-facing generation. Story 20.1 §2.5 measured that
+            lazy reload at ~3,961 ms of segment-1b (first-forward) time,
+            billed to the user's FIRST utterance on EVERY launch after the
+            first-ever. Priming on the warm path moves that cost into
+            startup, where nobody is waiting on it. Set
+            ``MYVOICE_DISABLE_WARM_COMPILE_PRIMING=1`` to restore the
+            pre-20.2 early return exactly (telemetry then reads
+            ``cache_hit`` as before).
           * Cache MISS — emit the "Preparing TTS engine…" indicator, run
             one short synthetic priming generation through the production
             dispatch chain (which exercises ``torch.compile``'s graph
@@ -1941,10 +1971,19 @@ class QwenTTSService(BaseService):
           3. ``self._model_registry`` not wired → skip (no model means no
              compile state to prime).
 
+        Story 20.2 AC #5 leaves every one of those fast-exits untouched;
+        the warm-path change lives strictly *after* them, inside the
+        ``is_warm(key) is True`` branch.
+
         Telemetry contract: ``metrics.record("tts_compile_warmup_priming",
-        value, reason=..., duration_ms=...)``. The eight possible
-        ``reason`` values mirror the engage path: ``"cache_hit"`` (skip),
-        ``"primed_cold"`` (priming succeeded), ``"priming_failed"``
+        value, reason=..., duration_ms=...)``. The nine possible
+        ``reason`` values mirror the engage path: ``"cache_hit"`` (skip —
+        now emitted only when ``MYVOICE_DISABLE_WARM_COMPILE_PRIMING=1``
+        restores the pre-20.2 warm-path early return),
+        ``"primed_cold"`` (priming succeeded on a cold cache; ``mark_warm``
+        called), ``"primed_warm"`` (Story 20.2 — priming succeeded on an
+        already-warm cache; ``mark_warm`` deliberately NOT called),
+        ``"priming_failed"``
         (priming raised), ``"cuda_unavailable"`` (D-9 skip),
         ``"pre_ampere"`` (D-9 skip), ``"user_disabled"`` (env-var skip),
         ``"no_model_registry"`` (precondition not met), and
@@ -1981,14 +2020,21 @@ class QwenTTSService(BaseService):
 
         # Gate 1b: AppSettings.tts_compile gate. If the user (or the
         # bundled-smoke default flipped to "off" per Fix #4) has disabled
-        # compile, the warmup must NOT run a priming generation — the
-        # priming dispatches a real TRUE_STREAM utterance whose audio
-        # chunks reach the wired audio_chunk_ready_callback (the user's
-        # speakers). Without this gate, a first-launch on Ampere+ CUDA
-        # with tts_compile="off" produces audible "Hello world." spurious
-        # audio AND writes a meaningless meta.json sidecar (engage stayed
-        # eager so no inductor artifacts exist). Mirrors engage_compile_
-        # optimizations' tts_compile="off" → reason="user_disabled" branch.
+        # compile, the warmup must NOT run a priming generation. Two
+        # historical reasons, one of which Story 20.2 retired:
+        #   (a) [retired] the priming dispatched a real TRUE_STREAM utterance
+        #       whose audio chunks reached the wired audio_chunk_ready_callback
+        #       — a first launch on Ampere+ CUDA with tts_compile="off"
+        #       produced audible "Hello world." spurious audio. Story 20.2
+        #       AC #2 closed that positively via the request-scoped
+        #       ``suppress_audio_output`` flag, for every priming path.
+        #   (b) [still load-bearing] priming under tts_compile="off" writes a
+        #       meaningless meta.json sidecar (engage stayed eager, so no
+        #       inductor artifacts exist to warm), and burns startup time on a
+        #       generation that primes nothing.
+        # (b) alone keeps this gate; it is retained unchanged per AC #5.
+        # Mirrors engage_compile_optimizations' tts_compile="off" →
+        # reason="user_disabled" branch.
         tts_compile = getattr(self._app_settings, "tts_compile", None)
         if tts_compile == "off":
             self.logger.info(
@@ -2099,17 +2145,65 @@ class QwenTTSService(BaseService):
             )
             return
 
-        # Cache-hit path: short-circuit; no priming needed.
+        # Cache-hit path (Story 20.2 AC #1). The inductor cache directory is
+        # already populated, but PyTorch reloads it LAZILY — the reload lands
+        # on whichever generation runs first, which in production is always the
+        # user's first utterance (~3,961 ms of segment-1b time per Story 20.1
+        # §2.5). Run the same priming generation here so the reload happens at
+        # startup instead. ``mark_warm`` is NOT called: the key is already
+        # warm and the cold path's mark-on-success contract is unchanged.
         if compile_cache.is_warm(key):
-            self.logger.info(
-                "Compile cache hit; skipping warmup priming"
-            )
-            metrics.record(
-                "tts_compile_warmup_priming",
-                0.0,
-                reason="cache_hit",
-                duration_ms=int((time.monotonic() - start_ms) * 1000),
-            )
+            if os.environ.get(self._WARM_COMPILE_PRIMING_DISABLE_ENV) == "1":
+                # AC #6 reversibility gate — exact pre-20.2 behavior.
+                self.logger.info(
+                    "Compile cache hit; skipping warmup priming (%s=1)",
+                    self._WARM_COMPILE_PRIMING_DISABLE_ENV,
+                )
+                metrics.record(
+                    "tts_compile_warmup_priming",
+                    0.0,
+                    reason="cache_hit",
+                    duration_ms=int((time.monotonic() - start_ms) * 1000),
+                )
+                return
+
+            self._emit_preparing_voice("Preparing TTS engine…")
+            try:
+                await self._run_compile_priming()
+                duration_ms = int((time.monotonic() - start_ms) * 1000)
+                self.logger.info(
+                    "Compile cache hit; warm-path priming completed "
+                    "(duration=%dms) — the inductor reload is now paid for "
+                    "at startup instead of on the first user generation",
+                    duration_ms,
+                )
+                metrics.record(
+                    "tts_compile_warmup_priming",
+                    1.0,
+                    reason="primed_warm",
+                    duration_ms=duration_ms,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Never fatal: the pre-20.2 behavior (lazy reload on the first
+                # user generation) remains a fully working fallback, so a failed
+                # warm prime costs latency, not function.
+                duration_ms = int((time.monotonic() - start_ms) * 1000)
+                self.logger.warning(
+                    "Warm-path compile priming failed (%s: %s); cache stays "
+                    "warm and the first user generation will reload the "
+                    "inductor cache lazily, as it did before Story 20.2.",
+                    type(exc).__name__,
+                    exc,
+                )
+                metrics.record(
+                    "tts_compile_warmup_priming",
+                    0.0,
+                    reason="priming_failed",
+                    duration_ms=duration_ms,
+                    error=type(exc).__name__,
+                )
+            finally:
+                self._emit_preparing_voice(None)
             return
 
         # Cache-miss path: emit indicator + run priming + mark_warm on success.
@@ -2158,21 +2252,32 @@ class QwenTTSService(BaseService):
         testable (tests monkeypatch this method to succeed/fail without
         spinning up a real model or audio output).
 
-        The priming flows through ``generate_custom_voice`` with a short
-        text + the canonical default speaker ("Ryan", matching the
-        ``QwenTTSCustomVoiceRequest.speaker`` default at line 219) so the
-        talker's first forward pass triggers ``torch.compile``'s graph
-        capture and the inductor compile that PyTorch's per-key cache
-        directory absorbs.
-        No audio output reaches the user (the priming runs before the
-        ``set_audio_chunk_ready_callback`` wires consumers up — and even
-        if a consumer is wired, the generation is short enough that any
-        audible artifact is bounded).
+        The priming dispatches a short text with the canonical default
+        speaker ("Ryan") through the same three-mode dispatch fork
+        ``generate_custom_voice`` uses, so the talker's first forward pass
+        triggers ``torch.compile``'s graph capture and the inductor compile
+        that PyTorch's per-key cache directory absorbs — and, on an
+        already-warm cache (Story 20.2), the lazy inductor reload.
+
+        **Audio safety (Story 20.2 AC #2).** The request carries
+        ``suppress_audio_output=True``, and every chunk-emit site resolves
+        its consumer through ``_audio_chunk_sink(request)``, which returns
+        ``None`` for such a request. The guarantee is therefore positive and
+        request-scoped: it holds even when ``set_audio_chunk_ready_callback``
+        has already wired a consumer before priming starts, and it does not
+        touch a concurrent user-facing generation (whose own request is not
+        suppressed). The pre-20.2 docstring claimed safety from startup
+        ordering plus "the generation is short enough that any audible
+        artifact is bounded" — neither was a guarantee, and the
+        ``tts_compile="off"`` gate below records the launch where the
+        ordering assumption lost and spurious "Hello world." audio reached a
+        user's speakers.
 
         The architecture's D-23 acceptance: "warm = compile-priming
         generation completed without error". The caller's ``mark_warm``
-        call lands on the success path. Any raised exception bubbles up
-        and the caller's ``except`` lands the ``priming_failed`` telemetry.
+        call lands on the cold path's success branch (the warm path does not
+        re-mark). Any raised exception bubbles up and the caller's
+        ``except`` lands the ``priming_failed`` telemetry.
         """
         # Use a bundled CustomVoice speaker for priming. The default
         # speaker ("Ryan") is canonical; if it's unavailable, the priming
@@ -2182,10 +2287,23 @@ class QwenTTSService(BaseService):
         # it dispatches via the same TRUE_STREAM path the user-facing
         # generation will take, so the talker's first forward pass
         # triggers torch.compile's graph capture.
-        await self.generate_custom_voice(
+        #
+        # The request is built here rather than via ``generate_custom_voice``
+        # so ``suppress_audio_output`` stays off that public signature — it is
+        # not a knob any caller outside compile priming should reach for. The
+        # construction + dispatch below mirror ``generate_custom_voice``
+        # exactly (same model_type, same ``_resolve_streaming_mode()`` fork),
+        # so priming still exercises the production dispatch chain.
+        request = QwenTTSRequest(
             text=self._COMPILE_PRIMING_TEXT,
-            speaker="Ryan",
             language="English",
+            model_type=QwenModelType.CUSTOM_VOICE,
+            speaker="Ryan",
+            streaming=True,
+            suppress_audio_output=True,
+        )
+        await self._dispatch_by_streaming_mode(
+            request, self._resolve_streaming_mode()
         )
 
     async def generate_voice_clone(
@@ -3523,8 +3641,11 @@ class QwenTTSService(BaseService):
                         session_id=sid,
                     )
 
-                    if self._audio_chunk_ready_callback:
-                        self._audio_chunk_ready_callback(audio_chunk)
+                    # Story 20.2 AC #2 — resolve the sink through the helper so
+                    # a suppressed (compile-priming) request emits to nobody.
+                    _sink = self._audio_chunk_sink(request)
+                    if _sink:
+                        _sink(audio_chunk)
 
                     # Allow other tasks to run
                     await asyncio.sleep(0)
@@ -4485,9 +4606,13 @@ class QwenTTSService(BaseService):
                         # SENTENCE_STREAM at qwen_tts_service.py:3071-3082. Additive to
                         # the accumulator/counter; never replaces them. Wrapped so a
                         # buggy consumer cannot break the producer thread.
-                        if self._audio_chunk_ready_callback is not None:
+                        # Story 20.2 AC #2: the sink is resolved per-request, so a
+                        # compile-priming generation reaches no consumer even when
+                        # one is already wired.
+                        _sink = self._audio_chunk_sink(request)
+                        if _sink is not None:
                             try:
-                                self._audio_chunk_ready_callback(
+                                _sink(
                                     AudioChunk(
                                         audio_data=chunk_data,
                                         sample_rate=sample_rate,
@@ -4509,9 +4634,14 @@ class QwenTTSService(BaseService):
                         # without needing a separate "stream done" channel.
                         # Zero-length payload — consumer must skip play_audio_chunk
                         # if audio_data.size == 0.
-                        if self._audio_chunk_ready_callback is not None:
+                        # Story 20.2 AC #2: same per-request sink as the data path —
+                        # a suppressed generation emits no terminal chunk either
+                        # (a bare terminal chunk would open + immediately close a
+                        # playback session on the consumer side).
+                        _sink = self._audio_chunk_sink(request)
+                        if _sink is not None:
                             try:
-                                self._audio_chunk_ready_callback(
+                                _sink(
                                     AudioChunk(
                                         audio_data=np.zeros(0, dtype=np.float32),
                                         sample_rate=sample_rate,
@@ -5426,8 +5556,38 @@ class QwenTTSService(BaseService):
 
         The callback receives an AudioChunk for each generated chunk,
         enabling immediate playback while subsequent chunks generate.
+
+        Story 20.2: emit sites must NOT read ``_audio_chunk_ready_callback``
+        directly — they resolve their sink through ``_audio_chunk_sink(request)``
+        so a request carrying ``suppress_audio_output=True`` (the compile-priming
+        generation) can never reach this consumer.
         """
         self._audio_chunk_ready_callback = callback
+
+    def _audio_chunk_sink(
+        self, request: "QwenTTSRequest"
+    ) -> Optional[Callable[[AudioChunk], None]]:
+        """Story 20.2 AC #2 — the ONLY sanctioned way to reach the audio-chunk
+        consumer from a generation path.
+
+        Returns the wired ``_audio_chunk_ready_callback`` for a normal request,
+        and ``None`` for a request that carries ``suppress_audio_output=True``.
+
+        Why this shape (Task 1.1): the suppression decision is a property of the
+        *request object*, so it travels with the generation it belongs to. A
+        detach-and-restore of ``_audio_chunk_ready_callback`` around the priming
+        call, or a service-level ``self._suppressing`` boolean, would also
+        silence a user-facing generation dispatched while priming is in flight —
+        the exact AC #3 failure mode ("a latency fix turned into a no-audio
+        bug"). Startup ordering is deliberately NOT relied upon: the guarantee
+        holds even when a consumer is already wired.
+
+        ``getattr`` with a default keeps the helper safe for the duck-typed
+        request objects some older tests hand to the dispatch paths.
+        """
+        if getattr(request, "suppress_audio_output", False):
+            return None
+        return self._audio_chunk_ready_callback
 
     def set_model_loading_callback(self, callback: Callable[[str], None]):
         """
