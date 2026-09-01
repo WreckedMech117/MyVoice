@@ -16,8 +16,9 @@ REM      THIS MATTERS: priming holds the request semaphore, so generating
 REM      while it is up measures queueing, not first-forward. The number
 REM      would look like a regression and would not be one.
 REM   3. Generate ONE utterance. Same text every launch.
-REM   4. Close the app cleanly - window close, NOT Ctrl-C, and not while
-REM      it is still generating.
+REM   4. Close the app with the X. MYVOICE_AUTO_QUIT_ON_CLOSE=1 is set below,
+REM      so X really quits instead of minimizing to tray. Do NOT use Ctrl-C,
+REM      and do not close while it is still generating.
 REM   5. The next launch starts automatically.
 REM
 REM Note: cmd.exe parses a literal close-paren inside a for /L body as the
@@ -55,8 +56,25 @@ if errorlevel 1 (
 cd /d "%SCRIPT_DIR%"
 set "PYTHONPATH=%SCRIPT_DIR%\src"
 set "OUTDIR=%SCRIPT_DIR%\_bmad-output\implementation-artifacts"
+REM Story 18.3 measurement-mode bypass. Without this the X button minimizes
+REM to tray -- minimize_to_tray defaults True -- and closing from the taskbar
+REM leaves the process alive, so this script never regains control and the
+REM loop stalls after launch 1. Every 18.x measurement launcher sets it.
+set "MYVOICE_AUTO_QUIT_ON_CLOSE=1"
 
 if not exist "%OUTDIR%" mkdir "%OUTDIR%"
+
+REM Preflight: compile must be engaged or there is nothing to prime and the
+REM whole measurement is moot. A previous attempt was lost to tts_compile=off
+REM left over from the Story 18.4 era.
+"%SCRIPT_DIR%\python310\python.exe" -c "import json,sys;d=json.load(open(r'%SCRIPT_DIR%\config\settings.json'));sys.exit(0 if d.get('tts_compile')=='auto' else 1)" 2>nul
+if errorlevel 1 (
+    echo [ERROR] config\settings.json does not have tts_compile set to auto.
+    echo Compile priming cannot engage, so this measurement would be meaningless.
+    echo Set tts_compile to auto and re-run.
+    pause
+    exit /b 1
+)
 
 set "TOTAL_RUNS=5"
 
@@ -69,7 +87,7 @@ echo Per launch:
 echo   - active profile must be a CLONED voice, so BASE is resident
 echo   - WAIT for "Preparing TTS engine" to clear before generating
 echo   - generate ONE utterance, same text each time
-echo   - close the app cleanly
+echo   - close with the X - auto-quit is enabled, so it really exits
 echo.
 echo Output CSVs:
 echo   %OUTDIR%\20-3-gui-r01.csv ... r0%TOTAL_RUNS%.csv
@@ -90,7 +108,7 @@ echo ========================================
 echo CSV: !CSV!
 echo.
 echo Reminder: wait for "Preparing TTS engine" to clear, generate once,
-echo then close the app cleanly.
+echo then close with the X.
 echo.
 
 REM Run main.py directly - NOT as a module - to preserve the
