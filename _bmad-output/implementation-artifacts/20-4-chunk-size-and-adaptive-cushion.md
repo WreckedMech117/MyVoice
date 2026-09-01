@@ -1,6 +1,20 @@
 # Story 20.4: Chunk-Size Retune + Adaptive-Cushion Fix (Phase ⊥-Polish-3)
 
-Status: **COMPLETE — Follow-up B CLOSED UNSUCCESSFUL.** The `chunk_size` retune this story exists for was measured, reproduced, taken through the NFR3 gate, failed it twice, and is REVERTED (`DEFAULT_CHUNK_SIZE` stays 25). What ships is a fix for an audio defect present since Story 16.4 — 15-19 ms of real speech deleted at every chunk boundary — with direct perceptual evidence for it at the shipped geometry (round 3: cleaner on both long fixtures, never worse, preferred 2-0). Also shipping: the D-25 geometry threading (AC #1's other half, which made the revert a one-line edit) and the adaptive-cushion policy (AC #2/#3, restated at cs25). Shipped first-audio TTFA is unchanged from Story 20.3's 1,353 ms. One task outstanding: the round-4 audition, which answers whether `chunk_size = 15` survives the ear (Commander asked for the open question to be settled). The shipped configuration is unaffected by its outcome. See evidence §15 for what ships and §16 for round 4.
+Status: done
+
+**Outcome — Follow-up B CLOSED UNSUCCESSFUL.** The `chunk_size` retune this story
+exists for was measured, reproduced, taken through the NFR3 gate, failed it at
+`cs10` (round 2) and was not separable from `cs25` at `cs15` (round 4). `DEFAULT_CHUNK_SIZE` stays 25 and the chunk-size question is closed — see evidence §17.
+
+**What ships:** a fix for an audio defect present since Story 16.4 (15–19 ms of real
+speech deleted at every chunk boundary), with direct perceptual evidence for it at the
+shipped geometry (round 3: cleaner on both long fixtures, never worse, preferred 2–0);
+the D-25 geometry threading, which made the revert a one-line edit and proved itself
+doing so; and the adaptive-cushion policy, restated at `cs25`.
+
+**Shipped first-audio TTFA is unchanged from Story 20.3's 1,353 ms.** Evidence §15 is
+the authoritative reconciliation; §17 closes the geometry question and names codec
+state caching (Story 20.5) as what would reopen it.
 
 <!-- Phase tag: Phase ⊥-Polish-3. Fourth story of Epic 20 (First-Audio Latency). -->
 <!-- Source: Story 20.1 evidence §5 (Follow-up B) + §2.6 (Follow-up C), which are COUPLED. -->

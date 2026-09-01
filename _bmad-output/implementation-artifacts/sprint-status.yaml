@@ -201,7 +201,7 @@ development_status:
   # invariant the assertion protects.
   # First Epic 20 story to carry an NFR3 perceptual gate - chunk boundaries change for
   # every generation, so chunk-stitching is in scope.
-  20-4-chunk-size-and-adaptive-cushion: ready-for-dev
+  20-4-chunk-size-and-adaptive-cushion: done
   # Story 20.5 added 2026-09-01. Story 20.4 closed the chunk-size question at cs25
   # after four auditions and named codec state caching as the thing that would
   # reopen it. Mary's research filed it as a THROUGHPUT item; 20.4 measured it as
@@ -222,4 +222,4 @@ development_status:
   # is always True, so the minimize button ALWAYS tray-minimizes and its
   # showMinimized() branch is dead code. Shipping the toggle without that fix
   # would give the user a control that appears not to work.
-  ui-1-close-to-tray-toggle: review
+  ui-1-close-to-tray-toggle: done

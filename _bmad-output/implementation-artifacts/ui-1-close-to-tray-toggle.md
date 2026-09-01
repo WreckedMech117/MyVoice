@@ -1,6 +1,6 @@
 # Story ui-1: Close-to-Tray Toggle (and the minimize button that ignores it)
 
-Status: review
+Status: done
 
 <!-- Out-of-epic UI story, following the `tooling-N` naming precedent for work that sits outside an epic. -->
 <!-- Source: Commander, 2026-09-01 — "when I close from the X the app just minimizes to taskbar. The Settings/Interface menu does not have a toggle for that." -->
