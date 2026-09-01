@@ -1,0 +1,54 @@
+{
+  "_meta": {
+    "round": 4,
+    "candidate": "cs15fix",
+    "reference": "cs25fix",
+    "candidate_desc": "chunk_size=15 WITH the seam fix",
+    "reference_desc": "chunk_size=25 WITH the seam fix (the new baseline - regenerated, not round 1's pre-fix files)",
+    "isolates": "the geometry only - both arms carry the seam fix"
+  },
+  "L1": {
+    "l-020": {
+      "trial_A_filename": "l-020-cs25fix.wav",
+      "trial_A_geometry": "cs25fix",
+      "trial_B_filename": "l-020-cs15fix.wav",
+      "trial_B_geometry": "cs15fix"
+    },
+    "l-021": {
+      "trial_A_filename": "l-021-cs25fix.wav",
+      "trial_A_geometry": "cs25fix",
+      "trial_B_filename": "l-021-cs15fix.wav",
+      "trial_B_geometry": "cs15fix"
+    },
+    "m-020": {
+      "trial_A_filename": "m-020-cs15fix.wav",
+      "trial_A_geometry": "cs15fix",
+      "trial_B_filename": "m-020-cs25fix.wav",
+      "trial_B_geometry": "cs25fix"
+    },
+    "m-021": {
+      "trial_A_filename": "m-021-cs15fix.wav",
+      "trial_A_geometry": "cs15fix",
+      "trial_B_filename": "m-021-cs25fix.wav",
+      "trial_B_geometry": "cs25fix"
+    },
+    "s-020": {
+      "trial_A_filename": "s-020-cs25fix.wav",
+      "trial_A_geometry": "cs25fix",
+      "trial_B_filename": "s-020-cs15fix.wav",
+      "trial_B_geometry": "cs15fix"
+    },
+    "s-021": {
+      "trial_A_filename": "s-021-cs25fix.wav",
+      "trial_A_geometry": "cs25fix",
+      "trial_B_filename": "s-021-cs15fix.wav",
+      "trial_B_geometry": "cs15fix"
+    },
+    "s-022": {
+      "trial_A_filename": "s-022-cs25fix.wav",
+      "trial_A_geometry": "cs25fix",
+      "trial_B_filename": "s-022-cs15fix.wav",
+      "trial_B_geometry": "cs15fix"
+    }
+  }
+}

@@ -17,7 +17,7 @@ REM                   act as a calibration anchor.
 REM   candidate arm = chunk_size 10 WITH the seam fix.
 REM
 REM The 14-WAV round-3 fixture is generated ahead of time by
-REM   20-4-regen-audition-fixture-r3.py
+REM   20-4-regen-audition-fixture-r4.py
 REM under _bmad-output, which drives the production TRUE_STREAM path
 REM (streamer, streaming-decoder overlap-add, StreamingChunkBuffer
 REM crossfade) on the CLONED Sarira-F voice. If the fixture is missing this
@@ -44,12 +44,13 @@ setlocal EnableDelayedExpansion
 set "LISTENER_ID=%~1"
 if "%LISTENER_ID%"=="" set "LISTENER_ID=L1"
 set "ROUND_ID=%~2"
-if "%ROUND_ID%"=="" set "ROUND_ID=r3"
+if "%ROUND_ID%"=="" set "ROUND_ID=r4"
 
 set "ARTIFACTS=%SCRIPT_DIR%\_bmad-output\implementation-artifacts"
-set "FIXTURE=%ARTIFACTS%\20-4-perceptual-fixtures-r3"
+set "FIXTURE=%ARTIFACTS%\20-4-perceptual-fixtures-r4"
 if "%ROUND_ID%"=="r1" set "FIXTURE=%ARTIFACTS%\20-4-perceptual-fixtures"
 if "%ROUND_ID%"=="r2" set "FIXTURE=%ARTIFACTS%\20-4-perceptual-fixtures-r2"
+if "%ROUND_ID%"=="r3" set "FIXTURE=%ARTIFACTS%\20-4-perceptual-fixtures-r3"
 
 if not exist "%SCRIPT_DIR%\python310\python.exe" (
     echo [ERROR] Portable Python not found.
@@ -63,7 +64,7 @@ if not exist "%FIXTURE%\_perlistener_truthtable.json" (
     echo Expected: %FIXTURE%\_perlistener_truthtable.json
     echo.
     echo Generate it first - this needs the GPU and takes a few minutes:
-    echo   python310\python.exe %ARTIFACTS%\20-4-regen-audition-fixture-r3.py
+    echo   python310\python.exe %ARTIFACTS%\20-4-regen-audition-fixture-r4.py
     pause
     exit /b 1
 )

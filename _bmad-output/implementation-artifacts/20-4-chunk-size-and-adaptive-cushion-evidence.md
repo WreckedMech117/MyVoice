@@ -34,7 +34,7 @@ Story 20.1 found them coupled.
 | #2 | cushion policy + the `T_a` overshoot | **MET**, restated at `cs25` — §2, §15.4 |
 | #3 | coupling re-derived | **MET**, re-derived at the shipped `cs25` — §3, §15.4 |
 | #4 | OFR-E producer ratio re-measured | **MET** — gate passes at both geometries; the headline figure belongs to `cs10`, which is not shipped. §15.5 |
-| #5 | NFR3 perceptual audition | **PASS on round 3, for the seam fix only.** Rounds 1 and 2 failed and are why the geometry reverted. §9, §12, §14 |
+| #5 | NFR3 perceptual audition | **PASS on round 3, for the seam fix only.** Rounds 1 and 2 failed and are why the geometry reverted. §9, §12, §14. **Round 4 (`cs15`) is open** — §16 |
 | #6 | GUI capture on the reachable tier | **MET** — measured; the 976 ms figure is the `cs10` result, not the shipped one. §15.5 |
 | #7 | no regressions | **MET** — zero new failures across every surface, re-run after the revert. §15.6 |
 
@@ -48,8 +48,12 @@ Story 20.1 found them coupled.
 > **§14** round-3 isolating audition PASSED; **§15** the outcome map
 > executed. Overtaken sections carry a banner pointing forward.
 
-**Nothing is outstanding for the operator.** Three auditions and one GUI
-capture were run; the story is complete. Every decoder chunk boundary was deleting 15-19 ms of
+**One task outstanding: the round-4 audition (§16).** Commander asked for the
+`chunk_size = 15` question to be settled rather than left open. The fixture is
+built and a prediction is recorded; §16.7 is the hand-off. Everything else in
+this story is complete — three auditions and one GUI capture already run, and
+the shipped configuration (`cs25` + the seam fix) is unaffected by round 4's
+outcome. Every decoder chunk boundary was deleting 15-19 ms of
 real speech — a splice-alignment bug present at the shipped `chunk_size = 25`
 too, which is why round 1 flagged long-form seams on *both* arms. Underneath
 it, the two independent decodes either side of a boundary differ by ~35 %
@@ -1851,4 +1855,157 @@ expected on the first launch after the revert, because the window-30 key
   analysis explains mechanism.
 * **`chunk_size = 15` is an open question**, and the codec runs at **12.5 Hz**,
   not the 12 Hz assumed since Story 16.3 (§11.2).
+
+---
+
+## §16. Round 4 — does `chunk_size = 15` survive the ear? (fixture + PREDICTION)
+
+Commander asked for the §15.1 open question to be settled rather than left
+open: *"15% is a fair time gain if we can achieve it."* This section is
+written **before** the audition, per the practice §15's note 16 recommends.
+
+### 16.1 The design — one variable, and a new baseline
+
+| arm | geometry | stitching |
+|---|---|---|
+| **reference** | `chunk_size = 25` | **with** the seam fix |
+| **candidate** | `chunk_size = 15` | **with** the seam fix |
+
+Round 2's flaw was moving geometry *and* stitching against a reference that
+had neither. Here both arms carry the fix, so anything heard is attributable
+to the geometry alone.
+
+**The reference is REGENERATED, not reused.** Rounds 1–3 anchored on round 1's
+`cs25` files, but those are *pre-fix*. Reusing them would compare `cs15+fix`
+against `cs25-pre-fix` — two variables again, and the exact mistake round 2
+made. Both arms were generated in one process, from one model load, under one
+compiled state.
+
+`DEFAULT_CHUNK_SIZE` is untouched at 25; both geometries are set in-process
+via the harness rebinder, and the generator's preflight refuses to run if the
+committed constants have drifted.
+
+Same 7 utterances as rounds 1–3, including **s-022** — clean at `cs25`,
+blocking at `cs10`, plosive-dense, and the most sensitive row in the set.
+
+**Loudness normalisation, declared.** All 14 files were normalised to equal
+active-speech RMS after generation. The raw takes differed by **8 dB on
+s-022, with the reference arm quieter** — sampling noise, not a property of
+the geometry, but left alone it would attenuate the reference's own seams and
+bias the audition *toward* the reference sounding cleaner, i.e. toward
+confirming the prediction below. Applied uniformly to all 14 by one rule;
+no clipping (worst peak 0.768); lengths and therefore seam positions
+unchanged. This is a deviation from rounds 1–3 and is recorded as one.
+
+### 16.2 Measured seam counts — the actual basis of the prediction
+
+| utterance | reference `cs25` | candidate `cs15` | ratio |
+|---|---:|---:|---:|
+| s-020 | 1 | 2 | 2.0× |
+| s-021 | 1 | 2 | 2.0× |
+| s-022 | 1 | 2 | 2.0× |
+| m-020 | 1 | 2 | 2.0× |
+| m-021 | 1 | 3 | 3.0× |
+| l-020 | 10 | 15 | 1.5× |
+| l-021 | 7 | 12 | 1.7× |
+| **total** | **22** | **38** | **1.73×** |
+
+### 16.3 The model
+
+Two things move against the candidate, and they compound:
+
+**(a) Seam count.** 38 versus 22 — 1.73× more chances for an audible event.
+
+**(b) Per-seam hazard, which is itself geometry-dependent.** The decode
+window is `chunk_size + lookahead`: 30 at `cs25`, **20** at `cs15`, 15 at
+`cs10`. A smaller window means less context, so the cold-start region the
+blend fades into is worse. This is measured, not assumed (§13.2) — head
+error at `cs10` is 0.824 against `cs25`'s 0.711, worse at every band.
+Interpolating linearly in `1/window`, `cs15` lands **exactly halfway**
+(0.767).
+
+Estimating the per-seam hazard `p` from the two completed rounds, using
+`P(file flagged) = 1 − (1−p)^N`:
+
+* **`cs10 + fix`** (round 2): flagged l-020(24 seams), l-021(16), m-020(5),
+  s-022(2); clean s-020(2), s-021(3), m-021(4). The small-N files flagged 2
+  of 5 at a mean N ≈ 3.2 → **p ≈ 0.15**, and both large-N files flagging is
+  consistent with it.
+* **`cs25 + fix`** (round 3): 0 flagged of 7, over 22 seams → point estimate
+  **p ≈ 0**, but honestly a 95 % upper bound of only ~0.13. **22 clean seams
+  does not by itself prove `cs25`'s hazard is much below `cs10`'s** — the
+  geometry dependence comes from the measured error profiles in (b), not from
+  the audition counts.
+
+Taking `p(cs15) ≈ 0.085` (halfway in error terms between a working
+`p(cs25) ≈ 0.02` and `p(cs10) ≈ 0.15`) and the candidate's real seam counts:
+
+| utterance | N | P(flag) |
+|---|---:|---:|
+| s-020 / s-021 / s-022 / m-020 | 2 | 0.16 each |
+| m-021 | 3 | 0.23 |
+| **l-021** | 12 | **0.66** |
+| **l-020** | 15 | **0.74** |
+
+**Expected flagged ≈ 2.3 of 7. P(clean sweep) ≈ 3 %** on the central estimate,
+rising to ~30 % if the relationship is convex rather than linear (i.e. the
+harm only bites past some density) and `p(cs15)` is nearer 0.03.
+
+### 16.4 THE PREDICTION
+
+**`chunk_size = 15` FAILS.** Most likely **2 flagged rows — l-020 and
+l-021**, the two long fixtures, at 15 and 12 seams.
+
+Confidence: **~75 % that at least one row flags.** Not higher, because the
+`cs25` hazard is poorly constrained by 22 clean seams and the interpolation
+could be convex.
+
+**Where the crossover sits, since the number was asked for:** on this model
+the fix's net benefit turns negative **just below `cs25` — around window 25,
+i.e. `chunk_size ≈ 20`.** Even a hazard as low as `p = 0.02` yields ~0.7
+expected flags across this fixture set; a confident pass needs `p ≲ 0.005`.
+**`cs15` is already past the crossover, not straddling it.**
+
+**The sharpest sub-prediction — s-022.** It flagged at `cs10` with only **2**
+seams, far above the average per-seam hazard, which is what pointed at
+plosive-dense content being especially vulnerable to transient doubling
+(§13.3, H2). At `cs15` it again has 2 seams. **If content dominates, s-022
+flags. If s-022 is clean while the long fixtures flag, the effect is purely
+count-driven and H2's contribution to my model is wrong.**
+
+### 16.5 What would falsify the model
+
+| result | what it means |
+|---|---|
+| **0 of 7 flagged** | The model over-weights seam density. The crossover is sharper than linear and sits between 15 and 10. `cs15` is shippable — and *then* we measure its TTFA. |
+| **Only l-020 / l-021 flag, all shorts clean** | Count-driven and content-independent. H2's transient-doubling term is not dominant; the model's (b) term needs re-deriving. |
+| **s-022 flags but the long fixtures do not** | Content-driven and count-independent. The density term is wrong; seam *placement* matters more than seam *number*. |
+| **≥4 flagged, several of them short** | Harm is worse than linear interpolation. The crossover is above `cs15`, and `cs25` is close to the edge — which would also put the shipped configuration under a question it does not currently have. |
+
+### 16.6 Why this is worth a round despite predicting failure
+
+Because the prize clears Commander's stated bar and the odds are not
+negligible. Story 20.1 measured 1,157 ms at `cs15` against 1,662 at `cs25`
+(−30 % on that story's scale). Interpolating Story 20.4's contemporaneous
+re-measurement (`cs25` 1,491 ms, `cs10` 829 ms headless) puts `cs15` at
+roughly **1,050–1,150 ms, a 23–30 % improvement** — comfortably past "15 % is
+a fair time gain".
+
+At a ~25 % chance of passing, one 10-minute audition to settle a 25 % latency
+question permanently is a good trade. It is also the only way to settle it:
+§13.1 established that no offline metric available here predicts audibility,
+so the ear is the instrument.
+
+### 16.7 Sequencing
+
+**Audition only.** No GUI capture is prepared or requested. If `cs15` passes
+the ear, its TTFA gets measured then; if it fails, a capture would have been
+wasted. One ~10 minute listening task:
+
+```
+12_Story_20.4_AC5_Audition.bat
+```
+
+Defaults to round 4. Rounds 1–3 remain re-runnable (`L1 r1` / `r2` / `r3`)
+and untouched.
 

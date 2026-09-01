@@ -20,11 +20,23 @@ defect class changed from tonal_distortion to click_or_discontinuity. It
 also conflated two variables (geometry AND stitching), so its clicks could
 not be attributed.
 
-Round 3 (``20-4-perceptual-fixtures-r3/``, the default) isolates. BOTH arms
-are chunk_size=25; the only difference is the stitching:
-    reference = shipped pre-fix   candidate = with the seam fix
-The seam fix is geometry-independent and changes the SHIPPING cs25 path, so
-this round answers whether it helps or harms what users hear today.
+Round 3 (``20-4-perceptual-fixtures-r3/``) isolated the stitching: both arms
+chunk_size=25, reference pre-fix, candidate with the seam fix. It PASSED -
+the fix was cleaner on both long fixtures and never worse - which settled
+that the fix is good and the geometry was what failed at cs10.
+
+Round 4 (``20-4-perceptual-fixtures-r4/``, the default) isolates the
+GEOMETRY. Both arms carry the seam fix:
+    reference = chunk_size 25 + fix   candidate = chunk_size 15 + fix
+cs15 sits between the two geometries already judged (1.7x the reference's
+seams here, against cs10's 2.5x), and Story 20.1 measured 1,157 ms TTFA
+there. Note the reference is REGENERATED at cs25+fix rather than reused
+from round 1 - round 1's files are pre-fix and would reintroduce the
+two-variable confound round 2 died of.
+
+All 14 round-4 files were loudness-normalised to equal active-speech RMS
+after generation. Level is not the variable under test, and the raw takes
+happened to differ by 8 dB on s-022.
 
 Which side of each pair is which is recorded in the truth table ``_meta``
 block, and the helper only consults it when unblinding at the end.
@@ -77,8 +89,9 @@ ROUNDS = {
     "r1": ("20-4-perceptual-fixtures", "20-4-chunk-retune-audition.csv"),
     "r2": ("20-4-perceptual-fixtures-r2", "20-4-chunk-retune-audition-r2.csv"),
     "r3": ("20-4-perceptual-fixtures-r3", "20-4-chunk-retune-audition-r3.csv"),
+    "r4": ("20-4-perceptual-fixtures-r4", "20-4-chunk-retune-audition-r4.csv"),
 }
-DEFAULT_ROUND = "r3"
+DEFAULT_ROUND = "r4"
 
 # Fallback for round 1, whose truth table predates the ``_meta`` block.
 _LEGACY_META = {
@@ -247,11 +260,10 @@ def main(listener_id: str, round_id: str = DEFAULT_ROUND) -> int:
         print("Already recorded: {} -- will skip.".format(sorted(already_done)))
     print()
     print("What you are listening FOR:")
-    print("  Both arms are the SAME chunk size this time. The only thing")
-    print("  that differs is how consecutive chunks are joined: one arm is")
-    print("  what ships today, the other has the seam fix. Round 2 could not")
-    print("  tell us which change caused its clicks because it moved two")
-    print("  things at once; this round moves one.")
+    print("  Both arms have the SAME stitching this time - the seam fix that")
+    print("  passed round 3. The only difference is the chunk size, so one")
+    print("  arm has roughly 1.7x as many joins as the other. The question")
+    print("  is purely whether that extra join density is audible.")
     print("  The defect class is still at the SEAMS:")
     print("    - a click or tick partway through a word")
     print("    - a momentary discontinuity or 'stutter' in a held vowel")
