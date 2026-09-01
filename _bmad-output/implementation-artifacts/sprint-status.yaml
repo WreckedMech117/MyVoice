@@ -202,6 +202,17 @@ development_status:
   # First Epic 20 story to carry an NFR3 perceptual gate - chunk boundaries change for
   # every generation, so chunk-stitching is in scope.
   20-4-chunk-size-and-adaptive-cushion: ready-for-dev
+  # Story 20.5 added 2026-09-01. Story 20.4 closed the chunk-size question at cs25
+  # after four auditions and named codec state caching as the thing that would
+  # reopen it. Mary's research filed it as a THROUGHPUT item; 20.4 measured it as
+  # primarily a QUALITY one - the causal convs zero-pad their left edge
+  # (modeling_qwen3_tts_tokenizer_v2.py:189-192), which is the single cause of both
+  # the 555-sample fixed edge loss AND the ~35% cold-start decode error the current
+  # seam fix masks rather than removes.
+  # PHASE-GATED: Phase 1 is a bench spike with a hard go/no-go and zero src changes.
+  # The fork's decode_streaming looks like the answer and is not - it is a speed
+  # path carrying no state. This is ours to build.
+  20-5-codec-state-caching: ready-for-dev
 
   # Out-of-epic UI work, following the tooling-N precedent for non-epic stories.
   # Commander 2026-09-01: the X minimizes to tray and Settings/Interface has no
