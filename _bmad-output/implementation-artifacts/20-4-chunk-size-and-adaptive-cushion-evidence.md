@@ -2009,3 +2009,81 @@ wasted. One ~10 minute listening task:
 Defaults to round 4. Rounds 1–3 remain re-runnable (`L1 r1` / `r2` / `r3`)
 and untouched.
 
+
+---
+
+## §17. AC #5 round 4 — cs15 vs cs25, both with the fix: **AMBIGUOUS, resolving to NO** 2026-09-01
+
+| utt | cs25+fix (ref) | cs15+fix (cand) | preferred | verdict |
+|---|---|---|---|---|
+| l-020 | tonal_distortion | **none** | cs15 | cs15 cleaner |
+| l-021 | none | **tonal_distortion** | cs25 | **BLOCKING — cs15 only** |
+| m-020 | none | none | equivalent | clean |
+| m-021 | none | none | equivalent | clean |
+| s-020 | none | none | equivalent | clean |
+| s-021 | none | none | equivalent | clean |
+| s-022 | none | none | equivalent | clean |
+
+**Preference: cs15 1 — cs25 1 — equivalent 5. A dead tie.** One defect on each
+arm, both on long fixtures, and they swapped sides.
+
+### The finding that settles it: the long-form residual is take-dependent
+
+`cs25 + fix` is the *same configuration* in rounds 3 and 4, on regenerated audio:
+
+| | l-020 | l-021 |
+|---|---|---|
+| round 3, cs25+fix | none | none |
+| round 4, cs25+fix | **tonal_distortion** | none |
+
+Identical configuration, different takes, different verdict. **The long-form
+`tonal_distortion` is a property of the take, not of the geometry.** Round 4's
+1–1 split is therefore within that noise, and this fixture set cannot separate
+cs15 from cs25 at all.
+
+That is consistent with it being the §11 codec-state residual — the ~35 % NRMSE
+between the two decodes at every boundary — which is present at every geometry
+and which the seam fix masks rather than removes.
+
+### Both halves of §16.4's prediction fail in an informative way
+
+- "At least one candidate row flags" — **true** (l-021). But it predicted 2.3
+  expected flags on the candidate and got 1, with a matching flag on the
+  reference it did not predict at all.
+- The sharp sub-prediction was: *if s-022 is clean while the long fixtures flag,
+  the hazard-geometry half of the model is wrong.* **s-022 is clean.** So the
+  per-seam-hazard-scales-with-window half is **not supported**; the crossover
+  estimate at `chunk_size ≈ 20` rests on it and should not be quoted as
+  measured.
+
+### Verdict: cs15 does not ship
+
+Under AC #5 as written, one blocking row is a fail. Beyond the letter, the
+substantive reasons are stronger:
+
+1. **No evidence of benefit.** The preference is a dead tie. cs15 buys latency
+   and demonstrably nothing perceptual.
+2. **No evidence of separation.** Take-to-take variance on long content exceeds
+   the difference between the two geometries on this fixture set. Separating
+   them would need many samples per condition — a much larger listening burden
+   than the value at stake.
+3. **The binding constraint is not geometry.** Long-form quality is limited by
+   the codec-state residual. Optimising chunk size around it is working on the
+   wrong variable.
+
+### The chunk-size question is now closed, with its boundary known
+
+- `cs10` — regresses, clearly (round 2, 3 blocking, never preferred)
+- `cs15` — indistinguishable from `cs25`, with one blocking row (round 4)
+- `cs25` — ships
+
+Four auditions, 28 judgements. Anyone re-reading Story 20.1's latency sweep and
+seeing `chunk_size = 10` marked "optimum" must read this section: **the sweep
+optimised perceived latency and never asked the ear.**
+
+### What would reopen it
+
+Codec state caching across chunks (Mary's Finding 1, re-filed as an audio-quality
+item in §11.9). It removes the residual rather than masking it. With long-form
+takes reliably clean, the geometry question becomes separable and worth asking
+again — with real headroom, since the harm that killed cs10 is the same residual.
