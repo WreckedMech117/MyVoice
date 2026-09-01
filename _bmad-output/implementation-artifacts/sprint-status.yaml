@@ -176,3 +176,13 @@ development_status:
   # Sequenced first because it is independent: Follow-ups B (chunk_size) and C (adaptive
   # cushion) are coupled to each other and ship together in a later story.
   20-2-warm-path-compile-priming: review
+  # Story 20.3 added 2026-08-31. Story 20.2 measured the win but found it unreachable:
+  # (1) warmup_compile_async is scheduled at app.py:594 while the first await in that
+  #     coroutine is the preload at :613, so it always exits at no_model_loaded;
+  # (2) priming hard-codes CUSTOM_VOICE while the cache key is computed from the LOADED
+  #     model, so mark_warm can mark a key for a model never compiled.
+  # Commander 2026-08-31: BASE is the default resident model (typical user loads their
+  # usual cloned voice), so priming targets BASE + the Story 17.2 cached clone prompt.
+  # Central invariant: priming must NEVER switch models - evicting the user's model
+  # would cost a reload on their first generation, inverting the epic's purpose.
+  20-3-prime-the-resident-model: ready-for-dev

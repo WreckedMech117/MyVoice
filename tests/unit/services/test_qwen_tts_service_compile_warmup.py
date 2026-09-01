@@ -524,3 +524,71 @@ async def test_warmup_no_model_registry_skips(
     rec = _compile_records(metric_records)
     assert len(rec) == 1
     assert rec[0].tags["reason"] == "no_model_registry"
+
+
+# -- Story 20.2 review F7: the indicator is a single shared slot ------------- #
+
+
+@pytest.mark.asyncio
+async def test_warm_priming_does_not_erase_a_concurrent_precompute_indicator(
+    monkeypatch, metric_records, _restore_compile_warmup_env,
+    _restore_warm_priming_env,
+):
+    """Review F7 — the warmup's ``finally`` must not clear someone else's
+    message.
+
+    ``_preparing_voice_callback`` is a single slot shared with Story 17.2's
+    lazy voice_clone_prompt precompute ("Preparing voice for streaming…").
+    Both run at startup. An unconditional ``_emit_preparing_voice(None)`` in
+    the warmup's finally erases the precompute's message mid-flight, leaving
+    the user with no feedback while a cloned voice is still being prepared.
+    """
+    os.environ.pop("MYVOICE_DISABLE_WARM_COMPILE_PRIMING", None)
+    _patch_warm_cache(monkeypatch)
+    service = _make_service()
+    indicator_calls: List[Optional[str]] = []
+    service.set_preparing_voice_callback(lambda msg: indicator_calls.append(msg))
+
+    async def _priming_takes_over_the_slot():
+        # Stand in for the Story 17.2 precompute claiming the indicator while
+        # the prime is in flight.
+        service._emit_preparing_voice("Preparing voice for streaming…")
+
+    monkeypatch.setattr(
+        service, "_run_compile_priming", _priming_takes_over_the_slot
+    )
+
+    await service.warmup_compile_async()
+
+    assert indicator_calls == [
+        "Preparing TTS engine…",
+        "Preparing voice for streaming…",
+    ], (
+        "the warmup cleared an indicator message it did not own; got "
+        f"{indicator_calls}"
+    )
+    assert service._last_preparing_voice_message == "Preparing voice for streaming…"
+
+
+@pytest.mark.asyncio
+async def test_warm_priming_clears_its_own_indicator(
+    monkeypatch, metric_records, _restore_compile_warmup_env,
+    _restore_warm_priming_env,
+):
+    """The conditional clear must still clear when the message IS ours —
+    otherwise F7's fix would strand a "Preparing TTS engine…" message."""
+    os.environ.pop("MYVOICE_DISABLE_WARM_COMPILE_PRIMING", None)
+    _patch_warm_cache(monkeypatch)
+    service = _make_service()
+    indicator_calls: List[Optional[str]] = []
+    service.set_preparing_voice_callback(lambda msg: indicator_calls.append(msg))
+
+    async def _priming_succeeds():
+        return None
+
+    monkeypatch.setattr(service, "_run_compile_priming", _priming_succeeds)
+
+    await service.warmup_compile_async()
+
+    assert indicator_calls == ["Preparing TTS engine…", None]
+    assert service._last_preparing_voice_message is None

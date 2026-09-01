@@ -710,6 +710,10 @@ class QwenTTSService(BaseService):
         # orchestrator wires a callback that translates the (Optional[str])
         # message into a ServiceStatusInfo update for the TTS indicator.
         self._preparing_voice_callback: Optional[Callable[[Optional[str]], None]] = None
+        # Story 20.2 review F7 - last message handed to the single-slot
+        # preparing-voice indicator, so a transient owner can clear it only
+        # when it is still showing its own message.
+        self._last_preparing_voice_message: Optional[str] = None
 
         self.logger.info(
             f"QwenTTSService initialized: device={device}, cache_dir={self._cache_dir}"
@@ -1911,7 +1915,13 @@ class QwenTTSService(BaseService):
 
     def _emit_preparing_voice(self, message: Optional[str]) -> None:
         """Best-effort preparing-voice indicator update; failures swallow
-        (UI feedback is not on the critical generation path)."""
+        (UI feedback is not on the critical generation path).
+
+        Records the last message emitted so a caller that owns a transient
+        indicator can clear it *conditionally* - see
+        :meth:`_clear_preparing_voice_if_mine`.
+        """
+        self._last_preparing_voice_message = message
         if self._preparing_voice_callback is None:
             return
         try:
@@ -1921,11 +1931,28 @@ class QwenTTSService(BaseService):
                 f"preparing_voice callback raised: {exc}"
             )
 
+    def _clear_preparing_voice_if_mine(self, message: str) -> None:
+        """Story 20.2 review F7 - clear the indicator only if it still shows
+        ``message``.
+
+        The compile warmup runs concurrently with Story 17.2's lazy
+        voice_clone_prompt precompute, which drives the SAME single-slot
+        indicator with "Preparing voice for streaming...". An unconditional
+        ``_emit_preparing_voice(None)`` in the warmup's ``finally`` erases
+        that message mid-flight, leaving the user with no feedback while a
+        cloned voice is still being prepared. Clearing only our own message
+        makes the two producers compose: last writer wins, and each cleans
+        up only after itself.
+        """
+        if self._last_preparing_voice_message == message:
+            self._emit_preparing_voice(None)
+
     # ------------------------------------------------------------------ #
     # Story 18.4 — torch.compile warmup worker (D-23)
     # ------------------------------------------------------------------ #
 
     _COMPILE_PRIMING_TEXT = "Hello world."
+    _PREPARING_TTS_ENGINE_MESSAGE = "Preparing TTS engine…"
     _COMPILE_WARMUP_DISABLE_ENV = "MYVOICE_DISABLE_COMPILE_WARMUP"
     # Story 20.2 AC #6 — reversibility gate. Set to "1" to restore the exact
     # pre-20.2 warm-path behavior (log the steady-state breadcrumb, emit
@@ -2167,7 +2194,7 @@ class QwenTTSService(BaseService):
                 )
                 return
 
-            self._emit_preparing_voice("Preparing TTS engine…")
+            self._emit_preparing_voice(self._PREPARING_TTS_ENGINE_MESSAGE)
             try:
                 await self._run_compile_priming()
                 duration_ms = int((time.monotonic() - start_ms) * 1000)
@@ -2203,11 +2230,15 @@ class QwenTTSService(BaseService):
                     error=type(exc).__name__,
                 )
             finally:
-                self._emit_preparing_voice(None)
+                # Story 20.2 review F7: do not erase a concurrent Story
+                # 17.2 "Preparing voice for streaming..." message.
+                self._clear_preparing_voice_if_mine(
+                    self._PREPARING_TTS_ENGINE_MESSAGE
+                )
             return
 
         # Cache-miss path: emit indicator + run priming + mark_warm on success.
-        self._emit_preparing_voice("Preparing TTS engine…")
+        self._emit_preparing_voice(self._PREPARING_TTS_ENGINE_MESSAGE)
         try:
             await self._run_compile_priming()
             compile_cache.mark_warm(key)
@@ -2241,8 +2272,12 @@ class QwenTTSService(BaseService):
         finally:
             # Always clear the indicator — even on priming failure the
             # user should not be left looking at a stuck "Preparing TTS
-            # engine…" message.
-            self._emit_preparing_voice(None)
+            # engine…" message. Story 20.2 review F7: clear it only if it
+            # is still ours, so a concurrent Story 17.2 precompute message
+            # survives.
+            self._clear_preparing_voice_if_mine(
+                self._PREPARING_TTS_ENGINE_MESSAGE
+            )
 
     async def _run_compile_priming(self) -> None:
         """Story 18.4 — run one synthetic priming generation.
@@ -2302,6 +2337,24 @@ class QwenTTSService(BaseService):
             streaming=True,
             suppress_audio_output=True,
         )
+        # Story 20.2 review F6 - fail LOUDLY rather than silently
+        # un-suppressing. ``_is_suppressed`` reads the flag through
+        # ``getattr(..., False)``, which fails open by design (an
+        # unrecognised request is treated as user-facing, because silencing
+        # a real user is the worse failure). That same tolerance would let a
+        # rename of the field turn priming back into audible output without
+        # a single test going red. This assertion is the trip-wire: it costs
+        # one attribute read per launch and it is checked on the exact
+        # object about to be dispatched, so it cannot drift from the request
+        # the dispatch chain actually sees. A raise here routes to the
+        # caller's ``priming_failed`` telemetry - never fatal.
+        if not self._is_suppressed(request):
+            raise RuntimeError(
+                "compile-priming request is not suppressed - refusing to "
+                "dispatch a generation that could reach the user's "
+                "speakers (Story 20.2 AC #2)"
+            )
+        assert self._audio_chunk_sink(request) is None
         await self._dispatch_by_streaming_mode(
             request, self._resolve_streaming_mode()
         )
@@ -3220,12 +3273,20 @@ class QwenTTSService(BaseService):
         start_time = time.time()
         self._generation_state = GenerationState.IDLE
 
+        # Story 20.2 review F3/F4 - symmetry with the TRUE_STREAM path.
+        # The compile-priming request carries ``suppress_audio_output``
+        # through the whole TRUE_STREAM -> SENTENCE_STREAM -> BATCH
+        # fallback chain, so every mode that can end up running it must
+        # honour the same wall: no registry session, no shared bookkeeping,
+        # no cache write. See ``_is_suppressed``.
+        suppressed = self._is_suppressed(request)
+
         # Story 11.4: create the session at the very top of the entry point
         # for telemetry symmetry — even early-rejected requests get a
         # PENDING → ERROR → DISCARDED state trail. Local `sid` is None when
         # registry is absent (legacy code path runs unchanged).
         sid: Optional[str] = None
-        if self._session_registry is not None:
+        if self._session_registry is not None and not suppressed:
             sid = self._session_registry.create_session(
                 text=request.text,
                 voice=self._resolve_voice_label(request),
@@ -3241,7 +3302,12 @@ class QwenTTSService(BaseService):
         # cancel_generation() can call task.cancel() — the only mechanism
         # that gets CancelledError into the batch path (which never polls
         # _cancel_requested). Cleared in the outer finally below.
-        self._current_generation_task = asyncio.current_task()
+        # Story 20.2 review F2: claimed only by a user-facing generation,
+        # and released in the finally only if still owned.
+        owned_generation_task: Optional[asyncio.Task] = None
+        if not suppressed:
+            owned_generation_task = asyncio.current_task()
+            self._current_generation_task = owned_generation_task
 
         try:
             # Validate text input (FR5)
@@ -3346,8 +3412,13 @@ class QwenTTSService(BaseService):
                     request
                 )
 
-            # Save to cache file
-            audio_file = self._save_audio_to_cache(audio_data, sample_rate)
+            # Save to cache file. Story 20.2 review F3: a suppressed
+            # generation must not overwrite ``myvoice_current.wav`` - that
+            # file is what Replay Last plays.
+            audio_file = (
+                None if suppressed
+                else self._save_audio_to_cache(audio_data, sample_rate)
+            )
 
             generation_time = time.time() - start_time
             self._successful_requests += 1
@@ -3419,15 +3490,23 @@ class QwenTTSService(BaseService):
         finally:
             # Story 11.4 review fix (F1): drop the task reference so a
             # later cancel_generation() doesn't try to cancel a finished
-            # task. Set unconditionally — applies to every return path
-            # above, including handler returns.
-            self._current_generation_task = None
+            # task. Applies to every return path above, including handler
+            # returns.
+            # Story 20.2 review F2: release ONLY what this generation
+            # claimed, so a concurrent generation parked on the request
+            # semaphore keeps its own cancel bookkeeping.
+            if (
+                owned_generation_task is not None
+                and self._current_generation_task is owned_generation_task
+            ):
+                self._current_generation_task = None
             # Story 16.5: drop the session id alongside the task so a later
             # cancel_generation() finds no in-flight session and the new
             # request_cancel call short-circuits to a quiet no-op. The
             # registry has already cleared the cancel hook via its own
             # terminal-state cleanup (cancel/discard slots).
-            self._current_session_id = None
+            if sid is not None and self._current_session_id == sid:
+                self._current_session_id = None
 
     async def _generate_streaming(self, request: QwenTTSRequest) -> QwenTTSResponse:
         """
@@ -3449,7 +3528,17 @@ class QwenTTSService(BaseService):
         self._streaming_requests += 1
         start_time = time.time()
         first_chunk_time: Optional[float] = None
-        self._cancel_requested = False
+        # Story 20.2 review F3/F4 - symmetry with the TRUE_STREAM path.
+        # The compile-priming request carries ``suppress_audio_output``
+        # through the whole TRUE_STREAM -> SENTENCE_STREAM -> BATCH
+        # fallback chain, so every mode that can end up running it must
+        # honour the same wall: no registry session, no shared bookkeeping,
+        # no cache write. See ``_is_suppressed``.
+        suppressed = self._is_suppressed(request)
+        if not suppressed:
+            # Story 20.2 review F2: never clear a cancel the user just
+            # requested on a concurrent generation.
+            self._cancel_requested = False
         self._generation_state = GenerationState.IDLE
 
         all_chunks: List[np.ndarray] = []
@@ -3459,7 +3548,7 @@ class QwenTTSService(BaseService):
         # Story 11.4: create the session at the very top of the entry point.
         # Local `sid` is None when registry is absent (legacy code path).
         sid: Optional[str] = None
-        if self._session_registry is not None:
+        if self._session_registry is not None and not suppressed:
             sid = self._session_registry.create_session(
                 text=request.text,
                 voice=self._resolve_voice_label(request),
@@ -3476,7 +3565,11 @@ class QwenTTSService(BaseService):
         # _cancel_requested poll as a fallback path, but task.cancel() is
         # the canonical mechanism — and the only one that interrupts an
         # in-flight `await loop.run_in_executor(...)` chunk generation.
-        self._current_generation_task = asyncio.current_task()
+        # Story 20.2 review F2: claimed only by a user-facing generation.
+        owned_generation_task: Optional[asyncio.Task] = None
+        if not suppressed:
+            owned_generation_task = asyncio.current_task()
+            self._current_generation_task = owned_generation_task
 
         try:
             # Validate text input (FR5)
@@ -3609,6 +3702,13 @@ class QwenTTSService(BaseService):
                         streaming=False,  # Individual chunks use batch
                         checkpoint_path=request.checkpoint_path,
                         voice_clone_prompt=request.voice_clone_prompt,
+                        # Story 20.2 review: this copy drops nothing that
+                        # decides whether audio reaches a user. Harmless
+                        # today (the copy only reaches ``_generate_sync``,
+                        # which never emits), but a request-copy site that
+                        # silently drops the flag becomes a leak the moment
+                        # anyone routes it through a dispatcher.
+                        suppress_audio_output=request.suppress_audio_output,
                     )
 
                     # Generate chunk in thread pool
@@ -3671,8 +3771,13 @@ class QwenTTSService(BaseService):
                     self._session_registry.post_mutation('set_error', sid)
                     self._session_registry.post_mutation('discard', sid)
 
-            # Save to cache file
-            audio_file = self._save_audio_to_cache(complete_audio, sample_rate)
+            # Save to cache file. Story 20.2 review F3: a suppressed
+            # generation must not overwrite ``myvoice_current.wav`` - that
+            # file is what Replay Last plays.
+            audio_file = (
+                None if suppressed
+                else self._save_audio_to_cache(complete_audio, sample_rate)
+            )
 
             generation_time = time.time() - start_time
             self._successful_requests += 1
@@ -3820,14 +3925,23 @@ class QwenTTSService(BaseService):
         finally:
             # Story 11.4 review fix (F1): drop the task reference so a
             # later cancel_generation() doesn't try to cancel a finished
-            # task. The recursive batch-fallback _generate() also sets and
-            # clears this field, but the outer clear is idempotent.
-            self._current_generation_task = None
+            # task.
+            # Story 20.2 review F2: release ONLY what this generation
+            # claimed. The recursive batch-fallback _generate() sets and
+            # releases its own; ownership-scoped clears keep the two from
+            # stepping on each other, and keep a concurrent generation
+            # parked on the request semaphore intact.
+            if (
+                owned_generation_task is not None
+                and self._current_generation_task is owned_generation_task
+            ):
+                self._current_generation_task = None
             # Story 16.5: drop the session id alongside the task. Recursive
             # batch-fallback _generate() set its own _current_session_id (a
             # different sid for the fallback session) and cleared it in its
             # own finally; the outer clear here covers the streaming sid.
-            self._current_session_id = None
+            if sid is not None and self._current_session_id == sid:
+                self._current_session_id = None
 
     def _split_text_for_streaming(self, text: str) -> List[str]:
         """
@@ -4404,7 +4518,18 @@ class QwenTTSService(BaseService):
         self._streaming_requests += 1
         start_time = time.time()
         first_chunk_time: Optional[float] = None
-        self._cancel_requested = False
+        # Story 20.2 review F1/F2/F3/F4 - resolved once, up front, and
+        # consulted at every user-reaching channel below. See
+        # ``_is_suppressed`` for the enumeration of those channels.
+        suppressed = self._is_suppressed(request)
+        if not suppressed:
+            # A suppressed (compile-priming) generation must NOT reset the
+            # shared cancel flag: priming can overlap a user generation, and
+            # clearing a cancel the user just requested would leave their
+            # audio playing after they pressed Stop. Priming inherits
+            # whatever the flag holds - a pending cancel simply aborts the
+            # prime, which is the correct outcome.
+            self._cancel_requested = False
         self._generation_state = GenerationState.IDLE
 
         accumulated_chunks: List[np.ndarray] = []
@@ -4425,7 +4550,16 @@ class QwenTTSService(BaseService):
         worker: Optional[StreamingDecoderWorker] = None
         talker_thread: Optional[threading.Thread] = None
 
-        if self._session_registry is not None:
+        # Story 20.2 review F4 - a suppressed generation registers NO
+        # session. A registered session is ``source=GENERATED``, so the
+        # registry makes it ``_saveable`` and ``_focal``: the Save button
+        # would light up at startup pointing at "Hello world.", and a prime
+        # that finalises after a real generation would demote the user's
+        # audio to ``_previous_saveable``. With ``sid`` left None every
+        # downstream ``if sid is not None and self._session_registry is not
+        # None`` guard no-ops, and ``registry_post`` below is nulled so the
+        # worker's append_chunk / finalize posts never reach the registry.
+        if self._session_registry is not None and not suppressed:
             sid = self._session_registry.create_session(
                 text=request.text,
                 voice=self._resolve_voice_label(request),
@@ -4437,7 +4571,17 @@ class QwenTTSService(BaseService):
             # can request_cancel(sid) -> hook -> streamer._cancel_event.set().
             self._current_session_id = sid
 
-        self._current_generation_task = asyncio.current_task()
+        # Story 20.2 review F2 - these two are process-wide singletons, and
+        # the block above runs BEFORE ``async with self._request_semaphore``.
+        # A user request can therefore register its bookkeeping, park on the
+        # semaphore behind an in-flight prime, and have the prime's
+        # ``finally`` null it out - after which Stop finds no session and no
+        # task, and the user's audio cannot be cancelled. A suppressed
+        # generation claims neither.
+        owned_generation_task: Optional[asyncio.Task] = None
+        if not suppressed:
+            owned_generation_task = asyncio.current_task()
+            self._current_generation_task = owned_generation_task
 
         # Story 20.1 (TTFA spike) segment boundary #0 — the t0 of the
         # four-segment first-audio decomposition. Wall-clock ms so the CSV
@@ -4574,9 +4718,15 @@ class QwenTTSService(BaseService):
                 # Wrap the registry's post_mutation so the dispatch path can
                 # observe append_chunk / finalize timing without a separate
                 # subscription. The registry still receives every call.
+                # Story 20.2 review F4: ``sid`` is None for a suppressed
+                # generation, so the worker would post ('append_chunk',
+                # 'no-registry', ...) against a session that does not
+                # exist. Null the post target instead - the wrapper below
+                # still accumulates chunks and emits producer-side
+                # telemetry.
                 registry_post = (
                     self._session_registry.post_mutation
-                    if self._session_registry is not None
+                    if self._session_registry is not None and not suppressed
                     else None
                 )
 
@@ -4733,10 +4883,22 @@ class QwenTTSService(BaseService):
                 # exception: session is in GENERATING when play_dual_stream
                 # is called; mark_playing/mark_audible posts run from the
                 # coordinator's existing flow.
+                # Story 20.2 review F1 - THE user's speakers. This call
+                # reaches the monitor device + the virtual microphone and
+                # never consulted the suppression flag. Priming always
+                # resolves to TRUE_STREAM (it only runs on Ampere+ CUDA,
+                # which is exactly when ``_resolve_streaming_mode()``
+                # returns TRUE_STREAM), so a service constructed WITH an
+                # audio_coordinator would play "Hello world." aloud on every
+                # launch. It is dormant in the shipped GUI only because
+                # ``app.py`` happens to construct the service without a
+                # coordinator - safety by coincidence, which is the class of
+                # hazard this story exists to remove.
                 if (
                     accumulated_chunks
                     and self.audio_coordinator is not None
                     and sid is not None
+                    and not suppressed
                     and not self._cancel_requested
                 ):
                     initial_audio = (
@@ -4799,7 +4961,17 @@ class QwenTTSService(BaseService):
                 complete_audio = np.array([], dtype=np.float32)
             accumulated_chunks.clear()
 
-            audio_file = self._save_audio_to_cache(complete_audio, sample_rate)
+            # Story 20.2 review F3 - the cache file is
+            # ``myvoice_current.wav``, which ``get_cached_audio_path()``
+            # hands to Replay Last. An unguarded priming write would leave
+            # "Hello world." as the replay target on every launch. Leaving
+            # ``audio_file`` None also closes the
+            # ``_generation_complete_callback`` channel below, which is
+            # guarded on a truthy path.
+            audio_file = (
+                None if suppressed
+                else self._save_audio_to_cache(complete_audio, sample_rate)
+            )
 
             generation_time = time.time() - start_time
             self._successful_requests += 1
@@ -4902,8 +5074,19 @@ class QwenTTSService(BaseService):
             raise
 
         finally:
-            self._current_generation_task = None
-            self._current_session_id = None
+            # Story 20.2 review F2 - clear ONLY what this generation
+            # claimed. An unconditional null here lets any generation (a
+            # compile prime, or simply a second dispatch) wipe the
+            # bookkeeping of a concurrent one parked on the request
+            # semaphore, breaking Stop / Clear Comms for the generation that
+            # is still running.
+            if (
+                owned_generation_task is not None
+                and self._current_generation_task is owned_generation_task
+            ):
+                self._current_generation_task = None
+            if sid is not None and self._current_session_id == sid:
+                self._current_session_id = None
 
     @staticmethod
     def _fallback_chain_from(mode: StreamingMode) -> List[StreamingMode]:
@@ -5564,6 +5747,48 @@ class QwenTTSService(BaseService):
         """
         self._audio_chunk_ready_callback = callback
 
+    @staticmethod
+    def _is_suppressed(request: "QwenTTSRequest") -> bool:
+        """Story 20.2 AC #2 — the single predicate for "this generation must
+        reach no user-facing channel".
+
+        Suppression is a property of the *request object*, so it travels with
+        the generation it belongs to. A detach-and-restore of
+        ``_audio_chunk_ready_callback`` around the priming call, or a
+        service-level ``self._suppressing`` boolean, would also silence a
+        user-facing generation dispatched while priming is in flight — the exact
+        AC #3 failure mode ("a latency fix turned into a no-audio bug"). Startup
+        ordering is deliberately NOT relied upon: the guarantee holds even when
+        a consumer is already wired.
+
+        **A suppressed generation is walled off from EVERY channel that reaches
+        a user**, not just the progressive-chunk callback. The 20.2 review pass
+        found four such channels; all four are now gated on this predicate:
+
+          1. ``_audio_chunk_ready_callback`` — progressive playback
+             (via :meth:`_audio_chunk_sink`).
+          2. ``audio_coordinator.play_dual_stream`` — the monitor + virtual-mic
+             devices. TRUE_STREAM calls this directly with the assembled first
+             chunk; it is the user's speakers and it never consulted the sink.
+          3. ``_save_audio_to_cache`` — writes ``myvoice_current.wav``, which
+             ``get_cached_audio_path()`` hands to Replay Last. An unguarded
+             priming write leaves "Hello world." as the replay target on every
+             launch. Because ``_generation_complete_callback`` is guarded on a
+             truthy ``audio_file``, skipping the write also closes that channel.
+          4. ``SessionRegistry.create_session`` — a registered session becomes
+             ``_saveable`` / ``_focal``, which lights the Save button at startup
+             and can demote the user's real generation to
+             ``_previous_saveable``.
+
+        ``getattr`` with a default keeps the predicate safe for the duck-typed
+        request objects some older tests hand to the dispatch paths. It fails
+        OPEN by design (an unrecognised request is treated as user-facing);
+        silencing a real user is the worse failure. ``_run_compile_priming``
+        asserts the predicate on its own request before dispatch so a rename
+        fails loudly rather than silently un-suppressing priming.
+        """
+        return bool(getattr(request, "suppress_audio_output", False))
+
     def _audio_chunk_sink(
         self, request: "QwenTTSRequest"
     ) -> Optional[Callable[[AudioChunk], None]]:
@@ -5571,21 +5796,11 @@ class QwenTTSService(BaseService):
         consumer from a generation path.
 
         Returns the wired ``_audio_chunk_ready_callback`` for a normal request,
-        and ``None`` for a request that carries ``suppress_audio_output=True``.
-
-        Why this shape (Task 1.1): the suppression decision is a property of the
-        *request object*, so it travels with the generation it belongs to. A
-        detach-and-restore of ``_audio_chunk_ready_callback`` around the priming
-        call, or a service-level ``self._suppressing`` boolean, would also
-        silence a user-facing generation dispatched while priming is in flight —
-        the exact AC #3 failure mode ("a latency fix turned into a no-audio
-        bug"). Startup ordering is deliberately NOT relied upon: the guarantee
-        holds even when a consumer is already wired.
-
-        ``getattr`` with a default keeps the helper safe for the duck-typed
-        request objects some older tests hand to the dispatch paths.
+        and ``None`` for a suppressed one. See :meth:`_is_suppressed` for why
+        suppression is request-scoped and for the other three channels that
+        carry the same guard.
         """
-        if getattr(request, "suppress_audio_output", False):
+        if self._is_suppressed(request):
             return None
         return self._audio_chunk_ready_callback
 
