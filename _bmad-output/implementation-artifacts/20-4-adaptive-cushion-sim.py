@@ -54,7 +54,19 @@ from myvoice.services.tts_streaming import codec_token_streamer  # noqa: E402
 
 SAMPLE_RATE = 24000
 BYTES_PER_SEC = SAMPLE_RATE * 2  # int16 mono
-FRAME_HZ = 12.0
+
+# MEASURED: the codec emits 1920 samples per frame, i.e. 12.5 Hz at 24 kHz,
+# not the 12 Hz this project's prose assumed from Story 16.3 to Story 20.3
+# (see streaming_decoder._CODEC_SAMPLES_PER_FRAME, solved from posted chunk
+# lengths and cross-checked against 14 residual lengths). Nothing
+# behavioural depended on 12; every human-facing "seconds of audio per
+# chunk" figure computed with it is ~4 % optimistic.
+FRAME_HZ = 12.5
+
+# Story 20.1 computed its published table with 12.0. The cross-check below
+# must therefore use 12.0 as well, or it would not be comparing like with
+# like and a genuine reproduction would look like a mismatch.
+LEGACY_FRAME_HZ = 12.0
 MAX_PRE_DELAY = _DEFAULT_STREAMING_MAX_PRE_DELAY_SECONDS
 BUDGET = _DEFAULT_STREAMING_CUSHION_BUDGET_SECONDS
 LOOKAHEAD = codec_token_streamer.DEFAULT_LOOKAHEAD
@@ -102,7 +114,8 @@ class LegacyPolicyBuffer(StreamingChunkBuffer):
         )
 
 
-def simulate(cls, p, chunk_size, target_audio_s, true_audio_s, budget=BUDGET):
+def simulate(cls, p, chunk_size, target_audio_s, true_audio_s, budget=BUDGET,
+             frame_hz=None):
     """Feed chunks at producer rate ``p`` until the buffer releases.
 
     Returns ``(release_offset_or_None, reason, talker_segment_seconds)``.
@@ -120,7 +133,8 @@ def simulate(cls, p, chunk_size, target_audio_s, true_audio_s, budget=BUDGET):
         cushion_budget_seconds=budget,
         clock=clock,
     )
-    audio_per_chunk_s = chunk_size / FRAME_HZ
+    hz = frame_hz or FRAME_HZ
+    audio_per_chunk_s = chunk_size / hz
     wall_per_chunk_s = audio_per_chunk_s / p
     chunk_bytes = int(audio_per_chunk_s * BYTES_PER_SEC)
     payload = b"\x01\x02" * (chunk_bytes // 2)
@@ -132,7 +146,7 @@ def simulate(cls, p, chunk_size, target_audio_s, true_audio_s, budget=BUDGET):
         if buf.push(payload, is_final=False):
             released_at = clock.t
             break
-    talker_seg_s = ((chunk_size + LOOKAHEAD) / FRAME_HZ) / p
+    talker_seg_s = ((chunk_size + LOOKAHEAD) / hz) / p
     return released_at, buf.last_release_reason, talker_seg_s
 
 
@@ -198,6 +212,7 @@ def crosscheck():
     "before" number in this run is untrustworthy.
     """
     print("## Cross-check: legacy reproduction vs Story 20.1 SS2.7 published")
+    print("## (run at Story 20.1's 12.0 Hz assumption so it is like-for-like)")
     print()
     expected = {
         (25, 0.50): 12.50, (25, 0.70): 11.90, (25, 0.75): 11.11,
@@ -208,7 +223,8 @@ def crosscheck():
     legacy_ta = LONG_CHARS * LEGACY_CHARS_TO_AUDIO_SECONDS
     ok = True
     for (cs, p), published in sorted(expected.items()):
-        got, _, _ = simulate(LegacyPolicyBuffer, p, cs, legacy_ta, LONG_TRUE_TA)
+        got, _, _ = simulate(LegacyPolicyBuffer, p, cs, legacy_ta, LONG_TRUE_TA,
+                             frame_hz=LEGACY_FRAME_HZ)
         match = got is not None and abs(got - published) < 0.02
         ok = ok and match
         print("  cs={:<3} P={:.2f}  published {:>6.2f}s   reproduced {:>6}   {}"
@@ -227,14 +243,18 @@ def main() -> int:
     print("# injected clock. Committed streamer geometry: chunk_size={}, "
           "lookahead={}.".format(codec_token_streamer.DEFAULT_CHUNK_SIZE,
                                  codec_token_streamer.DEFAULT_LOOKAHEAD))
+    print("# Frame rate {} Hz (measured). chunk_size=10 was attempted by this"
+          .format(FRAME_HZ))
+    print("# story and REVERTED after the NFR3 gate; its rows are kept below")
+    print("# for the record, not as a description of what ships.")
     print()
     ok = crosscheck()
     sweep(25, LONG_CHARS, LONG_TRUE_TA,
-          "Long fixture at chunk_size = 25 (the PRE-20.4 geometry)")
+          "Long fixture at chunk_size = 25 - THE SHIPPED GEOMETRY (AC #3)")
+    sweep(25, SHORT_CHARS, SHORT_TRUE_TA,
+          "Short / Clear Comms fixture at chunk_size = 25 - SHIPPED")
     sweep(10, LONG_CHARS, LONG_TRUE_TA,
-          "Long fixture at chunk_size = 10 (the COMMITTED geometry) - AC #3")
-    sweep(10, SHORT_CHARS, SHORT_TRUE_TA,
-          "Short / Clear Comms fixture at chunk_size = 10")
+          "Long fixture at chunk_size = 10 - REVERTED, retained for the record")
     print("## Notes")
     print("  * 'tot. gap' is accumulated MID-UTTERANCE silence, derived as")
     print("    max(0, T_a/P - T_a - cushion). Total silence is conserved:")
@@ -244,9 +264,16 @@ def main() -> int:
     print("    place for it (memory/clear_comms_purpose_framing.md).")
     print("  * 'ratio' is segment 4 / talker segment. Story 20.1 SS2.7 used")
     print("    the same denominator, ((chunk_size + lookahead)/12)/P.")
-    print("  * The short fixture is only ~2.3 s of audio; at chunk_size 10")
-    print("    that is 3 chunks, so several rows never reach a release")
-    print("    decision before is_final would fire. Those read 'never'.")
+    print("  * At chunk_size = 25 a posted chunk carries 2.0 s of audio,")
+    print("    which already equals the whole 2.0 s cushion budget. So on")
+    print("    the shipped geometry the feasible and unreachable regimes")
+    print("    release at the SAME point - chunk 2, the first push where a")
+    print("    producer rate is measurable at all. The policy's effect")
+    print("    there is entirely to stop the guardrail from binding.")
+    print("  * The short fixture is only ~2.3 s of audio; at chunk_size 25")
+    print("    that is a single chunk, so it never reaches a release")
+    print("    decision at all and is carried by is_final. Those read")
+    print("    'never' - which is the correct behaviour, not a gap.")
     return 0 if ok else 1
 
 

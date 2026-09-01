@@ -22,12 +22,11 @@ Public surface (consumed by Stories 16.4-16.6):
   - CodecTokenStreamer: HF BaseStreamer subclass with bounded queue.
   - END_OF_STREAM: module-level singleton; decoder loop-exit signal.
 
-Defaults: chunk_size=10, lookahead=5 (Story 20.4). The original
-chunk_size=25 was inherited verbatim from the example in
-01-streaming-tts-research.md:184 and never tuned; Story 20.1 SS5.2/5.3
-swept {5, 10, 15, 25} on both utterance classes and found 10 to be the
-optimum -- see the class docstring for the numbers. Story 16.7's
-empirical-validation harness may revise via direct module-constant edit.
+Defaults: chunk_size=25, lookahead=5. Story 20.4 attempted a retune to
+10 -- measured as the throughput/latency optimum by Story 20.1 SS5.2/5.3 --
+and REVERTED it after the NFR3 perceptual gate failed twice. See the
+constants below for the full record. Story 16.7's empirical-validation
+harness may revise via direct module-constant edit.
 """
 
 import queue
@@ -43,39 +42,60 @@ from transformers.generation.streamers import BaseStreamer
 END_OF_STREAM = object()
 
 
-# Story 20.4 (Epic 20, Follow-up B) -- the committed geometry.
+# THE COMMITTED GEOMETRY -- and the record of an attempt to change it.
 #
-# chunk_size was 25 from Story 16.3 through Story 20.3, inherited verbatim
-# from the 01-streaming-tts-research.md:184 example and never tuned. Story
-# 20.1 SS5.2/SS5.3 swept {5, 10, 15, 25} with lookahead held at 5, on the
-# RTX 5090, in the shipping tts_compile="auto" regime:
+# Story 20.4 (Epic 20, Follow-up B) tried chunk_size = 10 and reverted it.
+# The number stays at 25. Both halves of that are load-bearing, so the
+# evidence is recorded here rather than only in the story file.
 #
-#   cs  window  audio/chunk  TTFA long  TTFA short  ratio  short first-emit
-#    5      10       417 ms     951 ms      899 ms  0.760  threshold 5/5
-#   10      15       833 ms     875 ms      921 ms  0.676  threshold 5/5   <- optimum
-#   15      20     1,250 ms   1,172 ms    1,174 ms  0.677  threshold 5/5
-#   25      30     2,083 ms   1,785 ms    1,651 ms  0.665  residual_flush 11/20
+# WHY 10 LOOKED RIGHT. Story 20.1 SS5.2/SS5.3 swept {5, 10, 15, 25} with
+# lookahead held at 5, on an RTX 5090, in the shipping tts_compile="auto"
+# regime:
 #
-# The optimum is 10, not the smallest value: at chunk_size=5 each chunk
-# carries 417 ms of audio, BELOW the consumer's 500 ms static watermark
-# (audio_coordinator.py), so the consumer holds two chunks and hands back
-# ~270 ms -- wiping out most of the producer-side gain. chunk_size >= 6
-# keeps the watermark a no-op.
+#   cs  window  TTFA long  TTFA short  ratio  short first-emit path
+#    5      10     951 ms      899 ms  0.760  threshold 5/5
+#   10      15     875 ms      921 ms  0.676  threshold 5/5   <- fastest
+#   15      20   1,172 ms    1,174 ms  0.677  threshold 5/5
+#   25      30   1,785 ms    1,651 ms  0.665  residual_flush 11/20
 #
-# chunk_size=10 also drops the first-emit threshold from 30 frames (2.5 s
-# of audio at 12 Hz) to 15 (1.25 s), which is what moves SHORT utterances
-# off the ``residual_flush`` dispatch path onto the ``threshold`` path.
+# Story 20.4 re-measured that on current code and reproduced it: long-form
+# TTFA 1,491 -> 829 ms and short 1,409 -> 784 ms, with the short class
+# moving off the ``residual_flush`` dispatch path 6/6. Through the shipped
+# GUI it measured 976 ms long / 1,065 ms short. The speed win was real.
+#
+# WHY IT WAS REVERTED ANYWAY. It failed the NFR3 perceptual gate twice.
+# Every chunk boundary is a seam, and seam artefacts scale with seam
+# count -- chunk_size = 10 has 2.5x as many as 25. Commander flagged
+# audible defects on 1 of 7 fixtures in round 1 and 3 of 7 in round 2, and
+# preferred chunk_size = 25 on every utterance where the two differed.
+# AC #5 makes an audible chunk-boundary artefact blocking, not a note.
+#
+# A round-3 audition then isolated the variables and showed the SEAM FIX
+# in ``streaming_decoder.py`` is good on its own at chunk_size = 25 -- it
+# removed the defect on both long fixtures and was never worse. So the two
+# things Story 20.4 built are separable, and only one of them ships: the
+# stitching fix does, the geometry retune does not.
+#
+# WHAT WOULD REOPEN IT. The seam harm and the alignment gain BOTH scale
+# with seam count, so the balance at intermediate geometries is genuinely
+# unknown. chunk_size = 15 is untested perceptually -- 1.5x the seams of
+# 25, against Story 20.1's measured 1,157 ms TTFA. That is an open
+# question, not a recommendation. Any future attempt needs an NFR3
+# audition, not just the latency sweep, because the latency sweep already
+# said 10 and the ear disagreed.
 #
 # ANY change to these two constants must be threaded into
 # ``torch_runtime.engage_compile_optimizations`` -- it derives D-25's
 # ``decode_window_frames`` from them (it imports this module for exactly
 # that reason), and the value is one of compile_cache's seven key
 # dimensions, so a retune auto-invalidates the compile cache (D-24).
-# Story 20.1 SS5.4 documents the trap: before Story 20.4 the compile path
-# carried its own hard-coded 25/5 literals and the sole production call
-# site passed neither, so ``decode_window_frames`` was pinned at 30
-# regardless of the streamer's real geometry.
-DEFAULT_CHUNK_SIZE = 10
+# Story 20.1 SS5.4 documents the trap that made this necessary: before
+# Story 20.4 the compile path carried its own hard-coded 25/5 literals and
+# the sole production call site passed neither, so ``decode_window_frames``
+# was pinned at 30 regardless of the streamer's real geometry. That
+# threading is the part of Follow-up B that DID ship, and it is what made
+# this revert a one-line edit.
+DEFAULT_CHUNK_SIZE = 25
 DEFAULT_LOOKAHEAD = 5
 DEFAULT_QUEUE_MAX_FACTOR = 4  # D-10: maxsize = factor * chunk_size
 

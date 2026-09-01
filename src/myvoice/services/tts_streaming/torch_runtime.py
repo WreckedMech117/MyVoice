@@ -527,8 +527,10 @@ def engage_compile_optimizations(
     Story 18.4 — Phase ⊥-Polish-2 of D-20, Cluster E of
     ``architecture-streaming-acceleration-and-lightning-tier.md`` (sealed
     2026-05-10). Executes architecture decisions D-21 (decode_window
-    bound to the streamer geometry -- 30 through Story 20.3, **15** from
-    Story 20.4's chunk_size retune), D-22 Branch B (calls the
+    bound to the streamer geometry -- 30, and DERIVED from the streamer
+    rather than restated here since Story 20.4, which is what let that
+    story's attempted retune to 15 be reverted by a one-line edit),
+    D-22 Branch B (calls the
     upstream-blessed API the pin-bump engaged), D-25 (decode-window
     invariant), and P-12 (capability verification probe).
 
@@ -547,7 +549,7 @@ def engage_compile_optimizations(
       4. **D-25 decode-window invariant** — ``decode_window_frames`` must
          equal ``streamer_chunk_size + streamer_lookahead``, and those two
          default to the **live** ``codec_token_streamer`` module constants
-         (today 10 + 5 = 15). Hard-fail on mismatch (not a warning log —
+         (today 25 + 5 = 30). Hard-fail on mismatch (not a warning log —
          silent fallthrough produces wrong audio).
       5. **P-12 capability probe** — after the API returns, verify that
          compile actually engaged (the API didn't no-op silently).

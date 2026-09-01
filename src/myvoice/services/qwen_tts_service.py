@@ -4696,9 +4696,9 @@ class QwenTTSService(BaseService):
                 if buf:
                     # Story 20.1 (TTFA spike) segment boundary #2, residual
                     # variant. An utterance shorter than
-                    # ``chunk_size + lookahead`` frames (1.25 s of audio at
-                    # 12 Hz with Story 20.4's committed 10 + 5 geometry;
-                    # 2.5 s under the pre-20.4 25 + 5) never reaches the
+                    # ``chunk_size + lookahead`` frames (2.4 s of audio at
+                    # the codec's measured 12.5 Hz with the committed 25 + 5
+                    # geometry) never reaches the
                     # streamer's first-emit threshold, so the ONLY token
                     # chunk it ever produces is this end-of-generation
                     # residual. Recording the boundary here keeps the

@@ -109,8 +109,10 @@ def test_expected_chunk_count_helper_matches_both_shipped_geometries():
     A test helper that silently computes the wrong expectation is worse
     than a hard-coded literal, because it looks principled. These two rows
     pin it against the only two geometries this project has shipped:
-    25 + 5 (through Story 20.3) and 10 + 5 (Story 20.4). The 25 + 5 answer,
-    4, is the literal this file carried before the retune.
+    25 + 5 (committed, before and after Story 20.4) and 10 + 5 (Story
+    20.4's attempted retune, reverted after the NFR3 gate). The 25 + 5
+    answer, 4, is the literal this file carried before the retune -- and
+    carries again now, via the helper rather than as a literal.
     """
     global _STREAMER_CHUNK_SIZE, _STREAMER_LOOKAHEAD
     saved = (_STREAMER_CHUNK_SIZE, _STREAMER_LOOKAHEAD)
@@ -1464,7 +1466,8 @@ def _make_streamer_aware_fake_model(
     defaults (chunk_size=25, lookahead=5) ``step_count=100`` produced 3
     chunks during generation (push points at 30 / 55 / 80 steps; slide
     forward by 25 each time keeps the last 5 as overlap) plus 1 residual
-    chunk on flush. At the committed 10 + 5 the push points are denser.
+    chunk on flush. Story 20.4 attempted 10 + 5 (denser push points) and
+    reverted it; the committed geometry is 25 + 5 again.
     ``_expected_chunk_count`` is the arithmetic; no test in this file
     restates the number.
 

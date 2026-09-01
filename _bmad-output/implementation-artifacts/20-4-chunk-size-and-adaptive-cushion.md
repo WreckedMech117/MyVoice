@@ -1,6 +1,6 @@
 # Story 20.4: Chunk-Size Retune + Adaptive-Cushion Fix (Phase ⊥-Polish-3)
 
-Status: in-progress — AC #1/#2/#3/#4/#6/#7 complete and verified. AC #5 has FAILED TWICE: round 1 (cs10, pre-fix) and round 2 (cs10 + seam fix, worse — 3 blocking rows, defect class changed to clicks). Mechanism now identified: the overlap-add fades INTO the next chunk's cold-start region over exactly the window where that decode is worst (error 0.5-1.4x local RMS), and the two copies correlate at only 0.55 median there, not the 0.93 the fix was justified on. Round 3 isolates the stitching from the geometry (both arms cs25) and is the only outstanding task; outcome map pre-agreed in evidence §13.7. Nothing in src/ changed this pass.
+Status: **COMPLETE — Follow-up B CLOSED UNSUCCESSFUL.** The `chunk_size` retune this story exists for was measured, reproduced, taken through the NFR3 gate, failed it twice, and is REVERTED (`DEFAULT_CHUNK_SIZE` stays 25). What ships is a fix for an audio defect present since Story 16.4 — 15-19 ms of real speech deleted at every chunk boundary — with direct perceptual evidence for it at the shipped geometry (round 3: cleaner on both long fixtures, never worse, preferred 2-0). Also shipping: the D-25 geometry threading (AC #1's other half, which made the revert a one-line edit) and the adaptive-cushion policy (AC #2/#3, restated at cs25). Shipped first-audio TTFA is unchanged from Story 20.3's 1,353 ms. Nothing outstanding for the operator. See evidence §15.
 
 <!-- Phase tag: Phase ⊥-Polish-3. Fourth story of Epic 20 (First-Audio Latency). -->
 <!-- Source: Story 20.1 evidence §5 (Follow-up B) + §2.6 (Follow-up C), which are COUPLED. -->
@@ -201,13 +201,21 @@ Story 20.3's priming then warms the **new** key
   - [x] 7.5 Verified end-to-end on the shipped path: seam step **12.3× → 1.3×** the non-seam baseline; the blocking utterance's spectral seam resolved to baseline.
   - [x] 7.6 Round-2 fixture built with round 1's `cs25` files reused verbatim as a calibration anchor; round 1's evidence preserved intact.
 
-- [~] **Task 8 — Isolate and explain the click** (AC: #5; added 2026-09-01 after the round-2 failure)
+- [x] **Task 8 — Isolate and explain the click** (AC: #5; added 2026-09-01 after the round-2 failure)
   - [x] 8.1 Built an LPC prediction-error click detector and validated it against the listener's 21 judged files. **It fails**: lowest flagged 22.0 vs highest clean 5081.4, not separable by any threshold. Two independent offline metrics now fail to reproduce the ear, most likely for want of an auditory-masking model. Recorded as a standing constraint: analysis explains mechanism here, it does not gate.
-  - [x] 8.2 Mechanism found. The blend ramps **into** the next chunk's cold-start region — measured decode error 0.5-1.4x local RMS in its first 128 samples, decaying monotonically — over exactly the 1024 samples where it is worst, while discarding the previous chunk's well-supported audio which stays good for 9,045 samples.
-  - [x] 8.3 Corrected a §11.4 error: the 0.93 correlation was measured over a window dominated by settled audio. **In the blend region it is 0.55-0.88 median, falling to 0.11**, with timing jitter to ±35 samples. The linear ramp's justification does not hold there.
+  - [x] 8.2 Mechanism found. The blend ramps **into** the next chunk's cold-start region — measured decode error 0.5-1.4x local RMS in its first 128 samples, decaying monotonically — over exactly the 1024 samples where it is worst.
+  - [x] 8.3 Corrected a §11.4 error: the 0.93 correlation was measured over a window dominated by settled audio. **In the blend region it is 0.55-0.88 median, falling to 0.11**, with timing jitter to ±35 samples.
   - [x] 8.4 Round-3 isolating fixture built: both arms `cs25`, only the stitching differs; reference is round 1's exact files. Outcome map pre-agreed.
-  - [x] 8.5 Prediction recorded **before** the audition: the harm is geometry-independent, so the candidate should also show clicks, fewer than at cs10.
-  - [ ] 8.6 Round-3 audition — **OPERATOR**.
+  - [x] 8.5 Prediction recorded **before** the audition: the harm is geometry-independent, so the candidate should also show clicks. **This was FALSIFIED** — see Task 9.
+  - [x] 8.6 Round-3 audition — **PASSED**: fix cleaner on both long fixtures, never worse, zero blocking, preferred 2-0.
+
+- [x] **Task 9 — Execute the outcome map** (added 2026-09-01 after the round-3 pass)
+  - [x] 9.1 **KEEP the seam fix.** It has direct perceptual evidence for it at the shipped geometry and repairs a defect shipped since Story 16.4.
+  - [x] 9.2 **REVERT `DEFAULT_CHUNK_SIZE` to 25.** One-line edit. Verified the threading follows automatically at all three sites including `warmup_compile_async`'s cache key; **all 6 coherence rows and the 3 derived smoke rows passed unchanged across the revert**, in the opposite direction from the one they were written for. No literal `10` or `15` survives at any geometry-bearing site.
+  - [x] 9.3 **KEEP the cushion work and the D-25 threading.** AC #3's coupling re-derived at `cs25` and at the codec's measured 12.5 Hz: release 12.00 s → 4.00 s at P = 0.5, ratio 2.50x → 0.83x, guardrail never binding. All cushion tests restated at `cs25`; added a row pinning that at 25 the feasible branch is granularity-bound (one 2.0 s chunk already covers the whole 2.0 s budget).
+  - [x] 9.4 **Full regression re-run after the revert** — zero new failures on every surface; pre-existing sets unchanged in count and identity. No test needed rewriting for correctness, only restatement for relevance.
+  - [x] 9.5 Story and evidence rewritten to state what this story actually delivers, which is not what it was drafted to deliver. AC #1 marked **partially met**, not green. AC #4/#6 numbers kept and relabelled as the `cs10` result, with the shipped figure stated as Story 20.3's 1,353 ms.
+  - [x] 9.6 Recorded `chunk_size = 15` as an **open question** — 1.5x the seams of 25 versus `cs10`'s 2.5x, genuinely uncertain now that both the harm and the gain are known to scale with seam count. Not pursued.
 
 ## Dev Notes
 
@@ -345,11 +353,42 @@ claude-opus-5[1m]
     the cost of the story's speed win, while shipping a now-understood
     one-line-fixable bug. It remains the fallback if round 2 fails.
 
+--- added 2026-09-01, after the round-3 PASS and the revert ---
+
+15. **The story delivers the opposite of its premise, and that is the result.**
+    It was drafted to ship `chunk_size = 10`. It ships `chunk_size = 25` plus a
+    repair to a defect that has been degrading every TRUE_STREAM generation
+    since Story 16.4. The retune's latency case was real and reproduced twice
+    (829 ms headless, 976 ms through the GUI); the ear rejected it anyway, on
+    three separate fixtures across two rounds, and never once preferred it.
+
+16. **Recording the prediction before the test is the practice worth keeping.**
+    §13.5 predicted round 3 would also show clicks, because the blend harm
+    looked geometry-independent. It was falsified. Because the prediction was
+    written down first, the falsification was immediately readable as "both
+    terms scale with seam count and they cross over between the geometries"
+    rather than becoming an argument about whether the analysis had been
+    wrong all along. It converted a disappointing result into a clean
+    discriminating test. Do this again.
+
+17. **AC #1's threading justified itself in the direction nobody planned for.**
+    It was built to stop a retune from silently desynchronising the compile
+    path. What it actually did was make the *revert* a one-line edit, with
+    every derived-geometry test passing untouched in the opposite direction.
+    A guard that only works in the direction you anticipated is not a guard.
+
+18. **Do not re-open Follow-up B on latency evidence alone.** The latency
+    evidence is not in dispute and never was. `chunk_size = 15` is a genuinely
+    open question — both the seam harm and the alignment gain scale with seam
+    count, so the crossover between 25 and 10 cannot be predicted from either
+    the sweep or the seam analysis — but it needs its own story and its own
+    NFR3 audition.
+
 ### File List
 
 **Source**
-- `src/myvoice/services/tts_streaming/streaming_decoder.py` (seam fix)
-- `src/myvoice/services/tts_streaming/codec_token_streamer.py`
+- `src/myvoice/services/tts_streaming/streaming_decoder.py` (seam fix — SHIPS)
+- `src/myvoice/services/tts_streaming/codec_token_streamer.py` (constant back at 25; the attempt and the reason recorded there)
 - `src/myvoice/services/tts_streaming/torch_runtime.py`
 - `src/myvoice/services/model_registry.py`
 - `src/myvoice/services/qwen_tts_service.py`
@@ -385,7 +424,9 @@ claude-opus-5[1m]
   `20-4-seam-fix-sweep.py` (new) — the root-cause investigation
 - `20-4-seam-raw/`, `20-4-seam-rawfull/`, `20-4-seam-rawfull-prefix/` (new) — its captures
 - `20-4-regen-audition-fixture-r2.py`, `20-4-perceptual-fixtures-r2/` (new) — round 2
-- `20-4-chunk-retune-audition.csv` — round-1 result, preserved
+- `20-4-click-mechanism.py` (new) — the click mechanism analysis and the failed metric validation
+- `20-4-regen-audition-fixture-r3.py`, `20-4-perceptual-fixtures-r3/` (new) — round 3, isolating
+- `20-4-chunk-retune-audition.csv`, `-r2.csv`, `-r3.csv` — all three round results, preserved
 
 ## Change Log
 
@@ -393,3 +434,4 @@ claude-opus-5[1m]
 - 2026-09-01 — Implemented. AC #1/#2/#3/#4/#7 complete and verified; AC #5 fixture generated and AC #6 tooling in place, both awaiting the operator run consolidated in evidence §8. Producer ratio re-measured at 0.619× (gate `< 1.0×`). Long-form TTFA 1,491 → 829 ms and short-form 1,409 → 784 ms on current code, with the short class off the residual-flush path 6/6. Sub-16 GiB cushion at `P = 0.5` derived at 10.00 s → 1.67 s, cushion/talker 4.00× → 0.67×.
 - 2026-09-01 — AC #6 measured and PASSED (long 976 ms / short 1,065 ms). AC #5 round 1 FAILED; investigation found the dominant cause was a splice-alignment bug deleting 370-463 samples of speech at every chunk boundary — present at the shipped chunk_size=25, not introduced by the retune — with a codec-state mismatch underneath it. Both fixed in `streaming_decoder.py` (exact splice + decoder-side overlap-add over the tail that was previously discarded); seam discontinuity 12.3x -> 1.3x the non-seam baseline, verified end-to-end on the shipped path. The consumer crossfade was ruled out by measurement and not swept. Round-2 fixture built; re-audition outstanding.
 - 2026-09-01 — AC #5 round 2 FAILED worse than round 1 (3 blocking rows; defect class tonal_distortion → click_or_discontinuity; s-022 regressed from clean to blocking). Root mechanism identified without another audition: the 1024-sample overlap-add fades into the next chunk's cold-start region over the window where that decode is worst, and the two copies correlate at 0.55 median there (min 0.11) with ±35-sample jitter — not the 0.93 the fix was justified on. A second offline metric (LPC click detector) was built and also failed to reproduce the listener's calls, so offline seam metrics are explicitly not gating this AC. Round-3 isolating fixture built (both arms cs25, stitching the only variable) with a pre-agreed outcome map. No source changed this pass.
+- 2026-09-01 — AC #5 round 3 PASSED, falsifying the §13.5 prediction in the good direction: with the geometry held at cs25 and only the stitching varied, the seam fix was cleaner on both long fixtures and never worse. Outcome map executed: seam fix KEPT, `DEFAULT_CHUNK_SIZE` REVERTED to 25 (Follow-up B closed unsuccessful), cushion work and D-25 threading KEPT with AC #3 re-derived at cs25. The revert was a one-line edit and every derived-geometry test passed unchanged, which is AC #1's threading proving itself. Full regression re-run: zero new failures. Shipped TTFA unchanged at Story 20.3's 1,353 ms. `chunk_size = 15` recorded as an open question, not pursued.

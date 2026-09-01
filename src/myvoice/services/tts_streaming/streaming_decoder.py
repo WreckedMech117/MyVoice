@@ -71,8 +71,23 @@ time. Measured effect, seam step as a multiple of the non-seam baseline:
     chunk_size=25   shipped 8.46x  ->  aligned+OLA 1.25x
     chunk_size=10   shipped 13.06x ->  aligned+OLA 0.85x
 
-Both land at the baseline, i.e. a seam becomes statistically
-indistinguishable from any other point in the audio.
+Both land at the baseline on that metric. **That metric later turned out
+not to predict audibility** (Story 20.4 evidence SS13.1: two independent
+offline seam metrics failed to reproduce the listener's calls on 21 judged
+files, most likely for want of an auditory-masking model). What actually
+certifies this code is a round-3 A/B audition at chunk_size=25 with the
+geometry held fixed and only the stitching varied: the fix was cleaner on
+both long fixtures, never worse on any, preferred 2-0. chunk_size=10 was
+attempted by the same story and REVERTED - at 2.5x the seam density the
+blend's own harm overtakes the alignment gain (SS13.2/SS13.3, SS15.1).
+
+A known residual, not masked: the blend fades into the next chunk's
+cold-start region, where the decode error is 0.5-1.4x local RMS and the two
+copies correlate at only ~0.55 (not the ~0.93 measured over a wider window).
+At chunk_size=25 the alignment gain dominates that and the net is positive.
+Better-shaped remedies - blending after the next chunk settles, or caching
+codec state across chunks - are recorded in the evidence SS13.6/SS11.9 and
+are not implemented here.
 
 This does NOT make the codec carry state across chunks — the reference
 implementations do that and we still do not (see the Story 20.4 evidence
@@ -138,8 +153,9 @@ _CODEC_EDGE_LOSS_SAMPLES = 555
 # plateau on BOTH, which matters because the blend is not free in every
 # sense: inside the window the signal is the average of two decodes, which
 # mildly softens fine structure. That cost scales with the fraction of the
-# stream inside a blend — 1024/(10*1920) = 5.3 % at chunk_size=10, 2.1 % at
-# 25 — so the smallest sufficient width is the right pick, not the largest.
+# stream inside a blend — 1024/(25*1920) = 2.1 % at the committed
+# chunk_size=25 (5.3 % at the attempted-and-reverted 10) — so the smallest
+# sufficient width is the right pick, not the largest.
 #
 # The hard ceiling is the audio the two chunks actually share:
 # ``lookahead * 1920 - 555`` = 9,045 samples (377 ms) at lookahead=5.

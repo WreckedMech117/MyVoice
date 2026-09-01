@@ -1,8 +1,12 @@
 # Story 20.4 AC #2 / AC #3 - adaptive-cushion re-derivation
 # Driven against the shipped StreamingChunkBuffer with an
-# injected clock. Committed streamer geometry: chunk_size=10, lookahead=5.
+# injected clock. Committed streamer geometry: chunk_size=25, lookahead=5.
+# Frame rate 12.5 Hz (measured). chunk_size=10 was attempted by this
+# story and REVERTED after the NFR3 gate; its rows are kept below
+# for the record, not as a description of what ships.
 
 ## Cross-check: legacy reproduction vs Story 20.1 SS2.7 published
+## (run at Story 20.1's 12.0 Hz assumption so it is like-for-like)
 
   cs=10  P=0.50  published  10.00s   reproduced 10.00s   OK
   cs=10  P=0.75  published  10.00s   reproduced 10.00s   OK
@@ -17,140 +21,140 @@
 
   legacy reproduction: VERIFIED
 
-## Long fixture at chunk_size = 25 (the PRE-20.4 geometry)
-   chunk_size=25  window=30  audio/chunk=2.083s
+## Long fixture at chunk_size = 25 - THE SHIPPED GEOMETRY (AC #3)
+   chunk_size=25  window=30  audio/chunk=2.000s
    T_a: measured 19.32s | pre-20.4 estimate 27.92s (+45%) | Story 20.4 estimate 19.70s (+2%)
    cushion budget 2.0s | guardrail 10.0s (unchanged)
 
   P = 0.50
   policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4         12.50s max_pre_delay                  5.00s     2.50x     6.82s
-  Story 20.4        4.17s gapless_unreachable            5.00s     0.83x    15.15s
+  pre-20.4         12.00s max_pre_delay                  4.80s     2.50x     7.32s
+  Story 20.4        4.00s gapless_unreachable            4.80s     0.83x    15.32s
 
   P = 0.60
   policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4         10.42s max_pre_delay                  4.17s     2.50x     2.46s
-  Story 20.4        3.47s gapless_unreachable            4.17s     0.83x     9.41s
+  pre-20.4         10.00s max_pre_delay                  4.00s     2.50x     2.88s
+  Story 20.4        3.33s gapless_unreachable            4.00s     0.83x     9.55s
 
   P = 0.70
   policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4         11.90s max_pre_delay                  3.57s     3.33x     0.00s
-  Story 20.4        2.98s gapless_unreachable            3.57s     0.83x     5.30s
+  pre-20.4         11.43s max_pre_delay                  3.43s     3.33x     0.00s
+  Story 20.4        2.86s gapless_unreachable            3.43s     0.83x     5.42s
 
   P = 0.75
   policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4         11.11s max_pre_delay                  3.33s     3.33x     0.00s
-  Story 20.4        2.78s gapless_unreachable            3.33s     0.83x     3.66s
+  pre-20.4         10.67s max_pre_delay                  3.20s     3.33x     0.00s
+  Story 20.4        2.67s gapless_unreachable            3.20s     0.83x     3.77s
 
   P = 0.80
   policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4          7.81s gapless_feasible               3.12s     2.50x     0.00s
-  Story 20.4        2.60s gapless_unreachable            3.12s     0.83x     2.23s
+  pre-20.4          7.50s gapless_feasible               3.00s     2.50x     0.00s
+  Story 20.4        2.50s gapless_unreachable            3.00s     0.83x     2.33s
 
   P = 0.85
   policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4          4.90s gapless_feasible               2.94s     1.67x     0.00s
-  Story 20.4        2.45s gapless_unreachable            2.94s     0.83x     0.96s
+  pre-20.4          4.71s gapless_feasible               2.82s     1.67x     0.00s
+  Story 20.4        2.35s gapless_unreachable            2.82s     0.83x     1.06s
 
   P = 0.90
   policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4          2.31s gapless_feasible               2.78s     0.83x     0.00s
-  Story 20.4        2.31s gapless_unreachable            2.78s     0.83x     0.00s
+  pre-20.4          2.22s gapless_feasible               2.67s     0.83x     0.00s
+  Story 20.4        2.22s gapless_unreachable            2.67s     0.83x     0.00s
 
   P = 0.95
   policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4          2.19s gapless_feasible               2.63s     0.83x     0.00s
-  Story 20.4        2.19s gapless_feasible               2.63s     0.83x     0.00s
+  pre-20.4          2.11s gapless_feasible               2.53s     0.83x     0.00s
+  Story 20.4        2.11s gapless_feasible               2.53s     0.83x     0.00s
 
-## Long fixture at chunk_size = 10 (the COMMITTED geometry) - AC #3
-   chunk_size=10  window=15  audio/chunk=0.833s
-   T_a: measured 19.32s | pre-20.4 estimate 27.92s (+45%) | Story 20.4 estimate 19.70s (+2%)
-   cushion budget 2.0s | guardrail 10.0s (unchanged)
-
-  P = 0.50
-  policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4         10.00s max_pre_delay                  2.50s     4.00x     9.32s
-  Story 20.4        1.67s gapless_unreachable            2.50s     0.67x    17.65s
-
-  P = 0.60
-  policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4         11.11s max_pre_delay                  2.08s     5.33x     1.77s
-  Story 20.4        1.39s gapless_unreachable            2.08s     0.67x    11.49s
-
-  P = 0.70
-  policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4         10.71s max_pre_delay                  1.79s     6.00x     0.00s
-  Story 20.4        1.19s gapless_unreachable            1.79s     0.67x     7.09s
-
-  P = 0.75
-  policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4         10.00s max_pre_delay                  1.67s     6.00x     0.00s
-  Story 20.4        1.11s gapless_unreachable            1.67s     0.67x     5.33s
-
-  P = 0.80
-  policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4          8.33s gapless_feasible               1.56s     5.33x     0.00s
-  Story 20.4        1.04s gapless_unreachable            1.56s     0.67x     3.79s
-
-  P = 0.85
-  policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4          4.90s gapless_feasible               1.47s     3.33x     0.00s
-  Story 20.4        0.98s gapless_unreachable            1.47s     0.67x     2.43s
-
-  P = 0.90
-  policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4          2.78s gapless_feasible               1.39s     2.00x     0.00s
-  Story 20.4        0.93s gapless_unreachable            1.39s     0.67x     1.22s
-
-  P = 0.95
-  policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4          0.88s gapless_feasible               1.32s     0.67x     0.14s
-  Story 20.4        0.88s gapless_feasible               1.32s     0.67x     0.14s
-
-## Short / Clear Comms fixture at chunk_size = 10
-   chunk_size=10  window=15  audio/chunk=0.833s
+## Short / Clear Comms fixture at chunk_size = 25 - SHIPPED
+   chunk_size=25  window=30  audio/chunk=2.000s
    T_a: measured 2.30s | pre-20.4 estimate 2.64s (+15%) | Story 20.4 estimate 2.31s (+1%)
    cushion budget 2.0s | guardrail 10.0s (unchanged)
 
   P = 0.50
   policy        segment 4 released by                   talker     ratio  tot. gap
   pre-20.4          never (waited for is_final)              -         -         -
-  Story 20.4        1.67s gapless_unreachable            2.50s     0.67x     0.63s
+  Story 20.4        never (waited for is_final)              -         -         -
 
   P = 0.60
   policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4          2.78s gapless_feasible               2.08s     1.33x     0.00s
-  Story 20.4        1.39s gapless_feasible               2.08s     0.67x     0.14s
+  pre-20.4          never (waited for is_final)              -         -         -
+  Story 20.4        never (waited for is_final)              -         -         -
 
   P = 0.70
   policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4          1.19s gapless_feasible               1.79s     0.67x     0.00s
-  Story 20.4        1.19s gapless_feasible               1.79s     0.67x     0.00s
+  pre-20.4          never (waited for is_final)              -         -         -
+  Story 20.4        never (waited for is_final)              -         -         -
 
   P = 0.75
   policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4          1.11s gapless_feasible               1.67s     0.67x     0.00s
-  Story 20.4        1.11s gapless_feasible               1.67s     0.67x     0.00s
+  pre-20.4          never (waited for is_final)              -         -         -
+  Story 20.4        never (waited for is_final)              -         -         -
 
   P = 0.80
   policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4          1.04s gapless_feasible               1.56s     0.67x     0.00s
-  Story 20.4        1.04s gapless_feasible               1.56s     0.67x     0.00s
+  pre-20.4          never (waited for is_final)              -         -         -
+  Story 20.4        never (waited for is_final)              -         -         -
 
   P = 0.85
   policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4          0.98s gapless_feasible               1.47s     0.67x     0.00s
-  Story 20.4        0.98s gapless_feasible               1.47s     0.67x     0.00s
+  pre-20.4          never (waited for is_final)              -         -         -
+  Story 20.4        never (waited for is_final)              -         -         -
 
   P = 0.90
   policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4          0.93s gapless_feasible               1.39s     0.67x     0.00s
-  Story 20.4        0.93s gapless_feasible               1.39s     0.67x     0.00s
+  pre-20.4          never (waited for is_final)              -         -         -
+  Story 20.4        never (waited for is_final)              -         -         -
 
   P = 0.95
   policy        segment 4 released by                   talker     ratio  tot. gap
-  pre-20.4          0.88s gapless_feasible               1.32s     0.67x     0.00s
-  Story 20.4        0.88s gapless_feasible               1.32s     0.67x     0.00s
+  pre-20.4          never (waited for is_final)              -         -         -
+  Story 20.4        never (waited for is_final)              -         -         -
+
+## Long fixture at chunk_size = 10 - REVERTED, retained for the record
+   chunk_size=10  window=15  audio/chunk=0.800s
+   T_a: measured 19.32s | pre-20.4 estimate 27.92s (+45%) | Story 20.4 estimate 19.70s (+2%)
+   cushion budget 2.0s | guardrail 10.0s (unchanged)
+
+  P = 0.50
+  policy        segment 4 released by                   talker     ratio  tot. gap
+  pre-20.4         11.20s max_pre_delay                  2.40s     4.67x     8.12s
+  Story 20.4        1.60s gapless_unreachable            2.40s     0.67x    17.72s
+
+  P = 0.60
+  policy        segment 4 released by                   talker     ratio  tot. gap
+  pre-20.4         10.67s max_pre_delay                  2.00s     5.33x     2.21s
+  Story 20.4        1.33s gapless_unreachable            2.00s     0.67x    11.55s
+
+  P = 0.70
+  policy        segment 4 released by                   talker     ratio  tot. gap
+  pre-20.4         10.29s max_pre_delay                  1.71s     6.00x     0.00s
+  Story 20.4        1.14s gapless_unreachable            1.71s     0.67x     7.14s
+
+  P = 0.75
+  policy        segment 4 released by                   talker     ratio  tot. gap
+  pre-20.4         10.67s max_pre_delay                  1.60s     6.67x     0.00s
+  Story 20.4        1.07s gapless_unreachable            1.60s     0.67x     5.37s
+
+  P = 0.80
+  policy        segment 4 released by                   talker     ratio  tot. gap
+  pre-20.4          8.00s gapless_feasible               1.50s     5.33x     0.00s
+  Story 20.4        1.00s gapless_unreachable            1.50s     0.67x     3.83s
+
+  P = 0.85
+  policy        segment 4 released by                   talker     ratio  tot. gap
+  pre-20.4          5.65s gapless_feasible               1.41s     4.00x     0.00s
+  Story 20.4        0.94s gapless_unreachable            1.41s     0.67x     2.47s
+
+  P = 0.90
+  policy        segment 4 released by                   talker     ratio  tot. gap
+  pre-20.4          2.67s gapless_feasible               1.33s     2.00x     0.00s
+  Story 20.4        0.89s gapless_unreachable            1.33s     0.67x     1.26s
+
+  P = 0.95
+  policy        segment 4 released by                   talker     ratio  tot. gap
+  pre-20.4          0.84s gapless_feasible               1.26s     0.67x     0.17s
+  Story 20.4        0.84s gapless_feasible               1.26s     0.67x     0.17s
 
 ## Notes
   * 'tot. gap' is accumulated MID-UTTERANCE silence, derived as
@@ -161,6 +165,13 @@
     place for it (memory/clear_comms_purpose_framing.md).
   * 'ratio' is segment 4 / talker segment. Story 20.1 SS2.7 used
     the same denominator, ((chunk_size + lookahead)/12)/P.
-  * The short fixture is only ~2.3 s of audio; at chunk_size 10
-    that is 3 chunks, so several rows never reach a release
-    decision before is_final would fire. Those read 'never'.
+  * At chunk_size = 25 a posted chunk carries 2.0 s of audio,
+    which already equals the whole 2.0 s cushion budget. So on
+    the shipped geometry the feasible and unreachable regimes
+    release at the SAME point - chunk 2, the first push where a
+    producer rate is measurable at all. The policy's effect
+    there is entirely to stop the guardrail from binding.
+  * The short fixture is only ~2.3 s of audio; at chunk_size 25
+    that is a single chunk, so it never reaches a release
+    decision at all and is carried by is_final. Those read
+    'never' - which is the correct behaviour, not a gap.

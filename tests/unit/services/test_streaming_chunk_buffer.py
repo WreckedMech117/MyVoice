@@ -624,11 +624,19 @@ class TestFlushAndReset:
 # Story 20.4 AC #2 / AC #3 — the two-regime cushion policy
 # --------------------------------------------------------------------------- #
 
-# 12 Hz codec, chunk_size = 10 -> 10/12 s of audio per chunk.
-# 10/12 s at 24 kHz mono = exactly 20000 samples, so the fixtures below are
-# the real post-Story-20.4 chunk geometry rather than a round number.
-_CS10_CHUNK_SAMPLES = 20000
-_CS10_CHUNK_SECONDS = _CS10_CHUNK_SAMPLES / 24000.0
+# The codec emits 1920 samples per frame -- MEASURED, and equal to 12.5 Hz
+# at 24 kHz, not the 12 Hz this codebase's prose assumed before Story 20.4
+# (see streaming_decoder._CODEC_SAMPLES_PER_FRAME). At the committed
+# chunk_size = 25 a posted chunk is therefore 25 * 1920 = 48,000 samples =
+# exactly 2.0 s of audio.
+#
+# These rows were originally written at chunk_size = 10 (19,200 samples,
+# 0.8 s). That retune was reverted after the NFR3 gate, so they are
+# restated here at the geometry we actually ship -- an adaptive-cushion
+# test describing a configuration nobody runs is worse than no test.
+_CS25_CHUNK_SAMPLES = 25 * 1920
+_CS25_CHUNK_SECONDS = _CS25_CHUNK_SAMPLES / 24000.0
+_CS25_WINDOW_SECONDS = (25 + 5) * 1920 / 24000.0
 
 # The canonical Story 20.1 long fixture is 349 chars; the shipped affine
 # estimator (audio_coordinator.estimate_target_audio_seconds) puts that at
@@ -673,38 +681,44 @@ class TestCushionFeasibilityPolicy:
         # The ship-target slow tier: P = 0.5 on the canonical long fixture.
         # tau_gapless = 19.695 * (1/0.5 - 1) = 19.695 s, far outside the
         # 2.0 s budget, so gaplessness is unreachable. The buffer must stop
-        # paying latency for it and release on the 500 ms watermark.
+        # paying latency for it and release on the 500 ms watermark — which
+        # at the shipped geometry means chunk 2, since one 2.0 s chunk
+        # clears a 0.5 s watermark on its own.
         clock = _FakeClock()
         buf = _adaptive_buf(clock, target_audio_seconds=_LONG_FIXTURE_T_A)
 
         # Chunk 1 alone cannot measure P (it bundles prefill), so it holds.
-        assert buf.push(_make_chunk(_CS10_CHUNK_SAMPLES), is_final=False) == []
+        assert buf.push(_make_chunk(_CS25_CHUNK_SAMPLES), is_final=False) == []
 
-        clock.advance(_CS10_CHUNK_SECONDS / 0.5)
-        out = buf.push(_make_chunk(_CS10_CHUNK_SAMPLES), is_final=False)
+        clock.advance(_CS25_CHUNK_SECONDS / 0.5)
+        out = buf.push(_make_chunk(_CS25_CHUNK_SAMPLES), is_final=False)
         assert len(out) == 1
         assert buf.last_release_reason == (
             StreamingChunkBuffer.REGIME_GAPLESS_UNREACHABLE
         )
 
     def test_low_p_host_starts_materially_sooner_than_the_cap(self):
-        """The AC #2 headline, at the AC #3 geometry (chunk_size = 10).
+        """The AC #2 headline, at the SHIPPED geometry (chunk_size = 25).
 
-        Pre-Story-20.4 this exact configuration released via the elapsed
-        escape at the 10 s cap (Story 20.1 §2.7 simulated 10.00 s at
-        chunk_size 10, P = 0.5, against a 2.5 s talker segment — a 4.0x
-        cushion-to-talker ratio). The fix must land it at one chunk
-        arrival, not ten seconds.
+        Pre-Story-20.4 this configuration released via the elapsed escape:
+        Story 20.1 §2.7 simulated **12.50 s** at chunk_size 25, P = 0.5 —
+        and 12.5 s rather than 10 s because the cap is only evaluated
+        inside ``push``, so the effective wait is the first chunk arrival
+        at or after it. The policy must land it at one chunk arrival
+        instead.
         """
         clock = _FakeClock()
         buf = _adaptive_buf(clock, target_audio_seconds=_LONG_FIXTURE_T_A)
-        offset = _drive(buf, clock, _CS10_CHUNK_SAMPLES, 0.5)
+        offset = _drive(buf, clock, _CS25_CHUNK_SAMPLES, 0.5)
 
         assert offset is not None, "never released before the fixture ran out"
-        # One chunk arrival at P = 0.5 is 10/12 / 0.5 = 1.667 s.
-        assert offset == pytest.approx(_CS10_CHUNK_SECONDS / 0.5, abs=1e-6)
-        # And, stated as the AC does: materially sooner than the guardrail.
-        assert offset < 0.25 * 10.0
+        # One chunk arrival at P = 0.5 is 2.0 / 0.5 = 4.0 s.
+        assert offset == pytest.approx(_CS25_CHUNK_SECONDS / 0.5, abs=1e-6)
+        assert offset == pytest.approx(4.0, abs=1e-6)
+        # Materially sooner than the guardrail, and than the 12.5 s the
+        # pre-20.4 policy actually produced here.
+        assert offset < 0.5 * 10.0
+        assert offset < 0.4 * 12.5
         assert buf.last_release_reason == (
             StreamingChunkBuffer.REGIME_GAPLESS_UNREACHABLE
         )
@@ -714,12 +728,21 @@ class TestCushionFeasibilityPolicy:
         # = 1.667 s, inside the 2.0 s budget. Buying gaplessness is cheap
         # here, so the buffer must still buy it — the policy is a
         # feasibility test, not a blanket "always start early".
+        #
+        # Deliberately driven with SMALL chunks (0.25 s) rather than the
+        # shipped 2.0 s ones. At the committed geometry a single chunk
+        # already exceeds the whole cushion budget, so the feasible branch
+        # is granularity-bound and always releases on chunk 2 — which is
+        # true, is asserted by the sibling row below, and would make this
+        # row vacuous. Small chunks are what actually exercise the
+        # "accumulate until tau" behaviour.
+        small = 6000                       # 0.25 s at 24 kHz
+        chunk_s = small / 24000.0
         clock = _FakeClock()
         buf = _adaptive_buf(clock, target_audio_seconds=15.0)
-        chunk_s = _CS10_CHUNK_SECONDS
         tau = 15.0 * (1.0 / 0.9 - 1.0)
 
-        offset = _drive(buf, clock, _CS10_CHUNK_SAMPLES, 0.9)
+        offset = _drive(buf, clock, small, 0.9)
         assert offset is not None
         assert buf.last_release_reason == (
             StreamingChunkBuffer.REGIME_GAPLESS_FEASIBLE
@@ -729,9 +752,41 @@ class TestCushionFeasibilityPolicy:
         released_chunks = round(offset / (chunk_s / 0.9)) + 1
         assert released_chunks * chunk_s >= tau
         assert (released_chunks - 1) * chunk_s < tau
-        # The watermark alone would have released at chunk 2; the feasible
-        # branch deliberately waits longer than that.
-        assert released_chunks > 2
+        # The watermark alone would have released at chunk 3 (0.5 s of
+        # audio); the feasible branch deliberately waits longer than that.
+        assert released_chunks > 3
+
+    def test_at_the_shipped_geometry_the_feasible_branch_is_granularity_bound(
+        self,
+    ):
+        """AC #3, restated at cs25: one chunk already covers the budget.
+
+        A posted chunk at chunk_size = 25 carries 2.0 s of audio, and the
+        cushion budget is 2.0 s. So whenever the producer rate is
+        measurable at all — which needs two chunks — the buffer is already
+        holding at least as much audio as any feasible cushion could ask
+        for. The feasible and unreachable regimes therefore release at the
+        SAME point on the shipped geometry, and the policy's effect there
+        is entirely to stop the guardrail from binding.
+
+        This is a real consequence of reverting to 25 and is stated so
+        nobody reads §2's regime table as implying a mid-stream decision
+        that cannot occur at this geometry.
+        """
+        for p, regime in (
+            (0.5, StreamingChunkBuffer.REGIME_GAPLESS_UNREACHABLE),
+            (0.95, StreamingChunkBuffer.REGIME_GAPLESS_FEASIBLE),
+        ):
+            clock = _FakeClock()
+            buf = _adaptive_buf(clock, target_audio_seconds=_LONG_FIXTURE_T_A)
+            offset = _drive(buf, clock, _CS25_CHUNK_SAMPLES, p)
+            assert offset is not None
+            assert buf.last_release_reason == regime, (
+                "P={} took the {} branch".format(p, buf.last_release_reason)
+            )
+            # Chunk 2, i.e. one inter-chunk interval after the first.
+            assert offset == pytest.approx(_CS25_CHUNK_SECONDS / p, abs=1e-6)
+        assert _CS25_CHUNK_SECONDS >= 2.0
 
     def test_budget_boundary_is_inclusive(self):
         # tau_gapless exactly == the budget counts as feasible. An
@@ -765,27 +820,28 @@ class TestCushionFeasibilityPolicy:
         assert cushion == pytest.approx(0.5)  # the static watermark
 
     def test_max_pre_delay_is_not_the_binding_escape_across_the_p_sweep(self):
-        """AC #2 + AC #3 — re-derive the whole curve at chunk_size = 10.
+        """AC #2 + AC #3 — the whole curve at the shipped chunk_size = 25.
 
-        Story 20.1 §2.7's simulation of the SHIPPED buffer found the 10 s
-        cap binding for every P <= ~0.78, and worse at chunk_size 10 than
-        at 25 (ratio 2.5x -> 4.0x) because the talker segment shrinks while
-        the cap does not. With the Story 20.4 policy the cap must never be
-        the binding escape anywhere on this sweep.
+        Story 20.1 §2.7's simulation of the pre-20.4 buffer found the 10 s
+        cap binding for every P <= ~0.78 at this very geometry, releasing
+        at 11.1-12.5 s against a 3.3-5.0 s talker segment. With the Story
+        20.4 policy the cap must never be the binding escape anywhere on
+        this sweep.
         """
         for p in (0.50, 0.60, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95):
             clock = _FakeClock()
             buf = _adaptive_buf(clock, target_audio_seconds=_LONG_FIXTURE_T_A)
-            offset = _drive(buf, clock, _CS10_CHUNK_SAMPLES, p)
+            offset = _drive(buf, clock, _CS25_CHUNK_SAMPLES, p)
             assert offset is not None, f"P={p}: never released"
             assert buf.last_release_reason in (
                 StreamingChunkBuffer.REGIME_GAPLESS_FEASIBLE,
                 StreamingChunkBuffer.REGIME_GAPLESS_UNREACHABLE,
             ), f"P={p}: released via guardrail {buf.last_release_reason!r}"
             assert offset < 10.0, f"P={p}: released at {offset:.2f}s"
-            # The talker segment is (chunk_size + lookahead)/12 / P; the
-            # cushion must not dwarf it the way the cap did.
-            talker_seg = (15 / 12.0) / p
+            # The talker segment is (chunk_size + lookahead)/12.5 / P at
+            # the codec's measured frame rate; the cushion must not dwarf
+            # it the way the cap did.
+            talker_seg = _CS25_WINDOW_SECONDS / p
             assert offset / talker_seg <= 1.0, (
                 f"P={p}: cushion/talker = {offset / talker_seg:.2f}x"
             )
