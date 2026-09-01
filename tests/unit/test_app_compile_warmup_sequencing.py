@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import logging
 from pathlib import Path
 from typing import List
 
@@ -64,6 +65,21 @@ def _call_linenos(fn: ast.AST, attr_name: str) -> List[int]:
     return out
 
 
+def _attr_linenos(fn: ast.AST, attr_name: str) -> List[int]:
+    """Line numbers of every ``<something>.<attr_name>`` reference inside fn.
+
+    The warmup is now handed over as a *callable*
+    (``_run_async_task_when_loop_is_idle(self._tts_service.warmup_compile_async)``)
+    rather than invoked, so an ast.Call scan alone would silently find nothing
+    and the ordering invariant would stop protecting anything.
+    """
+    return [
+        node.lineno
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Attribute) and node.attr == attr_name
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # 1. The ordering invariant at the call site
 # --------------------------------------------------------------------------- #
@@ -79,12 +95,13 @@ def test_compile_warmup_is_scheduled_after_the_model_preload(
     race: it is deterministic on every launch.
     """
     preloads = _call_linenos(initialize_services_fn, "preload_model")
-    # Union, not a fallback: if someone re-adds a direct
-    # ``warmup_compile_async()`` schedule above the preload while the wrapper
-    # stays below it, the defect is back and this row must still catch it.
-    warmups = _call_linenos(
-        initialize_services_fn, "_warmup_compile_after_preload"
-    ) + _call_linenos(initialize_services_fn, "warmup_compile_async")
+    # Union of every way the warmup can be referenced here, not a fallback
+    # chain: if someone re-adds a schedule above the preload while the current
+    # hand-off stays below it, the defect is back and this row must catch it.
+    warmups = (
+        _attr_linenos(initialize_services_fn, "warmup_compile_async")
+        + _call_linenos(initialize_services_fn, "_run_async_task_when_loop_is_idle")
+    )
 
     assert preloads, "app.py no longer preloads a model in _initialize_services_async"
     assert warmups, (
@@ -133,6 +150,56 @@ def test_warmup_is_not_awaited_inline_on_the_startup_path(
     )
 
 
+def test_warmup_hand_off_uses_the_qasync_safe_scheduler(initialize_services_fn):
+    """AC #1 — the call site must use ``_run_async_task_when_loop_is_idle``.
+
+    **This row exists because a mutation escaped without it.** Reverting the
+    call site to the plain ``_run_async_task`` left
+    ``test_app_compile_warmup_qasync.py`` green, because those rows drive the
+    scheduler helper directly and never read app.py's actual call site. The
+    qasync file proves the *mechanism* works; this row proves the shipped code
+    actually uses it.
+
+    Scheduling the warmup through the plain ``_run_async_task`` here is the
+    exact shape that shipped broken: under qasync the task is created and then
+    destroyed by the re-entrancy guard during ``main.py``'s synchronous
+    splash/``processEvents()`` stretch, having never run a line of its body.
+    """
+    idle_calls = _call_linenos(
+        initialize_services_fn, "_run_async_task_when_loop_is_idle"
+    )
+    assert idle_calls, (
+        "the compile warmup is no longer handed off through "
+        "_run_async_task_when_loop_is_idle. Under qasync every call_soon is a "
+        "Qt zero-timer, so a plainly-scheduled task is stepped from inside "
+        "main.py's processEvents() while Task-1 is mid-step, and "
+        "asyncio._enter_task destroys it. See "
+        "tests/unit/test_app_compile_warmup_qasync.py."
+    )
+
+    # ...and the warmup must not ALSO be handed to the plain scheduler.
+    offenders = []
+    for node in ast.walk(initialize_services_fn):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "_run_async_task"):
+            continue
+        inner = [
+            n.attr
+            for n in ast.walk(node)
+            if isinstance(n, ast.Attribute)
+        ]
+        if "warmup_compile_async" in inner:
+            offenders.append(node.lineno)
+
+    assert offenders == [], (
+        "the compile warmup is scheduled through the plain _run_async_task at "
+        f"line(s) {offenders}; that is the shape that shipped broken under "
+        "qasync"
+    )
+
+
 def test_hydration_task_handle_is_retained(initialize_services_fn):
     """AC #1 — priming BASE needs the hydrated prompt, so the warmup wrapper
     has to be able to wait for hydration. That requires keeping the task
@@ -149,15 +216,24 @@ def test_hydration_task_handle_is_retained(initialize_services_fn):
 
 
 # --------------------------------------------------------------------------- #
-# 2. _warmup_compile_after_preload behaviour
+# 2. The startup hand-off: _run_async_task_when_loop_is_idle + entrypoint
 # --------------------------------------------------------------------------- #
+#
+# NOTE ON WHAT THESE ROWS CAN AND CANNOT PROVE. They run on a plain asyncio
+# loop, where ``call_soon`` appends to a ready queue drained only between task
+# steps — so the qasync re-entrancy hazard that actually broke this feature is
+# structurally ABSENT here. These rows cover the logic (deferral condition,
+# hydration check, hand-off). The hazard itself is covered in
+# ``tests/unit/test_app_compile_warmup_qasync.py``, which stands up a real
+# qasync loop. Do not add a "warmup runs" row here and believe it protects the
+# shipped path; that is exactly the mistake that let the first fix ship broken.
 
 
-def _bare_app(tts_service, hydration_task):
-    """A ``MyVoiceApp`` shell carrying only what the coroutine reads.
+def _bare_app(tts_service=None, hydration_task=None):
+    """A ``MyVoiceApp`` shell carrying only what the hand-off reads.
 
     ``__new__`` avoids the full constructor (QApplication, services, Qt
-    signals) — the coroutine under test touches three attributes.
+    signals) — the methods under test touch three attributes.
     """
     import logging
 
@@ -170,120 +246,188 @@ def _bare_app(tts_service, hydration_task):
     return app
 
 
-class _FakeTTSService:
-    def __init__(self) -> None:
-        self.warmup_calls = 0
-        self.hydration_done_at_warmup: List[bool] = []
+def test_entrypoint_runs_the_warmup_when_hydration_is_done():
+    pytest.importorskip("PyQt6")
 
-    def make_warmup(self, hydration_flag: List[bool]):
-        async def warmup_compile_async():
-            self.warmup_calls += 1
-            self.hydration_done_at_warmup.append(bool(hydration_flag))
+    async def scenario():
+        ran: List[str] = []
 
-        return warmup_compile_async
+        async def hydrate():
+            ran.append("hydrated")
+
+        async def warmup():
+            ran.append("warmup")
+
+        task = asyncio.ensure_future(hydrate())
+        await task
+        app = _bare_app(hydration_task=task)
+        await app._compile_warmup_entrypoint(warmup)
+        return ran
+
+    assert asyncio.run(scenario()) == ["hydrated", "warmup"]
 
 
-def test_warmup_waits_for_prompt_hydration_before_priming():
-    """AC #1 — priming starts only after hydration has finished.
+def test_entrypoint_proceeds_without_awaiting_an_unfinished_hydration():
+    """AC #1 — the entrypoint must NOT await the hydration handle.
 
-    Racing hydration would make the BASE path skip with ``no_priming_prompt``
-    on the common cloned-voice launch, which is the launch the whole story is
-    about.
+    Awaiting another task from inside this one is what the first fix did (via
+    ``wait_for``/``shield``); the extra task machinery is needless exposure to
+    the qasync hazard. If hydration has somehow not finished, the BASE priming
+    path skips itself with ``no_priming_prompt`` — the designed safe fallback —
+    so proceeding is correct and hanging would not be.
     """
     pytest.importorskip("PyQt6")
 
     async def scenario():
-        hydrated: List[bool] = []
-        svc = _FakeTTSService()
-
-        async def slow_hydration():
-            await asyncio.sleep(0.05)
-            hydrated.append(True)
-
-        task = asyncio.ensure_future(slow_hydration())
-        svc.warmup_compile_async = svc.make_warmup(hydrated)
-        app = _bare_app(svc, task)
-
-        await app._warmup_compile_after_preload()
-        return svc
-
-    svc = asyncio.run(scenario())
-
-    assert svc.warmup_calls == 1
-    assert svc.hydration_done_at_warmup == [True], (
-        "the compile warmup ran before voice_clone_prompt hydration finished"
-    )
-
-
-def test_warmup_runs_even_when_hydration_times_out(monkeypatch):
-    """AC #1 — a stuck hydration must not make priming unreachable.
-
-    The wait is bounded and ``shield``-ed: the timeout abandons the wait, not
-    the hydration task, and the warmup runs anyway (a BASE prime with no
-    cached prompt skips itself — it never switches models).
-    """
-    pytest.importorskip("PyQt6")
-
-    from myvoice.app import MyVoiceApp
-
-    monkeypatch.setattr(MyVoiceApp, "_HYDRATION_WAIT_TIMEOUT_S", 0.05)
-
-    async def scenario():
-        svc = _FakeTTSService()
-        svc.warmup_compile_async = svc.make_warmup([])
+        ran: List[str] = []
 
         async def never_finishes():
             await asyncio.sleep(30)
 
+        async def warmup():
+            ran.append("warmup")
+
         task = asyncio.ensure_future(never_finishes())
-        app = _bare_app(svc, task)
+        app = _bare_app(hydration_task=task)
         try:
-            await app._warmup_compile_after_preload()
+            await asyncio.wait_for(app._compile_warmup_entrypoint(warmup), timeout=2.0)
         finally:
             task.cancel()
-        return svc, task
+        return ran
 
-    svc, task = asyncio.run(scenario())
+    assert asyncio.run(scenario()) == ["warmup"], (
+        "the entrypoint blocked on an unfinished hydration task"
+    )
 
-    assert svc.warmup_calls == 1
 
+def test_entrypoint_warns_when_hydration_has_not_finished(caplog):
+    """Observability — an unfinished hydration must be SAID, not swallowed.
 
-def test_warmup_runs_when_hydration_raised():
-    """AC #1 — a failed hydration is not a reason to skip priming."""
+    Commit 6428601 promoted the warmup's two silent gates to INFO precisely
+    because a startup path this epic depends on must not be able to exit
+    without saying so; the negative AC #4 passes were undiagnosable until it
+    did. The same rule applies to the one remaining condition that can silently
+    degrade priming: hydration not finished means a BASE resident primes
+    nothing (it skips with ``no_priming_prompt``), and the launch looks
+    identical to a healthy one unless this warning exists.
+    """
     pytest.importorskip("PyQt6")
 
     async def scenario():
-        svc = _FakeTTSService()
-        svc.warmup_compile_async = svc.make_warmup([])
+        ran: List[str] = []
 
-        async def boom():
-            raise RuntimeError("disk on fire")
+        async def never_finishes():
+            await asyncio.sleep(30)
 
-        task = asyncio.ensure_future(boom())
-        await asyncio.gather(task, return_exceptions=True)
-        app = _bare_app(svc, task)
-        await app._warmup_compile_after_preload()
-        return svc
+        async def warmup():
+            ran.append("warmup")
 
-    svc = asyncio.run(scenario())
-    assert svc.warmup_calls == 1
+        task = asyncio.ensure_future(never_finishes())
+        app = _bare_app(hydration_task=task)
+        try:
+            with caplog.at_level(logging.WARNING, logger="test-myvoice-app"):
+                await app._compile_warmup_entrypoint(warmup)
+        finally:
+            task.cancel()
+        return ran
+
+    ran = asyncio.run(scenario())
+
+    assert ran == ["warmup"]
+    assert any(
+        "hydration has not finished" in r.message
+        and r.levelno >= logging.WARNING
+        for r in caplog.records
+    ), (
+        "the compile warmup ran with an unfinished voice_clone_prompt "
+        "hydration and said nothing; a BASE prime will skip with "
+        "no_priming_prompt and the launch will look healthy. Records: "
+        f"{[r.message for r in caplog.records]}"
+    )
 
 
-def test_warmup_runs_when_there_is_no_hydration_task():
-    """AC #1 — hydration wiring can fail (no VoiceProfileManager); the warmup
-    still has to run, because CUSTOM_VOICE and VOICE_DESIGN residents need no
-    prompt at all."""
+def test_entrypoint_runs_when_there_is_no_hydration_task():
+    """Hydration wiring can fail (no VoiceProfileManager); the warmup still has
+    to run, because CUSTOM_VOICE and VOICE_DESIGN residents need no prompt."""
     pytest.importorskip("PyQt6")
 
     async def scenario():
-        svc = _FakeTTSService()
-        svc.warmup_compile_async = svc.make_warmup([])
-        app = _bare_app(svc, None)
-        await app._warmup_compile_after_preload()
-        return svc
+        ran: List[str] = []
 
-    svc = asyncio.run(scenario())
-    assert svc.warmup_calls == 1
+        async def warmup():
+            ran.append("warmup")
+
+        app = _bare_app(hydration_task=None)
+        await app._compile_warmup_entrypoint(warmup)
+        return ran
+
+    assert asyncio.run(scenario()) == ["warmup"]
+
+
+def test_hand_off_defers_while_another_task_is_mid_step(monkeypatch):
+    """AC #1 — the deferral condition is ``asyncio.current_task() is not None``.
+
+    That is the exact slot ``asyncio._enter_task`` checks before stepping a
+    task, so this is testing the precondition rather than a proxy for it. On a
+    plain loop nothing is ever mid-step during a ``call_soon`` callback, so
+    ``current_task`` is faked to return a task for the first two passes.
+    """
+    pytest.importorskip("PyQt6")
+
+    async def scenario():
+        ran: List[str] = []
+        pretend_busy = {"n": 2}
+        real_current_task = asyncio.current_task
+
+        def fake_current_task(*a, **k):
+            if pretend_busy["n"] > 0:
+                pretend_busy["n"] -= 1
+                return "pretend-task-1"
+            return real_current_task(*a, **k)
+
+        monkeypatch.setattr(asyncio, "current_task", fake_current_task)
+
+        async def warmup():
+            ran.append("warmup")
+
+        app = _bare_app()
+        app._run_async_task_when_loop_is_idle(warmup)
+
+        for _ in range(10):
+            await asyncio.sleep(0)
+        return ran, pretend_busy["n"]
+
+    ran, remaining = asyncio.run(scenario())
+    assert remaining == 0, "the hand-off did not re-arm while a task was mid-step"
+    assert ran == ["warmup"], (
+        "the hand-off never scheduled the warmup after the loop went idle"
+    )
+
+
+def test_hand_off_gives_up_deferring_rather_than_never_scheduling(monkeypatch):
+    """The re-arm is bounded. A loop that never goes idle must still get a
+    scheduled warmup plus a WARNING, not silence — a startup path this epic
+    depends on should not be able to exit without saying so."""
+    pytest.importorskip("PyQt6")
+
+    from myvoice.app import MyVoiceApp
+
+    monkeypatch.setattr(MyVoiceApp, "_MAX_IDLE_DEFERRALS", 3)
+
+    async def scenario():
+        ran: List[str] = []
+        monkeypatch.setattr(asyncio, "current_task", lambda *a, **k: "always-busy")
+
+        async def warmup():
+            ran.append("warmup")
+
+        app = _bare_app()
+        app._run_async_task_when_loop_is_idle(warmup)
+        for _ in range(20):
+            await asyncio.sleep(0)
+        return ran
+
+    assert asyncio.run(scenario()) == ["warmup"]
 
 
 def test_run_async_task_returns_the_scheduled_future():

@@ -1,6 +1,6 @@
 # Story 20.3: Prime the Resident Model (Phase ⊥-Polish-3)
 
-Status: in-review — AC #1/#2/#3/#5 complete; **AC #4 (GUI measurement) pending an operator run**
+Status: in-review — AC #1/#2/#3/#5 complete and AC #1 confirmed in the shipped app; **AC #4 (TTFA measurement) pending an operator run**
 
 <!-- Phase tag: Phase ⊥-Polish-3. Third story of Epic 20 (First-Audio Latency). -->
 <!-- Source: Story 20.2 evidence §6 Follow-up A′. Activates the win Story 20.2 measured but could not reach. -->
@@ -127,9 +127,9 @@ documented in `20-2-warm-path-compile-priming-evidence.md` and are not this stor
 ## Tasks / Subtasks
 
 - [x] **Task 1 — Sequence priming after model load** (AC: #1)
-  - [x] 1.1 Restructure the `app.py` startup so priming begins after `preload_model` completes, and after hydration if the resident model needs a prompt. Prefer explicit sequencing over sleeps or retry loops.
+  - [x] 1.1 Restructure the `app.py` startup so priming begins after `preload_model` completes, and after hydration if the resident model needs a prompt. Prefer explicit sequencing over sleeps or retry loops. **Required a second pass**: the ordering fix alone was destroyed by a qasync task-re-entrancy failure — see evidence §1.1a.
   - [x] 1.2 Keep it off the Qt main thread; confirm startup responsiveness is unchanged.
-  - [x] 1.3 Test that priming is reached with a model loaded, and that `no_model_loaded` is no longer the normal-launch outcome.
+  - [x] 1.3 Test that priming is reached with a model loaded, and that `no_model_loaded` is no longer the normal-launch outcome. **Verified in the shipped app** across two real launches (evidence §4.0), not only in unit tests.
 
 - [x] **Task 2 — Prime the resident model** (AC: #2, #5)
   - [x] 2.1 Resolve the resident model type from the registry; build the priming request to match it.
@@ -145,7 +145,7 @@ documented in `20-2-warm-path-compile-priming-evidence.md` and are not this stor
 - [ ] **Task 4 — Measure through the GUI** (AC: #4) — **BLOCKED on an operator run**
   - [ ] 4.1 ≥5 launches with a CLONED voice active, warm cache, via `MYVOICE_PROGRESSIVE_PLAYBACK_CSV`. Procedure written up in evidence §4.1; requires interactive launches on the Ampere+ host.
   - [ ] 4.2 Report first-generation TTFA and segment 1b; compare to Story 20.2's harness numbers and explain divergence. Comparison baseline + the divergences to expect are pre-written in evidence §4.3.
-  - [x] 4.3 Report the observed telemetry reason. Write the evidence file. — evidence file written; the reason table (§4.2) is empty pending 4.1.
+  - [x] 4.3 Report the observed telemetry reason. Write the evidence file. — evidence written; observed reasons from two real launches are `primed_cold` then **`primed_warm`** (evidence §4.0). The TTFA table (§4.3) is empty pending 4.1.
 
 - [x] **Task 5 — Regression sweep** (AC: #5)
 
@@ -196,12 +196,27 @@ claude-opus-5[1m] (Claude Code)
 
 Full evidence: `_bmad-output/implementation-artifacts/20-3-prime-the-resident-model-evidence.md`.
 
-**AC #1 — done.** `warmup_compile_async` is scheduled below the `preload_model`
-await, through a new `MyVoiceApp._warmup_compile_after_preload` wrapper that
-first waits (bounded 120 s, `asyncio.shield`-ed) for Story 17.2's hydration
-task. `_run_async_task` now returns its future so the wrapper has a handle.
-Still fire-and-forget: startup does not block. Guarded at the call site by AST
-invariants, because the defect *was* a call-site ordering bug.
+**AC #1 — done, after two passes.** The first fix moved the scheduling below
+the preload and wrapped it in a coroutine that awaited hydration via
+`wait_for(shield(...))`. Every unit test passed and **the shipped app still
+never ran the warmup**: under qasync, `call_soon` is `QObject.startTimer(0)`, so
+the queued task step is delivered from inside `main.py`'s synchronous
+`splash.showMessage()`/`processEvents()` stretch while Task-1 is mid-step, and
+`asyncio._enter_task` destroys the task. Removing `shield`/`wait_for` does
+**not** fix it — a plain `ensure_future(warmup_compile_async())` at the same
+point is destroyed identically, which is demonstrated in
+`tests/unit/_qasync_warmup_driver.py` rather than argued.
+
+The fix is `MyVoiceApp._run_async_task_when_loop_is_idle`, which creates the
+task only on a loop pass where `asyncio.current_task() is None` — the exact
+slot `_enter_task` checks. `_compile_warmup_entrypoint` then checks (and does
+**not** await) the hydration handle. Neither a sleep nor a readiness poll; the
+re-arm clears the instant the loop invariant holds, and is bounded by
+`_MAX_IDLE_DEFERRALS` so it cannot go silent.
+
+**Verified in the shipped app** (evidence §4.0): two launches, `deferred 2 loop
+pass(es)`, priming dispatched against the resident **Base (Clone)** model,
+`primed_cold` then `primed_warm`, zero re-entrancy errors.
 
 **AC #2 — done.** `_build_compile_priming_request()` resolves
 `ModelRegistry.current_model_type`; the hard-coded `CUSTOM_VOICE` is gone. BASE
@@ -230,12 +245,19 @@ are untouched. Regression sweep: **926 passed / 0 failed** on
 tree is byte-identical to the pre-existing set, verified by stashing this
 story's changes and re-running. **Zero new failures.**
 
-**Mutation testing: 12/12 caught** (M4 was missed on the first pass and two
-rows were added to isolate the model-identity signal).
+**Mutation testing: 22/22 caught.** Two escaped on a first pass and both were
+closed by adding a row: M4 (the model-identity half of the AC #3 guard) and
+**N1** (reverting the call site to the plain scheduler, which the qasync rows
+could not see because they drive the helper directly). N1 is the same class of
+gap that let the first AC #1 fix ship: a test that exercises a mechanism is not
+a test that the product uses it.
 
-**AC #4 — NOT DONE.** It requires ≥5 interactive launches of the shipped GUI
-with a cloned voice active and a human pressing Generate; that is an operator
-task. Evidence §4 carries the exact procedure, the empty results table, the
+**AC #4 — NOT DONE.** The TTFA numbers require ≥5 interactive launches with a
+human pressing Generate; that is an operator task. (AC #1's half — that priming
+actually runs — *is* now verified in the app, evidence §4.0. Because priming had
+never once succeeded before, launch 1 paid `primed_cold` and marked the cache;
+an AC #4 re-run therefore starts warm and should read `primed_warm` from its
+first launch.) Evidence §4 carries the exact procedure, the empty results table, the
 Story 20.2 comparison baseline, and the harness↔GUI divergences to expect
 (1a differs by construction; the GUI now primes BASE-with-real-prompt rather
 than the harness's CUSTOM_VOICE; priming holds `_request_semaphore`). **The
@@ -251,9 +273,9 @@ strictly worse).
 **Source**
 
 - `src/myvoice/app.py` — `_voice_clone_prompt_hydration_task` attribute;
-  hydration handle retained; warmup scheduling moved below the preload;
-  `_warmup_compile_after_preload` + `_HYDRATION_WAIT_TIMEOUT_S` (new);
-  `_run_async_task` returns its future
+  hydration handle retained; warmup hand-off moved below the preload and routed
+  through `_run_async_task_when_loop_is_idle` + `_MAX_IDLE_DEFERRALS` (new);
+  `_compile_warmup_entrypoint` (new); `_run_async_task` returns its future
 - `src/myvoice/services/qwen_tts_service.py` — `CompilePrimingSkipped` (new);
   `_COMPILE_PRIMING_VOICE_DESCRIPTION` (new); `_last_priming_model_type` state;
   `_priming_matches_cache_key`, `_compile_cache_model_id`,
@@ -264,7 +286,9 @@ strictly worse).
 **Tests**
 
 - `tests/unit/services/test_compile_priming_resident_model.py` (new, 26 rows)
-- `tests/unit/test_app_compile_warmup_sequencing.py` (new, 8 rows)
+- `tests/unit/test_app_compile_warmup_sequencing.py` (new, 11 rows)
+- `tests/unit/test_app_compile_warmup_qasync.py` (new, 3 rows) +
+  `tests/unit/_qasync_warmup_driver.py` (new, out-of-process qasync driver)
 - `tests/unit/services/test_compile_priming_audio_suppression.py` (rig line
   only: the registry now declares a resident model type)
 
@@ -274,5 +298,6 @@ strictly worse).
 
 ## Change Log
 
+- 2026-09-01 — AC #1 re-fixed after the negative AC #4 capture: the ordering fix was correct but the task was destroyed by a qasync re-entrancy failure. Replaced with an idle-loop-gated hand-off, verified under a real qasync loop and in two live launches. 22/22 mutations caught.
 - 2026-08-31 — Implemented (AC #1/#2/#3/#5). Both defects closed; 12/12 mutations caught; zero new regression failures. AC #4's GUI measurement is left open as an operator task, with the procedure and comparison baseline written up in the evidence file.
 - 2026-08-31 — Drafted by Winston from Story 20.2's Follow-up A′, incorporating Commander's domain fact that BASE is the default resident model for typical cloned-voice usage. Scope covers both defects that keep 20.2's measured win unreachable: the startup-ordering defect and the primed-model/cache-key mismatch.

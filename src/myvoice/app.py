@@ -618,31 +618,50 @@ class MyVoiceApp(QObject):
                 except Exception as e:
                     self.logger.warning(f"Error preloading default model: {e}")
 
-            # Story 18.4 / D-23 + Story 20.3 AC #1 — fire-and-forget
-            # torch.compile warmup worker, scheduled HERE, *after* the model
-            # preload has been awaited.
+            # Story 18.4 / D-23 + Story 20.3 AC #1 — torch.compile warmup
+            # worker, handed off HERE, *after* the model preload has been
+            # awaited, and deferred until the qasync loop is idle.
             #
-            # Story 20.2 §6 pinned the defect this placement fixes: the
-            # warmup used to be scheduled above the preload, and
-            # ``_run_async_task`` only *schedules* (``asyncio.ensure_future``).
-            # The coroutine therefore first ran at the enclosing coroutine's
-            # next suspension point — the ``await preload_model(...)`` itself —
-            # at which instant no model was loaded, so every launch exited at
-            # ``reason="no_model_loaded"``. Story 18.4's cold priming and
-            # Story 20.2's warm priming had both never run in the shipped app.
+            # Two defects had to be closed to get this to run at all:
             #
-            # The wrapper coroutine below also waits for Story 17.2's
-            # voice_clone_prompt hydration, because a resident BASE model is
-            # primed with the active profile's cached prompt (Story 20.3
-            # AC #2). Scheduling (not awaiting) keeps the Qt main thread free:
-            # startup continues into UI construction immediately, exactly as
-            # it did when the warmup was scheduled above.
+            # 1. ORDERING (Story 20.2 §6). The warmup used to be scheduled
+            #    *above* the preload, and ``_run_async_task`` only schedules.
+            #    The coroutine therefore first ran at the enclosing coroutine's
+            #    next suspension point — the ``await preload_model(...)``
+            #    itself — with no model loaded, so every launch exited at
+            #    ``reason="no_model_loaded"``.
+            #
+            # 2. QASYNC RE-ENTRANCY (the AC #4 capture, 2026-09-01). Moving the
+            #    schedule below the preload was necessary but NOT sufficient:
+            #    the task was created and then destroyed before its body ran,
+            #    with ``RuntimeError: Cannot enter into task <Task-6> while
+            #    another task <Task-1 running at main.py:397> is being
+            #    executed``. Under qasync, ``call_soon`` is implemented as
+            #    ``QObject.startTimer(0)`` (``qasync/__init__.py``:
+            #    ``call_soon`` -> ``call_later(0, ...)`` -> ``_SimpleTimer.
+            #    add_callback``), so a queued task step is delivered by
+            #    ``timerEvent`` during **any** Qt event processing — including
+            #    the synchronous ``splash.showMessage(...)`` /
+            #    ``processEvents()`` stretch that ``main.py`` runs *inside*
+            #    Task-1 straight after startup returns. ``asyncio._enter_task``
+            #    refuses to step a second task while Task-1 is mid-step, the
+            #    RuntimeError is swallowed by the loop's exception handler, and
+            #    the task dies pending.
+            #
+            #    This is NOT specific to ``shield``/``wait_for``: a plain
+            #    ``ensure_future(warmup_compile_async())`` scheduled at this
+            #    same point is destroyed identically. Reproduced and verified
+            #    under a real qasync loop in
+            #    ``tests/unit/test_app_compile_warmup_qasync.py``.
+            #
+            # ``_run_async_task_when_loop_is_idle`` closes (2) by creating the
+            # task only on a loop pass where no other task is mid-step, which
+            # is exactly the condition ``_enter_task`` enforces. It is still
+            # fire-and-forget — startup continues into UI construction
+            # immediately and the Qt main thread is never blocked.
             try:
-                self._run_async_task(
-                    self._warmup_compile_after_preload(),
-                    on_success=lambda result: self.logger.debug(
-                        "torch.compile warmup task completed"
-                    ),
+                self._run_async_task_when_loop_is_idle(
+                    self._tts_service.warmup_compile_async,
                     on_error=lambda error: self.logger.warning(
                         f"torch.compile warmup task failed: {error}"
                     ),
@@ -980,68 +999,127 @@ class MyVoiceApp(QObject):
         self._services[service_name] = service
         self.logger.debug(f"Registered service: {service_name}")
 
-    # Story 20.3 — startup compile-priming sequencing
-    _HYDRATION_WAIT_TIMEOUT_S = 120.0
+    # Story 20.3 AC #1 — qasync-safe startup hand-off for the compile warmup.
+    #
+    # ``_MAX_IDLE_DEFERRALS`` bounds the re-arm so a pathological loop (some
+    # task permanently mid-step) cannot leave the warmup silently unscheduled
+    # forever. It is a safety valve, not a timing assumption: the normal case
+    # clears in the tens of passes it takes Qt to finish the splash/UI stretch,
+    # and exhausting it logs a WARNING and schedules anyway.
+    _MAX_IDLE_DEFERRALS = 10000
 
-    async def _warmup_compile_after_preload(self) -> None:
-        """Story 20.3 AC #1 — run the compile warmup once the model is up.
+    def _run_async_task_when_loop_is_idle(self, coro_factory, on_error=None):
+        """Schedule ``coro_factory()`` on the first loop pass with no task
+        mid-step.
 
-        Scheduled fire-and-forget *after* ``preload_model`` has been awaited,
-        so ``QwenTTSService.warmup_compile_async`` finds a resident model
-        instead of exiting at ``reason="no_model_loaded"`` (Story 20.2 §6).
+        **Why this exists.** Under qasync every ``call_soon`` is a Qt
+        zero-timer, so a queued task step is delivered from ``timerEvent``
+        during any Qt event processing — including a ``processEvents()`` call
+        made *inside* another running task. ``asyncio._enter_task`` then raises
+        ``RuntimeError: Cannot enter into task ... while another task ... is
+        being executed``, the loop's exception handler swallows it, and the
+        task is destroyed pending, having never run a line of its body. That is
+        exactly how Story 20.3's first AC #1 fix failed in the shipped app: the
+        warmup task was created after the preload and then killed during
+        ``main.py``'s splash/UI stretch, so ``tts_compile_warmup_priming`` was
+        never recorded on any launch.
 
-        Before handing off, it waits for Story 17.2's voice_clone_prompt
-        hydration task. That ordering is load-bearing for the common startup
-        state the Commander described: BASE resident with a cloned voice
-        active. Priming BASE needs the active profile's cached prompt, and the
-        cache is populated by hydration; racing it would make priming skip
-        with ``no_priming_prompt`` on exactly the launches the story exists to
-        speed up.
+        ``asyncio.current_task()`` reads the same ``_current_tasks`` slot that
+        ``_enter_task`` checks, so testing it here is testing the precise
+        precondition — not a proxy for it, and not a timing guess.
 
-        The wait is bounded and never fatal:
+        Takes a **factory** rather than a coroutine object: a coroutine created
+        eagerly and then deferred would emit a "never awaited" warning if the
+        deferral is abandoned, and would be un-restartable.
 
-        * ``asyncio.shield`` means a timeout abandons the *wait*, not the
-          hydration task — hydration keeps running and still fills the cache
-          for the user's first generation.
-        * A timeout, a cancelled hydration task, or an exception all fall
-          through to the warmup, which then decides for itself (a BASE
-          resident with no cached prompt skips with its own telemetry
-          reason — it never falls back to priming a different model).
+        Deliberately separate from ``_run_async_task``. Every other caller of
+        that method schedules from a Qt signal handler with no task on the
+        stack, where the plain path is correct and has shipped for many
+        releases; narrowing this change to the one startup hand-off that
+        actually hits the hazard keeps the blast radius at one call site.
+        """
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError as exc:
+            self.logger.warning(
+                f"torch.compile warmup could not resolve an event loop: {exc}"
+            )
+            return None
 
-        Explicit sequencing, not a sleep or a retry loop, per Task 1.1. The
-        Qt main thread is untouched: this coroutine runs on the qasync loop
-        and every step inside it is an ``await``.
+        state = {"deferrals": 0}
+
+        def _schedule_when_idle():
+            current = asyncio.current_task()
+            if current is not None and state["deferrals"] < self._MAX_IDLE_DEFERRALS:
+                if state["deferrals"] == 0:
+                    self.logger.debug(
+                        "Deferring torch.compile warmup: task %r is mid-step "
+                        "(qasync delivers task steps from Qt timerEvent, and "
+                        "asyncio refuses to enter a second task re-entrantly)",
+                        getattr(current, "get_name", lambda: current)(),
+                    )
+                state["deferrals"] += 1
+                loop.call_soon(_schedule_when_idle)
+                return
+
+            if current is not None:
+                self.logger.warning(
+                    "torch.compile warmup: the event loop never went idle "
+                    "after %d passes; scheduling anyway. If the task is "
+                    "destroyed pending, compile priming will not run this "
+                    "launch and the first generation pays the inductor "
+                    "reload.",
+                    state["deferrals"],
+                )
+
+            self.logger.info(
+                "torch.compile warmup handed off to the event loop "
+                "(deferred %d loop pass(es) for qasync re-entrancy safety)",
+                state["deferrals"],
+            )
+            self._run_async_task(
+                self._compile_warmup_entrypoint(coro_factory),
+                on_success=lambda result: self.logger.debug(
+                    "torch.compile warmup task completed"
+                ),
+                on_error=on_error,
+            )
+
+        loop.call_soon(_schedule_when_idle)
+        return None
+
+    async def _compile_warmup_entrypoint(self, coro_factory):
+        """The warmup task body: one hydration check, then the warmup.
+
+        Story 20.3 AC #1 asks that priming run after Story 17.2's
+        ``voice_clone_prompt`` hydration when the resident model needs a
+        prompt. That ordering is **structural** here rather than enforced by a
+        wait:
+
+        * hydration is scheduled before ``await preload_model(...)``, and its
+          body is fully synchronous (no ``await`` inside the scan), so it runs
+          to completion in a single step at that first suspension — measured
+          in the AC #4 capture as finishing ~4.5 s before the preload returns;
+        * this task is created later still, on the first idle loop pass after
+          the whole startup window.
+
+        So the check below is an observability assertion, not a barrier. It
+        deliberately does **not** await the hydration handle: awaiting another
+        task from inside this one is what the first fix attempt did (via
+        ``wait_for``/``shield``) and the resulting extra task machinery is
+        needless exposure to the qasync hazard above. If hydration somehow has
+        not finished, the BASE priming path skips itself with
+        ``no_priming_prompt`` — the designed, safe fallback — rather than
+        priming the wrong model.
         """
         task = self._voice_clone_prompt_hydration_task
-        if task is not None:
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(task), timeout=self._HYDRATION_WAIT_TIMEOUT_S
-                )
-            except asyncio.TimeoutError:
-                self.logger.warning(
-                    "voice_clone_prompt hydration still running after %.0fs; "
-                    "starting compile warmup anyway (a BASE prime with no "
-                    "cached prompt skips itself, it does not switch models)",
-                    self._HYDRATION_WAIT_TIMEOUT_S,
-                )
-            except asyncio.CancelledError:
-                # The hydration task was cancelled (shutdown). Do not swallow
-                # a cancellation aimed at *this* coroutine.
-                if task.cancelled():
-                    self.logger.info(
-                        "voice_clone_prompt hydration cancelled; continuing "
-                        "to compile warmup"
-                    )
-                else:
-                    raise
-            except Exception as exc:  # noqa: BLE001
-                self.logger.warning(
-                    f"Waiting for voice_clone_prompt hydration failed: {exc}; "
-                    "continuing to compile warmup"
-                )
-
-        await self._tts_service.warmup_compile_async()
+        if task is not None and not task.done():
+            self.logger.warning(
+                "voice_clone_prompt hydration has not finished at compile "
+                "warmup time; a BASE prime will skip with no_priming_prompt "
+                "rather than switch models"
+            )
+        await coro_factory()
 
     def _run_async_task(self, coro, on_success=None, on_error=None):
         """
