@@ -120,8 +120,13 @@ class TestProgressivePlaybackConsumer:
         )
         _drive(app, chunk0)
 
+        # text_length (adaptive pre-buffer, 2026-05-15) and session_id
+        # (Story 20.1 TTFA instrumentation) are both observational kwargs the
+        # consumer always passes. Asserted explicitly so this stays an exact-call
+        # assertion rather than silently drifting again.
         coordinator.start_streaming_session.assert_awaited_once_with(
-            sample_rate=24000, channels=1, sample_width=2
+            sample_rate=24000, channels=1, sample_width=2,
+            text_length=None, session_id=None,
         )
         assert app._progressive_playback_active is True
         assert app._progressive_playback_sample_rate == 24000
@@ -373,8 +378,13 @@ class TestProgressivePlaybackSampleRateAndFailure:
         )
         _drive(app, chunk0)
 
+        # text_length (adaptive pre-buffer, 2026-05-15) and session_id
+        # (Story 20.1 TTFA instrumentation) are both observational kwargs the
+        # consumer always passes. Asserted explicitly so this stays an exact-call
+        # assertion rather than silently drifting again.
         coordinator.start_streaming_session.assert_awaited_once_with(
-            sample_rate=22050, channels=1, sample_width=2
+            sample_rate=22050, channels=1, sample_width=2,
+            text_length=None, session_id=None,
         )
         assert app._progressive_playback_sample_rate == 22050
 

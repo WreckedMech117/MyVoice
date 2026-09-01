@@ -1,0 +1,129 @@
+# Story 20.1 - TTFA decomposition aggregate (re-captured 2026-08-31)
+Source: tools/ttfa_spike_harness.py on RTX 5090 / torch 2.10.0+cu128 /
+transformers 4.57.3 / qwen-tts pin 3fdb4682 / bf16 + tts_compile=auto
+Quantiles are linear-interpolated (type-7); ``max`` is shown separately. Values marked <=res are at or below the 0.5 ms time.time() step on this host.
+
+## AC #2 + AC #2b Phase 1 - four-segment decomposition
+
+### A - long / RTX 5090 static-watermark
+warm runs n=10; discarded leading (cold) runs n=1
+segment                                        n  median (ms)p95 interp (ms)    max (ms)
+segment 1 - prefill / prompt-encode           10        108.4          173.6       213.8
+  1a - MyVoice dispatch overhead              10          0.5            2.1         3.0
+  1b - model prompt-encode                    10        107.9          171.9       210.8
+segment 2 - talker to first token chunk       10      1,651.7        2,674.1     3,343.5
+segment 3 - first decode (codec -> PCM)       10         80.6           98.6       101.3
+segment 4 - consumer cushion (harness)        10        <=res            1.3         1.5
+residual - decode-complete -> post            10        <=res            0.6         1.0
+TTFA(post) - t0 -> first PCM posted           10      1,849.1        2,932.0     3,648.7
+  restatement: first_chunk_latency_ms         10      1,849.1        2,932.0     3,648.7
+
+  TTFA(release) = TTFA(post) + segment 4: 1,849.6 ms
+  TALKER-BOUND FRACTION (segment 2 / TTFA(release)): 89.3 %
+  INDEPENDENT BRACKET (perf_counter, outside the metric stream):
+    n=10  median=1,849.4 ms  vs TTFA(post) median 1,849.1 ms
+    slack (bracket - TTFA(post)): median=0.662 ms  min=-0.193 ms  max=1.210 ms
+    |slack| <= 2 x clock step (1.0 ms) on all runs: False
+  segment-sum residual vs TTFA(post): median 0.0000 % (IDENTITY - the segments telescope; see evidence 2.4)
+  first-emit path distribution: {'threshold': 10}
+  T_a (total audio, median): 18,883.2 ms over n=10; generation wall: 13,947.3 ms
+  RTF (T_a / generation wall): 1.354
+  producer emit/drain ratio: 0.699 (n=10); producer rate P: 1.431
+  [cold first-generation-of-process run, discarded] TTFA(post)=10,511 ms (seg1a model-load=4,505, seg1b first-forward=3,820, seg2 talker=1,950)
+
+### B - short / RTX 5090 static-watermark
+warm runs n=10; discarded leading (cold) runs n=1
+segment                                        n  median (ms)p95 interp (ms)    max (ms)
+segment 1 - prefill / prompt-encode           10         87.0           90.7        90.7
+  1a - MyVoice dispatch overhead              10          1.0            1.0         1.0
+  1b - model prompt-encode                    10         86.1           89.7        89.7
+segment 2 - talker to first token chunk       10      1,341.8        1,466.8     1,482.2
+segment 3 - first decode (codec -> PCM)       10         42.8           70.9        71.4
+segment 4 - consumer cushion (harness)        10        <=res            1.0         1.0
+residual - decode-complete -> post            10        <=res            0.6         1.0
+TTFA(post) - t0 -> first PCM posted           10      1,472.1        1,623.6     1,635.7
+  restatement: first_chunk_latency_ms         10      1,472.1        1,623.6     1,635.7
+
+  TTFA(release) = TTFA(post) + segment 4: 1,472.1 ms
+  TALKER-BOUND FRACTION (segment 2 / TTFA(release)): 91.1 %
+  INDEPENDENT BRACKET (perf_counter, outside the metric stream):
+    n=10  median=1,472.4 ms  vs TTFA(post) median 1,472.1 ms
+    slack (bracket - TTFA(post)): median=0.157 ms  min=-0.141 ms  max=0.826 ms
+    |slack| <= 2 x clock step (1.0 ms) on all runs: True
+  segment-sum residual vs TTFA(post): median 0.0000 % (IDENTITY - the segments telescope; see evidence 2.4)
+  first-emit path distribution: {'residual_flush': 5, 'threshold': 5}
+  T_a (total audio, median): 2,287.2 ms over n=10; generation wall: 1,536.4 ms
+  RTF (T_a / generation wall): 1.489
+  producer emit/drain ratio: n/a (n=0); producer rate P: n/a
+  [cold first-generation-of-process run, discarded] TTFA(post)=9,893 ms (seg1a model-load=4,372, seg1b first-forward=3,731, seg2 talker=1,641)
+
+
+## AC #5 - chunk-size sweep, LONG utterance (lookahead=5, tts_compile=auto, bf16)
+ chunk_size  window  audio/chunk   seg2 (ms)   seg4 (ms) TTFA(post)  TTFA(release)    ratio       P   chunks   gen wall    n
+          5      10         417m         428       232.1        594            826    0.649   1.542       46     12,052    5
+             first-emit path: {'threshold': 5}
+         10      15         833m         626       <=res        778            778    0.603   1.657       24     11,500    5
+             first-emit path: {'threshold': 5}
+         15      20        1250m       1,001         1.0      1,185          1,186    0.679   1.473       16     13,090    5
+             first-emit path: {'threshold': 5}
+         25      30        2083m       1,652       <=res      1,849          1,850    0.699   1.431       10     13,947   10
+             first-emit path: {'threshold': 10}
+
+
+## B1 - chunk-size sweep, SHORT utterance (the Clear Comms interjection class)
+ chunk_size  window  audio/chunk   seg2 (ms)   seg4 (ms) TTFA(post)  TTFA(release)    ratio       P   chunks   gen wall    n
+          5      10         417m         473       263.4        635            899    0.684   1.463        5      1,682    5
+             first-emit path: {'threshold': 5}
+         10      15         833m         744       <=res        921            921    0.571   1.750        3      1,846    5
+             first-emit path: {'threshold': 5}
+         15      20        1250m       1,000       <=res      1,174          1,174      n/a     n/a        2      1,609    5
+             first-emit path: {'threshold': 5}
+         25      30        2083m       1,342       <=res      1,472          1,472      n/a     n/a        2      1,536   10
+             first-emit path: {'residual_flush': 5, 'threshold': 5}
+
+
+## Cold (first generation of process) vs warm - reconciliation with the Epic 18 baseline
+
+  tts_compile=auto (Epic 18 Branch A analogue)
+      run  TTFA(post)     1a load    1b 1st-fwd     2 talker   3 dec   gen wall
+        0      10,366       4,599         4,008        1,587     172     22,378
+        1       1,706           1            92        1,523      89     13,337
+        2       1,697           1            97        1,514      85     13,426
+        3       1,754           0            95        1,573      86     12,712
+    cold GUI-equivalent (1b+2+3, model preloaded): 5,767 ms
+    warm steady-state TTFA(post) median: 1,706 ms (n=3)
+    warm producer ratio median: 0.671 (n=3)
+
+  tts_compile=off  (Epic 18 Branch B analogue)
+      run  TTFA(post)     1a load    1b 1st-fwd     2 talker   3 dec   gen wall
+        0       8,875       3,900         1,151        3,664     160     34,737
+        1       4,044           1           162        3,791      90     31,894
+        2       4,297           1           160        4,069      66     30,206
+        3       4,003           1           160        3,763      79     32,806
+    cold GUI-equivalent (1b+2+3, model preloaded): 4,975 ms
+    warm steady-state TTFA(post) median: 4,044 ms (n=3)
+    warm producer ratio median: 1.633 (n=3)
+
+
+## AC #2b Phase 2 - DERIVED adaptive-cushion break-even (sub-16 GiB hosts; NOT observed)
+  Cells C (long / sub-16 GiB) and D (short / sub-16 GiB) of the AC #2b matrix are UNMEASURED - no such host was available (review A16).
+
+  cell A - long [T_a measured] = 18.88 s   A_c = 2.083 s   W = 2.500 s   M = 4.167 s
+    cushion adds ANY delay      when P < 0.901
+    cushion EXCEEDS talker seg  when P < 0.819
+    cushion hits the 10 s clamp when P < 0.654
+
+  cell A - long [T_a code estimate 0.08 s/char] = 27.92 s   A_c = 2.083 s   W = 2.500 s   M = 4.167 s
+    cushion adds ANY delay      when P < 0.931
+    cushion EXCEEDS talker seg  when P < 0.870
+    cushion hits the 10 s clamp when P < 0.736
+
+  cell B - short [T_a measured] = 2.29 s   A_c = 2.083 s   W = 2.500 s   M = 4.167 s
+    cushion adds ANY delay      when P < 0.523
+    cushion EXCEEDS talker seg  when P < 0.354
+    cushion hits the 10 s clamp when P < 0.186
+
+  cell B - short [T_a code estimate 0.08 s/char] = 2.64 s   A_c = 2.083 s   W = 2.500 s   M = 4.167 s
+    cushion adds ANY delay      when P < 0.559
+    cushion EXCEEDS talker seg  when P < 0.388
+    cushion hits the 10 s clamp when P < 0.209

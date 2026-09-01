@@ -796,3 +796,115 @@ class TestStopStreamingSessionDrain:
         # No silence pad dispatched because both services were inactive.
         monitor.play_audio_chunk.assert_not_called()
         virtual.play_audio_chunk.assert_not_called()
+
+@_pytest.mark.asyncio
+class TestTtfaFirstPlaybackWriteBoundary:
+    """Story 20.1 Task 2.1 — ``ttfa_first_playback_write_ms`` closes
+    segment 4 (the consumer-side cushion) at the instant the buffer
+    releases its first payload towards PyAudio.
+
+    Retained product surface by architect decision 2026-08-31: AC #2b
+    Phase 3 reads it out of the shipped CSV capture on an RTX 3060, which
+    is a multi-generation GUI session — hence the re-arm assertions.
+    """
+
+    @staticmethod
+    def _capture():
+        from myvoice.observability import metrics
+
+        recorded: list = []
+        unsub = metrics.add_listener(recorded.append)
+        return recorded, unsub
+
+    async def test_boundary_fires_once_across_multiple_chunks(self):
+        coord, _monitor, _virtual = _coord_with_drain_services()
+        recorded, unsub = self._capture()
+        try:
+            await coord.start_streaming_session(
+                sample_rate=24000, channels=1, sample_width=2,
+                session_id="sid-one",
+            )
+            # 24000 Hz int16 mono: 24000 bytes = 500 ms = exactly the
+            # static watermark, so the first push releases immediately.
+            await coord.play_audio_chunk(b"\x01\x02" * 12000)
+            await coord.play_audio_chunk(b"\x03\x04" * 12000)
+        finally:
+            unsub()
+
+        hits = [
+            r for r in recorded if r.name == "ttfa_first_playback_write_ms"
+        ]
+        assert len(hits) == 1, (
+            "the segment-4 boundary must fire once per streaming session, "
+            f"not once per dispatched chunk; got {len(hits)}"
+        )
+        assert hits[0].session_id == "sid-one", (
+            "the boundary must carry the session id threaded from the "
+            "progressive-playback consumer, or the CSV cannot join it to "
+            "the producer-side boundaries"
+        )
+        assert hits[0].tags["buffer_mode"] == "static"
+        assert hits[0].tags["chunk_index"] == 0
+        assert hits[0].tags["dispatched_bytes"] > 0
+
+    async def test_boundary_rearms_on_next_session_with_fresh_session_id(self):
+        """Regression for the review C2 finding: arming the one-shot flag
+        only in ``start_streaming_session`` left a multi-generation
+        playback session emitting the boundary once for the whole process
+        and tagging every later generation with a stale session id. Both
+        ``start_streaming_session`` and ``stop_streaming_session`` now
+        re-arm it.
+        """
+        coord, _monitor, _virtual = _coord_with_drain_services()
+        recorded, unsub = self._capture()
+        try:
+            await coord.start_streaming_session(
+                sample_rate=24000, channels=1, sample_width=2,
+                session_id="sid-first",
+            )
+            await coord.play_audio_chunk(b"\x01\x02" * 12000)
+            await coord.stop_streaming_session()
+
+            # Teardown must have disarmed the flag AND cleared the id.
+            assert coord._ttfa_first_write_recorded is False
+            assert coord._streaming_metric_session_id is None
+
+            await coord.start_streaming_session(
+                sample_rate=24000, channels=1, sample_width=2,
+                session_id="sid-second",
+            )
+            await coord.play_audio_chunk(b"\x05\x06" * 12000)
+            await coord.stop_streaming_session()
+        finally:
+            unsub()
+
+        hits = [
+            r for r in recorded if r.name == "ttfa_first_playback_write_ms"
+        ]
+        assert len(hits) == 2, (
+            "a second streaming session must emit its own segment-4 "
+            f"boundary; got {len(hits)}"
+        )
+        assert [h.session_id for h in hits] == ["sid-first", "sid-second"], (
+            "the second session must NOT be tagged with the first session's "
+            f"id; got {[h.session_id for h in hits]}"
+        )
+
+    async def test_session_id_defaults_to_none_for_legacy_callers(self):
+        """The keyword is observational and optional: every pre-existing
+        caller omits it and must keep working."""
+        coord, _monitor, _virtual = _coord_with_drain_services()
+        recorded, unsub = self._capture()
+        try:
+            await coord.start_streaming_session(
+                sample_rate=24000, channels=1, sample_width=2,
+            )
+            await coord.play_audio_chunk(b"\x01\x02" * 12000)
+        finally:
+            unsub()
+
+        hits = [
+            r for r in recorded if r.name == "ttfa_first_playback_write_ms"
+        ]
+        assert len(hits) == 1
+        assert hits[0].session_id is None

@@ -1,5 +1,12 @@
-"""Story 18.1 Task 1.4 — env-var-gated CSV capture for the three new
-progressive-playback instrumentation metrics.
+"""Env-var-gated CSV capture for the progressive-playback + first-audio
+instrumentation metrics.
+
+Originally Story 18.1 Task 1.4 (three producer/consumer chunk metrics).
+Widened twice since: Story 18.2 Task 4.1 added ``first_chunk_latency_ms``,
+and Story 20.1 Task 2.1 added the six ``ttfa_*`` first-audio segment
+boundaries. **Ten metric names are captured today** — the authoritative list
+is ``_CAPTURED_METRIC_NAMES`` below; this prose is a summary of it, not a
+second source of truth.
 
 Engages a single ``metrics.add_listener`` callback that filters for:
 
@@ -15,8 +22,17 @@ Engages a single ``metrics.add_listener`` callback that filters for:
 
 and writes one row per record to a CSV file. Every other metric in the
 stream is ignored — the file stays focused on the Story 18.1 ratio
-analysis (inter-chunk-emit interval vs chunk audio-duration) so the
-post-processing script does not have to filter at parse time.
+analysis (inter-chunk-emit interval vs chunk audio-duration) plus the
+Story 20.1 four-segment first-audio decomposition, so the post-processing
+script does not have to filter at parse time.
+
+**CSV schema note (Story 20.1).** The header is deliberately unchanged:
+``metric_name, value, session_id, chunk_index, is_final, audio_data_size``.
+The ``ttfa_*`` rows therefore carry their ``frames`` / ``path`` /
+``pcm_samples`` / ``text_length`` / ``buffer_mode`` tags only in the
+structured ``myvoice.metrics`` log, not in a CSV column — a deliberate
+trade so the schema Stories 18.1-18.4 already consume does not churn.
+Downstream analysis distinguishes rows by ``metric_name``.
 
 Activation
 ----------
@@ -80,6 +96,18 @@ _CAPTURED_METRIC_NAMES = frozenset(
         # Story 18.2 Task 4.1: first-chunk-latency capture for the
         # NFR1 before/after measurement. Reused by Stories 18.3 + 18.4.
         "first_chunk_latency_ms",
+        # Story 20.1 Task 2.1 — the four-segment TTFA decomposition
+        # boundaries. Same env-var-gated capture surface; each fires
+        # exactly once per TRUE_STREAM dispatch, so they add ~6 rows per
+        # generation to a CSV that already carries ~3 rows per chunk.
+        # All are absolute wall-clock ms (``time.time() * 1000.0``) so the
+        # segment arithmetic is a subtraction, not a clock reconciliation.
+        "ttfa_generation_start_ms",
+        "ttfa_talker_thread_start_ms",
+        "ttfa_first_decode_step_ms",
+        "ttfa_first_chunk_emit_ms",
+        "ttfa_first_decode_complete_ms",
+        "ttfa_first_playback_write_ms",
     }
 )
 

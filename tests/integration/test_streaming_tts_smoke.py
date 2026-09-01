@@ -1906,3 +1906,176 @@ class TestTrueStreamWireUpEndToEnd:
         # did not crash.
         assert post_cancel_forward_calls[0] == 5
 
+class TestTtfaTalkerBoundaryInstrumentation:
+    """Story 20.1 Task 2.1 — the three talker-side first-audio boundaries,
+    exercised against the REAL ``_build_true_stream_talker`` body (this
+    class does not monkeypatch it).
+
+    These metrics are retained product surface by architect decision
+    2026-08-31 because AC #2b Phase 3 (the deferred RTX 3060 confirmation)
+    reads them out of the shipped CSV capture.
+    """
+
+    @staticmethod
+    def _run_dispatch(qapp, service, monkeypatch, step_count, recorder):
+        import torch
+        from myvoice.services.qwen_tts_service import (
+            QwenModelType, QwenTTSRequest,
+        )
+
+        fake_model, hits = _make_streamer_aware_fake_model(
+            step_count=step_count, num_code_groups=4,
+        )
+        service._model_registry.get_loaded_model = MagicMock(
+            return_value=fake_model
+        )
+
+        SAMPLES_PER_STEP = 100
+
+        def fake_decode_fn_builder(model):
+            def decode(chunk_tensor):
+                if isinstance(chunk_tensor, torch.Tensor):
+                    n_steps = chunk_tensor.shape[0]
+                else:
+                    n_steps = len(chunk_tensor)
+                return np.full(
+                    n_steps * SAMPLES_PER_STEP, 0.01, dtype=np.float32
+                )
+            return decode
+
+        monkeypatch.setattr(
+            service, "_build_true_stream_decode_fn", fake_decode_fn_builder
+        )
+        monkeypatch.setattr(
+            "myvoice.services.qwen_tts_service.metrics.record", recorder
+        )
+
+        request = QwenTTSRequest(
+            text="hello world",
+            language="English",
+            model_type=QwenModelType.CUSTOM_VOICE,
+            speaker="Ryan",
+            streaming=True,
+        )
+
+        async def runner():
+            async def drainer(stop_evt):
+                while not stop_evt.is_set():
+                    qapp.processEvents()
+                    await asyncio.sleep(0.005)
+
+            stop_evt = asyncio.Event()
+            drain_task = asyncio.create_task(drainer(stop_evt))
+            try:
+                return await service._generate_true_stream(request)
+            finally:
+                stop_evt.set()
+                await drain_task
+
+        response = asyncio.run(runner())
+        for _ in range(50):
+            qapp.processEvents()
+            time.sleep(0.005)
+        return response, hits
+
+    def test_talker_boundaries_fire_once_each_in_order_on_threshold_path(
+        self, qapp, registry, coordinator, monkeypatch,
+    ):
+        """step_count=100 crosses the 30-frame first-emit threshold, so
+        ``ttfa_first_chunk_emit_ms`` comes from the in-loop flush and is
+        tagged ``path="threshold"``.
+        """
+        service, _ = _build_true_stream_service(registry, coordinator)
+        coordinator.play_dual_stream = AsyncMock(return_value=MagicMock())
+        recorder = _RecordingMetricsRecorder()
+
+        response, _hits = self._run_dispatch(
+            qapp, service, monkeypatch, 100, recorder,
+        )
+        assert response.success is True
+
+        thread_start = recorder.calls_for("ttfa_talker_thread_start_ms")
+        decode_step = recorder.calls_for("ttfa_first_decode_step_ms")
+        chunk_emit = recorder.calls_for("ttfa_first_chunk_emit_ms")
+
+        assert len(thread_start) == 1, (
+            f"ttfa_talker_thread_start_ms must be one-shot; got "
+            f"{len(thread_start)}"
+        )
+        assert len(decode_step) == 1, (
+            "ttfa_first_decode_step_ms must fire once, on the first forward "
+            f"that produced codec_ids; got {len(decode_step)}"
+        )
+        assert len(chunk_emit) == 1, (
+            "ttfa_first_chunk_emit_ms must be one-shot even though the "
+            f"threshold is crossed 3 times at step_count=100; got "
+            f"{len(chunk_emit)}"
+        )
+
+        # Prefill is exactly one forward call before codec_ids appear.
+        assert decode_step[0][2]["prefill_forward_calls"] == 1
+
+        # The in-loop flush path, and the window geometry it flushed.
+        assert chunk_emit[0][2]["path"] == "threshold"
+        assert chunk_emit[0][2]["frames"] == 30  # chunk_size 25 + lookahead 5
+
+        # Monotonic ordering: t0 <= thread start <= first decode step <=
+        # first chunk emit. These are the segment boundaries; if they can
+        # invert, every segment in the decomposition can go negative.
+        gen_start = recorder.calls_for("ttfa_generation_start_ms")
+        assert len(gen_start) == 1
+        ordered = [
+            gen_start[0][1],
+            thread_start[0][1],
+            decode_step[0][1],
+            chunk_emit[0][1],
+        ]
+        assert ordered == sorted(ordered), (
+            f"TTFA boundaries must be non-decreasing in wall-clock; got "
+            f"{ordered}"
+        )
+
+    def test_residual_flush_path_emits_first_chunk_emit_boundary(
+        self, qapp, registry, coordinator, monkeypatch,
+    ):
+        """step_count=20 never reaches ``chunk_size + lookahead = 30``, so
+        the ONLY token chunk the generation ever produces is the terminal
+        residual flush.
+
+        This is the Story 20.1 short-utterance / Clear-Comms regime, and it
+        is why the boundary is emitted from ``_flush_residual_and_eos`` as
+        well as from the in-loop flush: without it, 6 of 11 short-utterance
+        runs produced no measurable first-audio interval at all. Every
+        other real-talker fixture in this file uses step_count > 30, so
+        this branch is otherwise unexercised.
+        """
+        service, _ = _build_true_stream_service(registry, coordinator)
+        coordinator.play_dual_stream = AsyncMock(return_value=MagicMock())
+        recorder = _RecordingMetricsRecorder()
+
+        response, _hits = self._run_dispatch(
+            qapp, service, monkeypatch, 20, recorder,
+        )
+        assert response.success is True, (
+            f"short-utterance dispatch failed: {response.error_message}"
+        )
+        assert response.chunks_generated == 1, (
+            "step_count=20 must produce exactly one chunk (the residual "
+            f"flush); got {response.chunks_generated}"
+        )
+
+        chunk_emit = recorder.calls_for("ttfa_first_chunk_emit_ms")
+        assert len(chunk_emit) == 1, (
+            "ttfa_first_chunk_emit_ms must still fire exactly once when the "
+            f"in-loop threshold is never reached; got {len(chunk_emit)}"
+        )
+        assert chunk_emit[0][2]["path"] == "residual_flush", (
+            "the residual-flush emission must be distinguishable from the "
+            "threshold emission by the ``path`` tag, or the short-utterance "
+            "degeneration is invisible in the captured data"
+        )
+        assert chunk_emit[0][2]["frames"] == 20, (
+            "``frames`` must report the residual buffer depth so the "
+            "evidence can tell how far short of the threshold the "
+            f"utterance fell; got {chunk_emit[0][2]['frames']}"
+        )

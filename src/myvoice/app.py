@@ -2995,6 +2995,12 @@ class MyVoiceApp(QObject):
                             text_length=getattr(
                                 self, "_pending_progressive_text_length", None
                             ),
+                            # Story 20.1 (TTFA spike) — observational only.
+                            # Lets the coordinator tag its segment-4 boundary
+                            # metric with the same session id the producer-
+                            # side TTFA boundaries carry, so the Story 18.1
+                            # CSV joins without a positional heuristic.
+                            session_id=chunk.session_id,
                         )
                     )
                 except Exception:

@@ -3909,6 +3909,27 @@ class QwenTTSService(BaseService):
             pass
 
         def _run_talker() -> None:
+            # Story 20.1 (TTFA spike) segment boundary #1a — the talker
+            # thread has been scheduled and is about to enter the qwen-tts
+            # wrapper's preprocessing. The interval
+            # ``ttfa_talker_thread_start_ms - ttfa_generation_start_ms`` is
+            # MyVoice-side dispatch overhead (validation, model-ready check,
+            # streamer/worker construction, thread spawn); the interval to
+            # ``ttfa_first_decode_step_ms`` is the model's prompt-encode /
+            # prefill. Splitting them keeps segment 1 attributable.
+            # ``self._current_session_id`` is set by ``_generate_true_stream``
+            # immediately after ``create_session`` — read it rather than
+            # widening this method's signature (the integration suite
+            # monkeypatches ``_build_true_stream_talker`` with a 3-positional
+            # fake, so the signature is a compatibility surface).
+            _ttfa_sid = getattr(self, "_current_session_id", None)
+            metrics.record(
+                "ttfa_talker_thread_start_ms",
+                time.time() * 1000.0,
+                session_id=_ttfa_sid,
+            )
+            _ttfa_first_step_recorded = [False]
+            _ttfa_first_emit_recorded = [False]
             real_talker_generate = model.model.talker.generate
             real_talker_forward = model.model.talker.forward
             forward_invocations_box = [0]
@@ -3972,6 +3993,29 @@ class QwenTTSService(BaseService):
                 # _TalkerStreamComplete after generate returns.
                 if streamer._cancel_event.is_set():
                     return output
+                # Story 20.1 (TTFA spike) segment boundary #1b — the first
+                # forward invocation that actually produced codec ids. Every
+                # earlier invocation is prefill (``codec_ids is None`` per
+                # modeling_qwen3_tts.py:1665-1667), so this instant closes
+                # segment 1 (prefill / prompt-encode) and opens segment 2
+                # (talker time-to-N-frames). Guarded by a one-shot flag so
+                # the metric cannot perturb the per-step decode loop it
+                # measures.
+                if not _ttfa_first_step_recorded[0]:
+                    _ttfa_first_step_recorded[0] = True
+                    metrics.record(
+                        "ttfa_first_decode_step_ms",
+                        time.time() * 1000.0,
+                        session_id=_ttfa_sid,
+                        # forward_invocations_box is incremented at the
+                        # TOP of this function, so it already counts THIS
+                        # call. Subtract it to report the number of
+                        # codec_ids-free prefill forwards that preceded the
+                        # first decode step, which is what the tag name
+                        # claims. (Caught by the Story 20.1 review-response
+                        # test; the raw counter read 2 for a single prefill.)
+                        prefill_forward_calls=forward_invocations_box[0] - 1,
+                    )
                 step_buffer.append(codec_ids)
                 # Flush full chunks while threshold reached. ``while``
                 # because a single forward call shouldn't produce >1
@@ -3987,6 +4031,29 @@ class QwenTTSService(BaseService):
                     chunk_tensor = _torch_local.cat(
                         step_buffer[:chunk_with_lookahead], dim=0
                     )
+                    # Story 20.1 (TTFA spike) segment boundary #2 — the
+                    # ``chunk_size + lookahead``-th frame is in hand and the
+                    # first token chunk is about to reach the decoder worker.
+                    # Closes segment 2 (talker time-to-N-frames), opens
+                    # segment 3 (first decode). Recorded BEFORE the queue.put
+                    # so a full-queue backpressure block is attributed to the
+                    # consumer rather than to the talker.
+                    if not _ttfa_first_emit_recorded[0]:
+                        _ttfa_first_emit_recorded[0] = True
+                        metrics.record(
+                            "ttfa_first_chunk_emit_ms",
+                            time.time() * 1000.0,
+                            session_id=_ttfa_sid,
+                            frames=chunk_with_lookahead,
+                            # Emitted on BOTH emit paths so the tag is
+                            # always present and "absent" never has to be
+                            # read as "threshold". The residual variant in
+                            # _flush_residual_and_eos tags
+                            # path="residual_flush"; that distinction is
+                            # what makes the short-utterance degeneration
+                            # visible in the captured data.
+                            path="threshold",
+                        )
                     # Push to streamer.queue directly (bypass put/buffer).
                     # Backpressure: queue.put blocks if maxsize reached;
                     # HF generate yields the GIL between steps so the
@@ -4041,6 +4108,34 @@ class QwenTTSService(BaseService):
                 instead of presenting as a 60s join-timeout stall.
                 """
                 if buf:
+                    # Story 20.1 (TTFA spike) segment boundary #2, residual
+                    # variant. An utterance shorter than
+                    # ``chunk_size + lookahead`` frames (2.5 s of audio at
+                    # 12 Hz with the committed defaults) never reaches the
+                    # streamer's first-emit threshold, so the ONLY token
+                    # chunk it ever produces is this end-of-generation
+                    # residual. Recording the boundary here keeps the
+                    # four-segment decomposition defined for the short /
+                    # Clear-Comms utterance class instead of silently
+                    # dropping those runs; the ``path`` tag distinguishes
+                    # the two regimes in the CSV.
+                    #
+                    # Deliberately OUTSIDE the try below (review C1): that
+                    # handler exists to log a DROPPED final chunk, and on
+                    # the residual-only short class that chunk is the whole
+                    # utterance. An instrumentation call must not share a
+                    # failure domain with the audio dispatch it measures —
+                    # the three threshold-path boundaries are not inside
+                    # any audio try block either.
+                    if not _ttfa_first_emit_recorded[0]:
+                        _ttfa_first_emit_recorded[0] = True
+                        metrics.record(
+                            "ttfa_first_chunk_emit_ms",
+                            time.time() * 1000.0,
+                            session_id=_ttfa_sid,
+                            frames=len(buf),
+                            path="residual_flush",
+                        )
                     try:
                         residual_tensor = torch_mod.cat(buf, dim=0)
                         strm.queue.put(residual_tensor)
@@ -4222,6 +4317,21 @@ class QwenTTSService(BaseService):
             self._current_session_id = sid
 
         self._current_generation_task = asyncio.current_task()
+
+        # Story 20.1 (TTFA spike) segment boundary #0 — the t0 of the
+        # four-segment first-audio decomposition. Wall-clock ms so the CSV
+        # joins against the Story 18.1 producer/consumer metrics without a
+        # clock-base reconciliation step (18.1 evidence §2.1 precedent).
+        # ``start_time`` is the canonical "request accepted" instant that
+        # ``first_chunk_latency_ms`` is already measured relative to; this
+        # metric simply publishes it in absolute form. Fires once per
+        # TRUE_STREAM dispatch — overhead is a single ``metrics.record``.
+        metrics.record(
+            "ttfa_generation_start_ms",
+            start_time * 1000.0,
+            session_id=sid,
+            text_length=len(request.text or ""),
+        )
 
         try:
             # Validate text input (FR5).

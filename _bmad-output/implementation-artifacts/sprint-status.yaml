@@ -141,3 +141,32 @@ development_status:
   18-4-torch-compile-decoder-persistent-cache: done
   18-5-cuda-toolkit-triton-bundling: done
   epic-18-retrospective: done
+
+  # Epic 20 — First-Audio Latency (Phase ⊥-Polish-3)
+  # Added 2026-08-31 from Mary's TTFA research memo
+  # (`planning-artifacts/research/technical-qwen3-tts-ttfa-optimization-2026-08-31.md`).
+  # Epic 18 closed the PRODUCER-BOTTLENECK question (emit/drain 3.23x -> 0.670x). It did NOT
+  # close the TIME-TO-FIRST-AUDIO question: Story 18.4 measured compile at -7.46% on
+  # first_chunk_latency_ms because `compile_talker=False` (Story 16.8 forward-hook
+  # incompatibility) leaves the talker eager, and TTFA is talker-bound. Median TTFA is
+  # ~5,929 ms on RTX 5090 at the shipping config.
+  # Third-party evidence (andimarafioti/faster-qwen3-tts, MIT, same 12Hz model family,
+  # single-stream, RTX 4090) reports 4.1x RTF / 3.0x TTFA via torch.cuda.CUDAGraph +
+  # StaticCache, and independently reproduces our torch.compile null result
+  # ("dynamic KV-cache shapes defeat the compiler").
+  # Story 20.1 is a SPIKE — evidence + routed ADOPT/PORT/REJECT verdict, zero production
+  # behavior change. Gates the Epic 20 architecture pass so Winston scopes against measured
+  # 1.7B numbers rather than a published 0.6B table on different hardware.
+  # Epic 19 remains RESERVED for the architected-but-unregistered Lightning Tier scope
+  # (`architecture-streaming-acceleration-and-lightning-tier.md`) — do not reuse the number.
+  # Winston architecture pre-read 2026-08-31: 3 amendments applied. D-25 re-graded to
+  # non-issue (assertion never fires from the production call path); PORT split into
+  # PORT-a (vendor) / PORT-b (build); AC #2b added so the decomposition covers the
+  # product's worst case (short utterances + sub-16GiB adaptive-pre-buffer hosts), not
+  # only the 5090 long-form best case. Story remains ready-for-dev.
+  # 2026-08-31: RTX 3060 not reachable near-term (second PC, no hot-swap), so AC #2b is
+  # three-phased - 5090 cells + a DERIVED break-even producer rate close Gate B now;
+  # the 3060 confirmation is deferred and needs only Story 18.1's already-shipped
+  # env-var CSV capture (no new build). Gate B is not hardware-blocked.
+  epic-20: in-progress
+  20-1-ttfa-spike-faster-qwen3-tts: done

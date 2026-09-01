@@ -50,6 +50,7 @@ from myvoice.services.microphone_capture_service import MicrophoneCaptureService
 from myvoice.services.audio_mixer_service import AudioMixerService, MixerConfig
 from myvoice.services.streaming_chunk_buffer import StreamingChunkBuffer
 from myvoice.services.core.base_service import BaseService, ServiceStatus
+from myvoice.observability import metrics
 
 
 # Defaults for the streaming consumer-side smoothing layer (RTX 3060 +
@@ -303,6 +304,14 @@ class AudioCoordinator(BaseService):
         # bytes — so the Story 18.3/18.4 drain math sees what PyAudio
         # actually got, not what the producer fed in.
         self._streaming_buffer: Optional[StreamingChunkBuffer] = None
+
+        # Story 20.1 (TTFA spike) — segment-4 boundary state. Set per
+        # session in start_streaming_session; the one-shot flag makes
+        # ``ttfa_first_playback_write_ms`` fire exactly once per streaming
+        # session (the instant the consumer-side cushion releases the first
+        # payload towards the PyAudio write, i.e. "first audible sample").
+        self._streaming_metric_session_id: Optional[str] = None
+        self._ttfa_first_write_recorded: bool = False
 
         # Mic monitor state (for "Monitor Mic to Speakers" feature)
         self._mic_monitor_running = False
@@ -1116,6 +1125,7 @@ class AudioCoordinator(BaseService):
         channels: int = 1,
         sample_width: int = 2,
         text_length: Optional[int] = None,
+        session_id: Optional[str] = None,
     ) -> Dict[str, Optional[str]]:
         """
         Start streaming sessions on both audio services for immediate chunk playback.
@@ -1136,6 +1146,17 @@ class AudioCoordinator(BaseService):
                 `streaming_chunk_buffer.py` for the τ = T_a × (1/P − 1)
                 math. When None or VRAM ≥ 16 GiB, the buffer falls back
                 to the static 500 ms watermark.
+            session_id: Optional registry-issued session id, threaded from
+                the progressive-playback consumer purely so the Story 20.1
+                ``ttfa_first_playback_write_ms`` boundary metric carries the
+                same session tag the producer-side TTFA boundaries do, and
+                the Story 18.1 CSV joins without a positional heuristic.
+                **Observational only — no behavior reads it.** Defaults to
+                None, which every pre-existing caller supplies implicitly.
+                Re-armed on every ``start_streaming_session`` and cleared on
+                ``stop_streaming_session`` so a multi-generation playback
+                session emits the boundary once per session rather than once
+                per process.
 
         Returns:
             Dict with session IDs: {"monitor": id_or_none, "virtual": id_or_none}
@@ -1157,6 +1178,15 @@ class AudioCoordinator(BaseService):
             self._stream_last_chunk_bytes = 0
             self._stream_sample_width = sample_width
             self._stream_channels = channels
+
+            # Story 20.1 (TTFA spike) — arm the segment-4 boundary metric
+            # for this session. ``session_id`` is purely observational: it
+            # is threaded through from the progressive-playback consumer so
+            # ``ttfa_first_playback_write_ms`` joins the producer-side TTFA
+            # boundaries by session in the Story 18.1 CSV. Defaults to None
+            # (every pre-existing caller) — no behavior depends on it.
+            self._streaming_metric_session_id = session_id
+            self._ttfa_first_write_recorded = False
 
             # Adaptive-mode gate. Only engages when the caller supplied a
             # text_length AND the primary CUDA device's total VRAM is below
@@ -1307,6 +1337,31 @@ class AudioCoordinator(BaseService):
                     chunk_is_final, idx, len(ready_chunks),
                     self._stream_total_bytes,
                 )
+
+                # Story 20.1 (TTFA spike) segment boundary #4 — the
+                # consumer-side cushion has released its first payload and
+                # the PyAudio write is about to begin. This is the closest
+                # in-process proxy for "first audible sample": everything
+                # after it is device-buffer latency, which PortAudio does
+                # not expose. ``ttfa_first_playback_write_ms`` minus
+                # ``progressive_chunk_emit_ms`` (chunk_index=0) is segment 4
+                # — the static 500 ms watermark on >=16 GiB hosts, the
+                # adaptive tau_min pre-buffer below that threshold.
+                if not self._ttfa_first_write_recorded:
+                    self._ttfa_first_write_recorded = True
+                    _buf = self._streaming_buffer
+                    metrics.record(
+                        "ttfa_first_playback_write_ms",
+                        time.time() * 1000.0,
+                        session_id=self._streaming_metric_session_id,
+                        chunk_index=0,
+                        dispatched_bytes=len(dispatched) if dispatched else 0,
+                        buffer_mode=(
+                            "adaptive"
+                            if (_buf is not None and _buf.is_adaptive)
+                            else "static"
+                        ),
+                    )
 
                 chunk_result = await self._dispatch_chunk_to_services(
                     dispatched, chunk_is_final
@@ -1789,6 +1844,16 @@ class AudioCoordinator(BaseService):
             self._stream_last_write_ts = None
             self._stream_last_chunk_bytes = 0
             self._streaming_buffer = None
+
+            # Story 20.1 (TTFA spike) — disarm the segment-4 boundary here
+            # too, not only in ``start_streaming_session``. Arming in one
+            # place only means a playback session that spans multiple
+            # generations emits ``ttfa_first_playback_write_ms`` exactly
+            # once and tags every later generation with a stale session id —
+            # which is precisely the multi-utterance GUI case the deferred
+            # AC #2b Phase 3 capture will run on the RTX 3060.
+            self._ttfa_first_write_recorded = False
+            self._streaming_metric_session_id = None
 
             # Stop monitor streaming
             if self.monitor_service:

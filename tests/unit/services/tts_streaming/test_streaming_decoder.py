@@ -1051,3 +1051,84 @@ def test_existing_tests_discover_and_import_module():
     # Metrics helper imports cleanly via the bundled portable Python.
     from myvoice.observability import metrics as _metrics
     assert callable(_metrics.record)
+
+# ============================================================================
+# Story 20.1 Task 2.1 — ttfa_first_decode_complete_ms (segment-3 boundary).
+# ============================================================================
+
+
+def test_metrics_record_ttfa_first_decode_complete_only_for_first_chunk(
+    monkeypatch,
+):
+    """The segment-3 boundary closes when the FIRST token chunk has become
+    PCM. It must be one-shot per worker even though ``decode_chunk_latency_ms``
+    fires per chunk, and it must be instance state so two concurrent
+    sessions do not suppress each other's boundary.
+    """
+    streamer = _build_streamer(chunk_size=4, lookahead=2)
+    fake_post = _RecordingPostMutation()
+    fake_metrics = _RecordingMetrics()
+    monkeypatch.setattr(
+        "myvoice.observability.metrics.record", fake_metrics
+    )
+
+    streamer.queue.put([1, 2, 3, 4, 5, 6])
+    streamer.queue.put([5, 6, 7, 8, 9, 10])
+    streamer.queue.put([9, 10, 11, 12, 13, 14])
+    streamer.queue.put(END_OF_STREAM)
+
+    worker = StreamingDecoderWorker(
+        streamer=streamer,
+        decode_fn=_make_decoded_pcm,
+        post_mutation=fake_post,
+        session_id="abc-123",
+    )
+    worker.start()
+    worker.join(timeout=2.0)
+
+    boundary = [
+        c
+        for c in fake_metrics.calls
+        if c["metric_name"] == "ttfa_first_decode_complete_ms"
+    ]
+    latency = [
+        c
+        for c in fake_metrics.calls
+        if c["metric_name"] == "decode_chunk_latency_ms"
+    ]
+    assert len(latency) == 3, "per-chunk latency metric must be unchanged"
+    assert len(boundary) == 1, (
+        "ttfa_first_decode_complete_ms must fire exactly once per session, "
+        f"not once per chunk; got {len(boundary)}"
+    )
+    rec = boundary[0]
+    assert rec["session_id"] == "abc-123"
+    assert rec["tags"]["chunk_index"] == 0
+    assert rec["tags"]["pcm_samples"] > 0
+    # Absolute wall-clock ms (joins the other boundaries by subtraction),
+    # NOT the elapsed value decode_chunk_latency_ms carries.
+    assert rec["value"] > 1_600_000_000_000.0
+
+    # Instance state, not module state: a second worker re-arms.
+    streamer2 = _build_streamer(chunk_size=4, lookahead=2)
+    streamer2.queue.put([1, 2, 3, 4, 5, 6])
+    streamer2.queue.put(END_OF_STREAM)
+    worker2 = StreamingDecoderWorker(
+        streamer=streamer2,
+        decode_fn=_make_decoded_pcm,
+        post_mutation=_RecordingPostMutation(),
+        session_id="def-456",
+    )
+    worker2.start()
+    worker2.join(timeout=2.0)
+
+    boundary_all = [
+        c
+        for c in fake_metrics.calls
+        if c["metric_name"] == "ttfa_first_decode_complete_ms"
+    ]
+    assert len(boundary_all) == 2, (
+        "a second worker must emit its own segment-3 boundary; the one-shot "
+        "guard must be per-instance"
+    )
+    assert boundary_all[1]["session_id"] == "def-456"

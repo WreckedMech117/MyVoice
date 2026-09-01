@@ -105,6 +105,10 @@ class StreamingDecoderWorker:
         self._hardware = hardware
         self._chunk_size = streamer.chunk_size
         self._lookahead = streamer.lookahead
+        # Story 20.1 (TTFA spike) — one-shot flag for the segment-3
+        # boundary metric below. Instance state, not module state, so
+        # concurrent workers (one per session) never share it.
+        self._ttfa_first_decode_recorded = False
         # Same threading.Event the streamer was constructed with — Story 16.5
         # wires registry.cancel() to flip this event; both producer and
         # consumer observe the single flip.
@@ -194,6 +198,22 @@ class StreamingDecoderWorker:
         t_start = time.perf_counter()
         pcm_full = self._decode_fn(chunk)
         t_end = time.perf_counter()
+
+        # Story 20.1 (TTFA spike) segment boundary #3 — the first token
+        # chunk has been turned into PCM. Closes segment 3 (first decode)
+        # and opens segment 4 (consumer-side cushion). Wall-clock ms to
+        # join against the other TTFA boundaries; ``decode_chunk_latency_ms``
+        # below stays the per-chunk elapsed measure and is unchanged.
+        # One-shot: fires only for the first decoded chunk of a session.
+        if not self._ttfa_first_decode_recorded:
+            self._ttfa_first_decode_recorded = True
+            metrics.record(
+                "ttfa_first_decode_complete_ms",
+                time.time() * 1000.0,
+                session_id=self._session_id,
+                chunk_index=0,
+                pcm_samples=int(len(pcm_full)),
+            )
 
         metrics.record(
             "decode_chunk_latency_ms",
