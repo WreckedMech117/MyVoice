@@ -1,6 +1,6 @@
 # Story 20.4: Chunk-Size Retune + Adaptive-Cushion Fix (Phase ⊥-Polish-3)
 
-Status: in-progress — AC #1/#2/#3/#4/#6/#7 complete and verified. AC #5 round 1 FAILED (blocking); root cause found to be a splice-alignment bug deleting 15-19 ms of speech at EVERY chunk boundary on both geometries, plus a codec-state mismatch — both fixed in `streaming_decoder.py`, seam discontinuity 12.3x -> 1.3x the non-seam baseline. Round-2 audition is the only outstanding task (evidence §8b)
+Status: in-progress — AC #1/#2/#3/#4/#6/#7 complete and verified. AC #5 has FAILED TWICE: round 1 (cs10, pre-fix) and round 2 (cs10 + seam fix, worse — 3 blocking rows, defect class changed to clicks). Mechanism now identified: the overlap-add fades INTO the next chunk's cold-start region over exactly the window where that decode is worst (error 0.5-1.4x local RMS), and the two copies correlate at only 0.55 median there, not the 0.93 the fix was justified on. Round 3 isolates the stitching from the geometry (both arms cs25) and is the only outstanding task; outcome map pre-agreed in evidence §13.7. Nothing in src/ changed this pass.
 
 <!-- Phase tag: Phase ⊥-Polish-3. Fourth story of Epic 20 (First-Audio Latency). -->
 <!-- Source: Story 20.1 evidence §5 (Follow-up B) + §2.6 (Follow-up C), which are COUPLED. -->
@@ -201,6 +201,14 @@ Story 20.3's priming then warms the **new** key
   - [x] 7.5 Verified end-to-end on the shipped path: seam step **12.3× → 1.3×** the non-seam baseline; the blocking utterance's spectral seam resolved to baseline.
   - [x] 7.6 Round-2 fixture built with round 1's `cs25` files reused verbatim as a calibration anchor; round 1's evidence preserved intact.
 
+- [~] **Task 8 — Isolate and explain the click** (AC: #5; added 2026-09-01 after the round-2 failure)
+  - [x] 8.1 Built an LPC prediction-error click detector and validated it against the listener's 21 judged files. **It fails**: lowest flagged 22.0 vs highest clean 5081.4, not separable by any threshold. Two independent offline metrics now fail to reproduce the ear, most likely for want of an auditory-masking model. Recorded as a standing constraint: analysis explains mechanism here, it does not gate.
+  - [x] 8.2 Mechanism found. The blend ramps **into** the next chunk's cold-start region — measured decode error 0.5-1.4x local RMS in its first 128 samples, decaying monotonically — over exactly the 1024 samples where it is worst, while discarding the previous chunk's well-supported audio which stays good for 9,045 samples.
+  - [x] 8.3 Corrected a §11.4 error: the 0.93 correlation was measured over a window dominated by settled audio. **In the blend region it is 0.55-0.88 median, falling to 0.11**, with timing jitter to ±35 samples. The linear ramp's justification does not hold there.
+  - [x] 8.4 Round-3 isolating fixture built: both arms `cs25`, only the stitching differs; reference is round 1's exact files. Outcome map pre-agreed.
+  - [x] 8.5 Prediction recorded **before** the audition: the harm is geometry-independent, so the candidate should also show clicks, fewer than at cs10.
+  - [ ] 8.6 Round-3 audition — **OPERATOR**.
+
 ## Dev Notes
 
 ### Operator dependency
@@ -384,3 +392,4 @@ claude-opus-5[1m]
 - 2026-09-01 — Drafted by Winston from Story 20.1 Follow-ups B and C, shipped as one story because Story 20.1 found them coupled: `chunk_size = 10` worsens the sub-16 GiB cushion-to-talker ratio from 2.5× to 4.0×, so B alone would speed up large-VRAM hosts and leave the RTX 30xx tier pinned at the cap.
 - 2026-09-01 — Implemented. AC #1/#2/#3/#4/#7 complete and verified; AC #5 fixture generated and AC #6 tooling in place, both awaiting the operator run consolidated in evidence §8. Producer ratio re-measured at 0.619× (gate `< 1.0×`). Long-form TTFA 1,491 → 829 ms and short-form 1,409 → 784 ms on current code, with the short class off the residual-flush path 6/6. Sub-16 GiB cushion at `P = 0.5` derived at 10.00 s → 1.67 s, cushion/talker 4.00× → 0.67×.
 - 2026-09-01 — AC #6 measured and PASSED (long 976 ms / short 1,065 ms). AC #5 round 1 FAILED; investigation found the dominant cause was a splice-alignment bug deleting 370-463 samples of speech at every chunk boundary — present at the shipped chunk_size=25, not introduced by the retune — with a codec-state mismatch underneath it. Both fixed in `streaming_decoder.py` (exact splice + decoder-side overlap-add over the tail that was previously discarded); seam discontinuity 12.3x -> 1.3x the non-seam baseline, verified end-to-end on the shipped path. The consumer crossfade was ruled out by measurement and not swept. Round-2 fixture built; re-audition outstanding.
+- 2026-09-01 — AC #5 round 2 FAILED worse than round 1 (3 blocking rows; defect class tonal_distortion → click_or_discontinuity; s-022 regressed from clean to blocking). Root mechanism identified without another audition: the 1024-sample overlap-add fades into the next chunk's cold-start region over the window where that decode is worst, and the two copies correlate at 0.55 median there (min 0.11) with ±35-sample jitter — not the 0.93 the fix was justified on. A second offline metric (LPC click detector) was built and also failed to reproduce the listener's calls, so offline seam metrics are explicitly not gating this AC. Round-3 isolating fixture built (both arms cs25, stitching the only variable) with a pre-agreed outcome map. No source changed this pass.

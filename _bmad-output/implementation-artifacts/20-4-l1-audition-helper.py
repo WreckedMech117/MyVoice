@@ -14,11 +14,20 @@ fixture, truth table and results CSV are preserved unchanged - that round
 is a recorded result, and round 2 reuses its cs25 files verbatim as the
 reference arm so the two rounds share a calibration anchor.
 
-Round 2 (``20-4-perceptual-fixtures-r2/``, the default) auditions the seam
-fix: the reference arm is chunk_size=25 with the shipped pre-fix stitching,
-the candidate arm is chunk_size=10 with the fix. Which side of each pair is
-which is recorded in the truth table's ``_meta`` block, and the helper only
-consults it when unblinding at the end.
+Round 2 (``20-4-perceptual-fixtures-r2/``) auditioned the seam fix at
+chunk_size=10 and FAILED worse than round 1 - three blocking rows, and the
+defect class changed from tonal_distortion to click_or_discontinuity. It
+also conflated two variables (geometry AND stitching), so its clicks could
+not be attributed.
+
+Round 3 (``20-4-perceptual-fixtures-r3/``, the default) isolates. BOTH arms
+are chunk_size=25; the only difference is the stitching:
+    reference = shipped pre-fix   candidate = with the seam fix
+The seam fix is geometry-independent and changes the SHIPPING cs25 path, so
+this round answers whether it helps or harms what users hear today.
+
+Which side of each pair is which is recorded in the truth table ``_meta``
+block, and the helper only consults it when unblinding at the end.
 
 Pass a round as the second CLI argument (``r1``/``r2``) to re-run an
 earlier round.
@@ -67,8 +76,9 @@ ARTIFACTS_DIR = Path(__file__).resolve().parent
 ROUNDS = {
     "r1": ("20-4-perceptual-fixtures", "20-4-chunk-retune-audition.csv"),
     "r2": ("20-4-perceptual-fixtures-r2", "20-4-chunk-retune-audition-r2.csv"),
+    "r3": ("20-4-perceptual-fixtures-r3", "20-4-chunk-retune-audition-r3.csv"),
 }
-DEFAULT_ROUND = "r2"
+DEFAULT_ROUND = "r3"
 
 # Fallback for round 1, whose truth table predates the ``_meta`` block.
 _LEGACY_META = {
@@ -237,11 +247,12 @@ def main(listener_id: str, round_id: str = DEFAULT_ROUND) -> int:
         print("Already recorded: {} -- will skip.".format(sorted(already_done)))
     print()
     print("What you are listening FOR:")
-    print("  Round 1 found seam defects, and the cause turned out to be a")
-    print("  splice bug: every chunk boundary was deleting 15-19 ms of real")
-    print("  speech, on BOTH geometries. That is fixed, and the boundary is")
-    print("  now cross-faded rather than butt-spliced. So this round asks")
-    print("  whether the fix worked. The defect class is still at the SEAMS:")
+    print("  Both arms are the SAME chunk size this time. The only thing")
+    print("  that differs is how consecutive chunks are joined: one arm is")
+    print("  what ships today, the other has the seam fix. Round 2 could not")
+    print("  tell us which change caused its clicks because it moved two")
+    print("  things at once; this round moves one.")
+    print("  The defect class is still at the SEAMS:")
     print("    - a click or tick partway through a word")
     print("    - a momentary discontinuity or 'stutter' in a held vowel")
     print("    - prosody that resets mid-phrase, as if two takes were cut")

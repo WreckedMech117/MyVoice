@@ -23,16 +23,26 @@ Story 20.1 found them coupled.
 | #2 | cushion policy + the T_a overshoot | **DONE** — §2 |
 | #3 | coupling re-derived at `chunk_size = 10` | **DONE** — §3 |
 | #4 | OFR-E producer ratio re-measured | **DONE, PASSES** — §4 |
-| #5 | NFR3 perceptual audition | **round 1 FAILED (§9)** → cause found and fixed (§11) → **round 2 needs operator** |
+| #5 | NFR3 perceptual audition | **round 1 FAILED (§9)**, **round 2 FAILED worse (§12)** → mechanism identified (§13) → **round 3 (isolating) needs operator** |
 | #6 | GUI capture on the reachable tier | **DONE, PASSES** — operator run, §6.3 |
 | #7 | no regressions | **DONE, zero new failures** — §9.1, §11.12 |
 
-> **Reading order.** This file is an append log across three passes, so the
-> section numbers are chronological rather than sorted: §0-§10 are the
-> original implementation pass, **§9 (second one, near the end)** is the
-> round-1 audition failure the coordinator recorded, **§8b** is the current
-> operator hand-off, and **§11** is the seam investigation and fix. Where §5,
-> §6 and §8 have been overtaken, their headers say so and point forward.
+> **Reading order.** This file is an append log, so section numbers are
+> chronological rather than sorted. §0-§10 are the original implementation
+> pass. Then, in order of events: **§9 (second one)** round-1 audition
+> FAILED; **§11** the seam investigation and fix; **§12** round-2 audition
+> FAILED worse; **§13** the click mechanism, a metric that failed its own
+> validation, and the round-3 isolating design. **§13.7 is the current
+> operator task.** Where §5, §6, §8 and §8b have been overtaken, their
+> headers say so and point forward.
+
+**Status of the seam work, after two failed auditions.** §11's fix removed a
+real and measured defect (15-19 ms of speech deleted at every chunk boundary,
+present in the shipping build) but §12 showed it made what users HEAR worse,
+not better. §13 identifies why: the blend fades into the worst-decoded audio
+in the stream, over exactly the window where it is worst. Round 3 isolates the
+stitching from the geometry so the fix can be judged on its own; the outcome
+map is pre-agreed in §13.7.
 
 **The §9 failure had a cause, and it was not the one either candidate
 hypothesis proposed.** Every decoder chunk boundary was deleting 15-19 ms of
@@ -911,7 +921,7 @@ per-chunk defect.
 
 ---
 
-## §8b. Operator hand-off — round 2 (the ONLY outstanding task)
+## §8b. Operator hand-off — round 2 (SUPERSEDED; round 2 ran and failed, see §12. The current task is §13.7)
 
 **One task, ~10 minutes, listening only.** No GPU work, no app launches, no
 generation. The 14-WAV round-2 fixture is already built and verified.
@@ -1261,4 +1271,258 @@ the truth table's `_meta` block; round 1 remains re-runnable via
 > stashed pre-Story-20.4 tree. Every sweep in this file (and in Stories 20.2 /
 > 20.3) runs the surfaces as separate invocations, which is why it had not
 > surfaced. Not this story's to fix; worth a ticket.
+
+
+---
+
+## §12. AC #5 round 2 — **FAILED, and worse than round 1**, 2026-09-01
+
+Candidate = `cs10` + the §11 seam fix. Reference = round 1's exact `cs25` WAVs
+(pre-fix, byte-for-byte).
+
+| utt | cs25 ref | cs10+fix candidate | preferred | verdict |
+|---|---|---|---|---|
+| l-020 | click | click | cs25 | shared |
+| l-021 | none | **click** | cs25 | **BLOCKING** |
+| m-020 | none | **click** | cs25 | **BLOCKING** |
+| m-021 | none | none | equivalent | clean |
+| s-020 | none | none | equivalent | clean |
+| s-021 | none | none | equivalent | clean |
+| s-022 | none | **click** | cs25 | **BLOCKING** |
+
+**Preference: cs25 4 — cs10+fix 0 — equivalent 3.** Blocking rows went 1 → 3.
+
+### The listener data is trustworthy
+
+The reference arm was the identical round-1 files, so it doubles as a
+consistency check: **6 of 7 match** across rounds. Only `l-021` differs
+(`tonal_distortion` → `none`). The result is not listener noise.
+
+### Two things got worse, and one changed character
+
+- `s-022` — a **short** fixture, clean on both arms in round 1 — is now
+  blocking. The seam work introduced a defect where none existed.
+- The candidate's defect class changed from `tonal_distortion` (round 1) to
+  `click_or_discontinuity` (round 2). The fix traded a spectral artefact for an
+  amplitude one, and made it *more* frequent.
+
+### The offline metric and the ear disagree
+
+§11 measured seam step falling to 0.85× the non-seam baseline at `cs10` —
+"statistically indistinguishable from any other point". The listener hears
+clicks on 4 of 7. **The seam-step metric does not capture what is audible**, so
+it cannot be used to clear this gate on its own.
+
+### The experiment conflated two variables — a design error in the round-2 setup
+
+The candidate arm changed **both** `chunk_size` (25 → 10) **and** the stitching
+(shipped trim → aligned splice + 1024-sample overlap-add), against a reference
+that had neither. The result therefore cannot attribute the clicks to either
+change. That is a flaw in how the round was specified, not in how it was run.
+
+**This matters beyond the retune**: the seam fix is geometry-independent and
+alters the *shipping* `cs25` path too. On this evidence we cannot say whether it
+improves or harms what users hear today.
+
+### Next experiment — isolate
+
+Audition **`cs25` + seam fix** against **`cs25` shipped**. One variable.
+
+- candidate clean or better ⇒ the fix is good and `chunk_size = 10` is the
+  problem ⇒ keep the fix, retreat the geometry
+- candidate shows clicks ⇒ the fix itself is harmful at any geometry ⇒ revert
+  it, and the 19.3 ms deletion needs a different remedy
+
+Neither `DEFAULT_CHUNK_SIZE = 10` nor the seam fix should reach a release until
+that separation is made.
+
+---
+
+## §13. Round-3 prep — the mechanism, and a metric that failed its own test
+
+Two questions were put after the §12 failure: **is there a plausible mechanism
+by which the 1024-sample overlap-add itself produces an audible click**, and
+**can an isolating experiment attribute it**. Both are answered here from
+analysis. No fix was changed in this pass, and no width was touched.
+
+### 13.1 First, the uncomfortable one: my metrics do not track the ear
+
+§11 cleared the fix on a seam-step metric that fell to 0.85× the non-seam
+baseline. The listener then heard clicks on 4 of 7. Before proposing any
+mechanism, I built a second, better-motivated detector and checked whether it
+could have predicted the audition — an **LPC prediction-error spike**, fitted
+on clean audio *before* each seam and applied forward, which is the standard
+de-clicking arrangement and is far closer to what an ear flags than a
+single-sample amplitude step.
+
+It was run on the **exact WAVs the listener judged**, at exactly known seam
+positions, across all three conditions (`cs25` pre-fix, `cs10` pre-fix,
+`cs10`+fix) — 21 files, 8 flagged by the listener and 13 clean.
+
+```
+  FLAGGED by listener (n=8):  6628.1, 1021.3, 541.2, 220.1, 105.2, 95.5, 60.0, 22.0
+  CLEAN per listener  (n=13): 5081.4, 327.1, 246.2, 65.8, 63.5, 55.9, 40.6, ...
+
+  lowest FLAGGED = 22.0   highest CLEAN = 5081.4
+  separable by one threshold: NO
+```
+
+**It fails, and it fails badly** — the single highest score in the whole set
+(`s-022` at `cs10` pre-fix, 5081) is a file the listener called *clean*, while
+files scoring 22–105 were flagged.
+
+The reason is almost certainly **auditory masking**, which neither metric
+models: `s-022` is "Bit, bat, bot, but, bet", and a broadband spike that lands
+inside a plosive burst is inaudible, while a much smaller one in a sustained
+vowel is not.
+
+**Conclusion, and it is a constraint on everything below: no offline seam
+metric available here can clear this gate.** Two independent metrics, on the
+same 21 files, both fail to reproduce the listener ranking. Analysis is
+therefore used in this section for **mechanism only** — to explain and to
+predict *direction* — and every number below is offered as explanation, never
+as evidence of audibility. The coordinator's instruction not to tune against
+the metric again is adopted as a standing rule for this story.
+
+> A methodological caveat on this subsection, recorded rather than buried:
+> the detector flagged 4 of 21 files (`!GEOM`) where the residual length did
+> not satisfy the codec identity, meaning my seam-position model for those
+> files was wrong and some scores were measured away from a real seam. That
+> weakens the detector further — it does not rescue it.
+
+### 13.2 The answer: yes, and the mechanism is specific
+
+**The overlap-add blends *into* the worst-decoded audio in the stream, over
+exactly the window where it is worst.**
+
+Measuring the RMS difference between the two decodes of the *same* audio, as a
+function of position into the next chunk's decode, normalised by local RMS:
+
+| fixture | 0–128 | 128–256 | 256–512 | 512–1024 | 1024–2048 | 2048–4096 | 4096–8192 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| l-020 cs10 | **0.824** | 0.668 | 0.581 | 0.495 | 0.355 | 0.367 | 0.279 |
+| l-020 cs25 | **0.711** | 0.525 | 0.489 | 0.393 | 0.306 | 0.247 | 0.236 |
+| m-020 cs25 | **0.539** | 0.490 | 0.484 | 0.401 | 0.368 | 0.356 | 0.248 |
+| m-021 cs10 | **1.163** | 1.402 | 1.244 | 1.172 | 0.639 | 0.601 | 0.171 |
+
+The next chunk's decode is **worst at its very head** — error of 0.5 to 1.4×
+the local signal RMS in the first 128 samples — and improves monotonically
+with position. That is the same phenomenon as the 555-sample edge loss: the
+vocoder has no left context, so its first output samples are the least
+supported.
+
+**The 1024-sample blend covers the first four bands — the worst four.** The
+ramp gives that copy monotonically increasing weight, reaching 100 % exactly
+where it is still poor, and the stream then continues on it.
+
+And the previous chunk's audio, which is *well* supported there, remains
+available for **9,045 samples** past the splice — far past where the next
+chunk settles (~2048–4096). The fix discards good audio in order to fade into
+bad audio, and it does so at every seam.
+
+### 13.3 A correction to §11.4 that made this worse than I reported
+
+§11 justified the blend on a measured correlation of **0.93** between the two
+decodes. That figure was computed over a 12,000-sample window — dominated by
+the settled region, not the region the blend actually mixes.
+
+Re-measured **on the blend region only** (the first 1024 samples), at
+per-seam resolution:
+
+| fixture | seams | best lag (median / min / max) | correlation (median / min) |
+|---|---:|---|---|
+| l-020 cs10 | 21 | 2 / −34 / +22 | 0.875 / **0.131** |
+| l-020 cs25 | 8 | 2 / 0 / +24 | 0.691 / **0.136** |
+| m-020 cs10 | 4 | −2 / −8 / +12 | 0.614 / 0.322 |
+| m-021 cs10 | 4 | 5 / −35 / +21 | 0.550 / **0.111** |
+
+**Median correlation in the blend region is 0.55–0.88, not 0.93, and the worst
+seams fall to 0.11.** There is also real timing jitter — best lag wanders up to
+±35 samples (±1.5 ms), which at speech formant frequencies is a substantial
+phase error.
+
+So the premise §11 relied on — "both sides of the blend are the same moment in
+time", justifying a linear ramp as amplitude-preserving — **is not true in the
+region that matters**. Cross-fading two signals correlated at 0.11–0.55 with
+±1.5 ms of relative jitter is a recipe for comb filtering and for rendering a
+transient twice at partial amplitude. On a plosive-dense short fixture with
+few seams but sharp attacks, that is exactly a click — which is what `s-022`
+became.
+
+### 13.4 Why the defect class changed, which the mechanism has to explain
+
+| | pre-fix | with the fix |
+|---|---|---|
+| what happens at a seam | one butt splice: a localised discontinuity, plus 15–19 ms of speech deleted | 42.7 ms of the stream replaced by a time-varying mix of a good copy and a poor, partly-decorrelated, slightly time-shifted copy |
+| defect character | localised, spectral — `tonal_distortion` | distributed, broadband, transient-like — `click_or_discontinuity` |
+| scaling | per seam | per seam, but each event is 42.7 ms wide instead of instantaneous |
+
+This is the shape of the round-1 → round-2 change: the fix **traded a
+localised defect for a distributed one and made each event much longer**,
+which is consistent with more rows flagged and with `s-022` — clean on both
+arms in round 1 — becoming blocking.
+
+### 13.5 What this predicts for round 3, stated before the audition
+
+On this mechanism, the harm is **geometry-independent**: it is a property of
+the blend, and `cs25` has the same blend at every seam, merely 2.5× fewer of
+them. So the prediction is that **the round-3 candidate will also carry
+clicks, fewer of them than at `cs10`** — which by the pre-agreed outcome map
+means the fix is harmful at any geometry and should be reverted.
+
+It is recorded here **before** the audition so the result is a genuine test of
+it rather than something rationalised afterwards. If the candidate comes back
+clean, this mechanism is wrong and §13.2/§13.3 need re-examining.
+
+### 13.6 If it is reverted, the 19.3 ms deletion still needs a remedy
+
+Reverting restores a real, measured defect: 15–19 ms of speech deleted at
+every seam (§11.3), present in the shipping build. The mechanism above also
+points at what a better remedy looks like, and it is **not** a different
+crossfade width:
+
+* **Prefer the previous chunk's audio wherever both exist.** It is decoded
+  with full left context and stays good for 9,045 samples past the splice;
+  the next chunk's head is the worst audio in the stream. Splicing at
+  `chunk_size*1920` with *no* blend already fixes the deletion — §11.6 showed
+  that alone worsens the step metric, but the step metric has now failed its
+  own validation, so that result carries no weight and the option is open
+  again.
+* **If a blend is used at all, place it after the next chunk has settled**
+  (~2048–4096 samples in), not at the splice — using the previous chunk's
+  good audio to cover the cold-start region entirely. This is a different
+  design, not a width, and it is what a width sweep would never have found.
+* **Carrying codec state across chunks (§11.9)** removes the cause of both
+  the edge loss and the decode divergence, and would make the blend
+  unnecessary. Still out of scope, and its case is now stronger again.
+
+None of these is implemented in this pass.
+
+### 13.7 Round-3 fixture
+
+`20-4-perceptual-fixtures-r3/`, built by `20-4-regen-audition-fixture-r3.py`.
+
+| | |
+|---|---|
+| reference | `cs25`, shipped pre-fix stitching — **round 1's exact files**, third audition, still the calibration anchor |
+| candidate | `cs25`, **with** the seam fix |
+| isolates | the stitching only; both arms are `chunk_size = 25` |
+| randomisation | fresh seed (20040903) |
+
+`DEFAULT_CHUNK_SIZE` and the seam fix are **unchanged**. The candidate's
+geometry is set in-process via the harness rebinder — the same mechanism
+Story 20.1 used for its sweep — so there is no source-tree edit to revert, and
+the generator's preflight asserts the committed constants are still `(10, 5)`
+before it will run.
+
+Rounds 1 and 2 are untouched. The helper takes `r1` / `r2` / `r3` and defaults
+to `r3`; `12_Story_20.4_AC5_Audition.bat` follows.
+
+**Pre-agreed outcome map** (from the coordinator, recorded so the audition
+decides the story rather than being interpreted after the fact):
+
+* **candidate clean or better** → the fix is good and `chunk_size = 10` is the
+  problem → keep the fix, retreat the geometry (`cs15` or `cs25`).
+* **candidate shows clicks** → the fix is harmful at any geometry → revert it,
+  and the deletion needs one of the §13.6 remedies.
 
