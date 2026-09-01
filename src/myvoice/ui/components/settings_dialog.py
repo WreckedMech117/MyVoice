@@ -710,6 +710,30 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(theme_group)
 
+        # Story ui-1: Window Behavior Group — surfaces `minimize_to_tray`,
+        # which governs both closeEvent and the title-bar minimize button.
+        behavior_group = QGroupBox("Window Behavior")
+        behavior_layout = QVBoxLayout(behavior_group)
+
+        close_behavior_form = QFormLayout()
+        self.close_behavior_combo = QComboBox()
+        self.close_behavior_combo.addItem("Minimize to system tray", True)
+        self.close_behavior_combo.addItem("Quit MyVoice", False)
+        close_behavior_form.addRow("When closing the window:", self.close_behavior_combo)
+        behavior_layout.addLayout(close_behavior_form)
+
+        close_behavior_help = QLabel(
+            "Minimize to system tray keeps MyVoice running in the background - "
+            "click the tray icon to bring the window back, or right-click it and "
+            "choose Exit to quit. This also controls the title bar's minimize button."
+        )
+        close_behavior_help.setWordWrap(True)
+        close_behavior_help.setProperty("class", "description-label")
+        close_behavior_help.setStyleSheet("color: #888; font-style: italic; margin-top: 4px;")
+        behavior_layout.addWidget(close_behavior_help)
+
+        layout.addWidget(behavior_group)
+
         # Advanced Settings Group
         advanced_group = QGroupBox("Advanced")
         advanced_layout = QFormLayout(advanced_group)
@@ -806,6 +830,13 @@ class SettingsDialog(QDialog):
             transparency_percent = max(20, min(100, transparency_percent))
             self.transparency_slider.setValue(transparency_percent)
             self.transparency_value_label.setText(f"{transparency_percent}%")
+
+            # Story ui-1: Close-button behavior (minimize_to_tray)
+            close_behavior_index = self.close_behavior_combo.findData(
+                bool(self.current_settings.minimize_to_tray)
+            )
+            if close_behavior_index >= 0:
+                self.close_behavior_combo.setCurrentIndex(close_behavior_index)
 
             log_level_index = self.log_level_combo.findText(self.current_settings.log_level)
             if log_level_index >= 0:
@@ -907,6 +938,11 @@ class SettingsDialog(QDialog):
             # Story 7.3: Window Transparency (FR41)
             # Convert percentage (20-100) to opacity (0.2-1.0)
             self.current_settings.window_transparency = self.transparency_slider.value() / 100.0
+
+            # Story ui-1: Close-button behavior (minimize_to_tray)
+            close_behavior_value = self.close_behavior_combo.currentData()
+            if close_behavior_value is not None:
+                self.current_settings.minimize_to_tray = bool(close_behavior_value)
 
             self.current_settings.log_level = self.log_level_combo.currentText()
 

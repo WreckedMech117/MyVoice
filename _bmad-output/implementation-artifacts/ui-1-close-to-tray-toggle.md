@@ -1,6 +1,6 @@
 # Story ui-1: Close-to-Tray Toggle (and the minimize button that ignores it)
 
-Status: ready-for-dev
+Status: review
 
 <!-- Out-of-epic UI story, following the `tooling-N` naming precedent for work that sits outside an epic. -->
 <!-- Source: Commander, 2026-09-01 — "when I close from the X the app just minimizes to taskbar. The Settings/Interface menu does not have a toggle for that." -->
@@ -107,21 +107,21 @@ gets its numbers
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Surface the setting** (AC: #1)
-  - [ ] 1.1 Add the control to `_create_ui_tab` (`settings_dialog.py:677-724`), matching the tab's existing widget idiom rather than inventing a new one.
-  - [ ] 1.2 Load from and save to `minimize_to_tray` through the dialog's existing path.
-  - [ ] 1.3 Confirm the live `app_settings` object the window reads is the one updated, so no restart is needed.
+- [x] **Task 1 — Surface the setting** (AC: #1)
+  - [x] 1.1 Add the control to `_create_ui_tab` (`settings_dialog.py:677-724`), matching the tab's existing widget idiom rather than inventing a new one.
+  - [x] 1.2 Load from and save to `minimize_to_tray` through the dialog's existing path.
+  - [x] 1.3 Confirm the live `app_settings` object the window reads is the one updated, so no restart is needed.
 
-- [ ] **Task 2 — Fix the minimize button** (AC: #3)
-  - [ ] 2.1 Replace the `hasattr` guard with a read of `minimize_to_tray`.
-  - [ ] 2.2 Handle the case where the parent has no such setting wired — fall back to `showMinimized()`, the safer of the two.
-  - [ ] 2.3 Tests for both branches.
+- [x] **Task 2 — Fix the minimize button** (AC: #3)
+  - [x] 2.1 Replace the `hasattr` guard with a read of `minimize_to_tray`.
+  - [x] 2.2 Handle the case where the parent has no such setting wired — fall back to `showMinimized()`, the safer of the two.
+  - [x] 2.3 Tests for both branches.
 
-- [ ] **Task 3 — Verify close behavior** (AC: #2, #4)
-  - [ ] 3.1 Tests for closeEvent under both toggle states.
-  - [ ] 3.2 Test that `MYVOICE_AUTO_QUIT_ON_CLOSE=1` still forces a real quit regardless of the toggle.
+- [x] **Task 3 — Verify close behavior** (AC: #2, #4)
+  - [x] 3.1 Tests for closeEvent under both toggle states.
+  - [x] 3.2 Test that `MYVOICE_AUTO_QUIT_ON_CLOSE=1` still forces a real quit regardless of the toggle.
 
-- [ ] **Task 4 — Regression sweep** (AC: #5)
+- [x] **Task 4 — Regression sweep** (AC: #5)
 
 ## Dev Notes
 
@@ -161,16 +161,85 @@ default would silently alter behavior for existing users who are happy with it.
 
 ### Agent Model Used
 
-_(to be filled by dev agent)_
+claude-opus-5[1m]
 
 ### Completion Notes List
 
-_(to be filled by dev agent)_
+- **AC #1** — Added a **Window Behavior** group to the Interface tab
+  (`_create_ui_tab`) holding a two-item `QComboBox` labelled *"When closing the
+  window:"* with options *Minimize to system tray* / *Quit MyVoice* (item data
+  `True` / `False`), plus a wrapped helper line naming the tray icon as the way
+  back and noting that the setting also governs the minimize button. Hydration
+  goes through `_load_current_settings` (`findData(bool(minimize_to_tray))`) and
+  persistence through `_save_current_settings` — the dialog's existing path; no
+  new persistence mechanism. No restart is needed: the dialog emits
+  `settings_changed` → `MainWindow._on_settings_changed` / `update_settings`
+  rebind `self.app_settings`, and both `closeEvent` and the title bar read that
+  live object. Pinned by `TestLiveSettingsUpdate`.
+- **AC #2** — `closeEvent`'s decision was already correct; no source change.
+  Both toggle states are now covered by tests that invoke the *unwrapped*
+  `closeEvent` (see the conftest note below), asserting the tray branch returns
+  before the confirm dialog and the quit branch still shows it.
+- **AC #3** — Replaced the always-true `hasattr` guard in
+  `CustomTitleBar._on_minimize_clicked` with a new `_should_minimize_to_tray()`
+  helper that reads `parent.app_settings.minimize_to_tray`. It returns `False`
+  (taskbar — the safer branch) when the parent lacks `_minimize_to_tray`, when
+  `app_settings` is `None`, or when the field is absent. Regression verified by
+  temporarily restoring the old implementation: two of the new tests fail
+  against it and pass against the fix.
+- **AC #4** — Measurement mode untouched. `MYVOICE_AUTO_QUIT_ON_CLOSE=1` is
+  parametrized over both toggle states and asserted to set `_force_quit`, skip
+  `_minimize_to_tray`, skip the confirm dialog, and accept the event. A
+  companion test asserts the bypass does **not** leak when the env var is unset.
+- **Default unchanged** — `AppSettings.minimize_to_tray` still defaults to
+  `False`, pinned by `test_default_setting_value_is_unchanged`.
+- **Test-harness note** — `tests/conftest.py` installs an autouse fixture that
+  wraps `MainWindow.closeEvent` and flips `_force_quit` whenever the confirm
+  dialog would fire. That bypass (the sanctioned one from
+  `memory/main_window_close_confirm_dialog_in_tests.md`) makes the
+  minimize-vs-confirm decision unobservable, so the new closeEvent tests capture
+  `MainWindow.closeEvent` at **import time** — before any fixture patches the
+  class — and call it directly with a `QCloseEvent`. The dialog itself is not
+  weakened.
+- **Pre-existing test updated** — `test_title_bar_minimize_calls_minimize_to_tray`
+  asserted the buggy behavior (it constructed a `MainWindow` with no
+  `app_settings` and expected the tray branch). It now sets
+  `minimize_to_tray=True` explicitly, and a sibling
+  `test_title_bar_minimize_uses_taskbar_when_tray_disabled` covers the other
+  branch. This is the AC #3 note "the current test suite cannot distinguish
+  them" being resolved.
+- **Verification (AC #5)** — `tests/ui`: **734 passed, 7 failed**. The 7 are
+  identical in identity to the pre-existing set documented in
+  `20-2-warm-path-compile-priming-evidence.md` (2 × `clear_comms_tab`,
+  1 × `minimize_to_tray_default_is_true`, 4 × `voice_library_widget`); the count
+  was 7 before this change too. `tests/settings tests/unit/ui`: 600 passed,
+  30 failed + 4 errors — the exact pre-existing counts recorded in that same
+  evidence file. New file `tests/ui/test_close_to_tray_toggle.py`: 23 passed.
+- **Not modified**: `src/myvoice/app.py` and
+  `src/myvoice/services/qwen_tts_service.py` (concurrently owned by another
+  agent) — this story needed neither. `main_window.py` and `app_settings.py`
+  needed no change either.
 
 ### File List
 
-_(to be filled by dev agent)_
+**Modified**
+- `src/myvoice/ui/components/settings_dialog.py` — Window Behavior group on the
+  Interface tab + load/save wiring for `minimize_to_tray`
+- `src/myvoice/ui/components/custom_title_bar.py` — new
+  `_should_minimize_to_tray()`; `_on_minimize_clicked` reads the setting instead
+  of the always-true `hasattr` guard
+- `tests/ui/test_system_tray_integration.py` — updated the title-bar minimize
+  test to the new contract; added the taskbar-branch sibling
+
+**Added**
+- `tests/ui/test_close_to_tray_toggle.py` — 23 tests covering AC #1–#4
 
 ## Change Log
 
 - 2026-09-01 — Drafted by Winston from Commander's report that the X minimizes with no Interface toggle to change it. Scope widened by one defect found while grounding the story: the title-bar minimize button guards on `hasattr`, which is always true, so it ignores the setting and its `showMinimized()` branch is unreachable. Shipping the toggle without that fix would produce a control that appears not to work.
+- 2026-09-01 — Implemented. Interface tab gained a **Window Behavior** group
+  with a close-behavior combo bound to `minimize_to_tray`; the title-bar
+  minimize button's dead `hasattr` guard was replaced with a real read of the
+  setting (falling back to `showMinimized()`). `closeEvent` and the
+  `MYVOICE_AUTO_QUIT_ON_CLOSE` bypass were left unchanged and are now pinned by
+  tests. Status -> review.

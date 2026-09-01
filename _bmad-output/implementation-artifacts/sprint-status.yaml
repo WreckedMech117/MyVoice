@@ -199,4 +199,4 @@ development_status:
   # is always True, so the minimize button ALWAYS tray-minimizes and its
   # showMinimized() branch is dead code. Shipping the toggle without that fix
   # would give the user a control that appears not to work.
-  ui-1-close-to-tray-toggle: ready-for-dev
+  ui-1-close-to-tray-toggle: review
