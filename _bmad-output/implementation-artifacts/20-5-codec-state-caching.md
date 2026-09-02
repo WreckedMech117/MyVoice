@@ -1,6 +1,6 @@
 # Story 20.5: Codec State Caching Across Chunks (Phase ⊥-Polish-3)
 
-Status: in-progress — Phase 1 GO; Phase 2 COMPLETE and verified; Phase 3 round 1 MIXED (2 blocking rows, cause named pre-audition); Phase 4 neutralises that cause; round 2 fixture built, audition NOT yet run
+Status: **done** — 2026-09-01. Phase 1 GO; Phase 2 implemented and verified on the real model; Phase 3 round 1 MIXED (2 blocking rows, cause named before the round ran); Phase 4 neutralised that cause, scoped; round 2 **unanimous PASS** (10–0–4, zero blocking). AC #1–#4 and #6 met; **AC #5 deliberately NOT met** — it defers the chunk-size question to its own story, which is the correct outcome. See Follow-ups.
 
 <!-- Phase tag: Phase ⊥-Polish-3. Fifth story of Epic 20. -->
 <!-- Source: Mary's research Finding 1 (re-filed as audio-quality per 20-4 evidence §11.9); Story 20.4 §11/§13/§17. -->
@@ -146,6 +146,85 @@ been met
 **Then** the accumulated Epic 20 suites pass with zero new failures, and the tree's known
 pre-existing failures are unchanged in count and identity
 
+## Acceptance-criteria outcomes
+
+| AC | verdict | where |
+|---|---|---|
+| #1 — Phase 1 bench, the gate | **MET — GO on both thresholds** | Phase 1 evidence §2 |
+| #2 — Phase 1 cost report | **MET** | Phase 1 evidence §3 |
+| #3 — Phase 2 on the real decode path | **MET** | Phase 2 evidence §1–§5, §9 |
+| #4 — Phase 3, the ear decides | **MET — round 2 unanimous PASS** | Phase 2 evidence §"Phase 3 audition", §"Phase 4 audition round 2" |
+| #5 — the prize is re-measured, not assumed | **NOT MET, deliberately — half of it is a separate story** | see below |
+| #6 — no regressions | **MET** | Phase 2 evidence §6 |
+
+### AC #1 — MET. GO on both thresholds, by a wide margin.
+
+Edge loss `1920·N − 555` → **`1920·N`, +0 samples** against the whole-sequence decode
+(threshold: zero). Head NRMSE 115–144 % → **0.56–0.82 %** in bf16, 0.03–0.05 % in fp32
+(threshold: < ~5 %). Correlation 0.165–0.959 med / 0.009 min → **1.0000 med / 0.9916 min**.
+Lag jitter −1200…+1165 → **0 samples, every seam**. Error-by-position **flat**, not
+head-weighted. Full 2³ sub-stack ablation reported rather than one aggregate: the 555 is
+**100 % transposed conv**; all three sub-stacks are necessary and none is sufficient. `src/`
+untouched during Phase 1 (`git diff --stat -- src/` empty).
+
+### AC #2 — MET.
+
+37 tensors, **≤ 2.52 MiB per session**, KV cache self-bounded by `sliding_window=72` and
+therefore constant in utterance length (re-measured on the shipped path: 2.49 MiB, identical
+after 4 and after 10 chunks). Strictly **per session** — one plain state object, no module- or
+class-level storage. Expressible as a **wrapper, not vendoring** — so a story, not an
+architecture pass. CUDA-graph interaction named and measured: **the feared trade does not
+exist**, because `_compiled_forward` is only reachable through `forward_optimized` and the
+production path goes `decode → chunked_decode → forward`. Story 18.4's win comes from the
+talker and code-predictor compiles, which this story does not touch.
+
+### AC #3 — MET.
+
+State carried in `_build_true_stream_decode_fn`'s decode path, per session, reset on session
+start, cancel and completion — all three pinned by tests, including one that makes `reset()`
+raise and requires the cancel post to happen anyway, so the **Story 16.5 cooperative-cancel
+chain is unaffected**. Geometry held at `cs25`; the lookahead and the post-decode trim
+untouched.
+
+Both smoothing layers were **re-evaluated on evidence, not assumed**:
+
+- the Story 20.4 1,024-sample seam blend became an **identity** (inputs differ by NRMSE
+  0.0037–0.0046 median against 0.22–0.56 before; bit-identical in fp64) — left in place, and
+  leaving it is what kept Phase 2 to one variable;
+- the 64-sample `StreamingChunkBuffer` crossfade became the **dominant remaining error term**
+  (2.6×/3.3× worse against ground truth) — left in place for round 1 so the coupling could be
+  *attributed*, then neutralised in Phase 4 once the audition confirmed it.
+
+### AC #4 — MET. Round 2 unanimous.
+
+Round 1 (state caching vs ships-today): candidate preferred **5–1** wherever the seam was
+exposed, byte-identical zero-seam control passed, **2 single-seam rows blocked** on a defect
+this story's own evidence had already named with numbers before the round ran. Round 2 (the
+crossfade neutralised, one variable): **candidate cleaner 10/14, equivalent 4/14, blocking 0,
+shared 0; preference 10 – 0 – 4.** The crossfade arm flagged a click on *every* trial
+containing a seam; the no-crossfade arm on none. Both round-1 blockers resolved.
+
+The AC's variance requirement was met by **removing the confound rather than averaging over
+it**: both files in every pair are decoded from one talker run, so within a pair the wording,
+prosody and duration are identical to the sample and the round was never limited to detecting a
+large effect. Two takes per utterance sampled the content lottery. Predictions were recorded
+before both rounds; round 2's Q5 — the one written to be able to embarrass the diagnosis — held.
+
+### AC #5 — NOT MET, and it must not be marked green.
+
+AC #5 has two clauses. One is done; the other is deliberately *not* this story's work.
+
+- **Done:** Story 20.4's closure (§17) has been amended to record that its stated
+  precondition is met, with a pointer to this story's evidence.
+- **Not done, by design:** *"the chunk-size question is reopened as its **own** story, not
+  smuggled in here."* No chunk-size measurement was taken, no geometry was retuned, and none
+  should have been. `DEFAULT_CHUNK_SIZE` is still 25.
+
+So the prize this story exists to unlock has **not** been re-measured. It has been made
+*reachable*. Marking AC #5 met would assert a latency result nobody has measured on the new
+code — precisely the assumption the AC was written to forbid. It stays open, and it is
+discharged by follow-up F2 below, in the order given there.
+
 ## Tasks / Subtasks
 
 - [x] **Task 1 — Phase 1 bench** (AC: #1, #2) — chunked-with-state vs whole-sequence, error attributed per sub-stack, cost and CUDA-graph interaction reported. **No `src/` changes.** ✅ `git diff --stat -- src/` empty.
@@ -154,7 +233,8 @@ pre-existing failures are unchanged in count and identity
 - [x] **Task 4 — Phase 3 round 1** (AC: #4) — paired-take fixture + helper built, prediction pre-registered, audition run. **MIXED**: candidate preferred 5-1 wherever the seam was exposed, byte-identical zero-seam control passed, but 2 single-seam rows blocked on a defect this story's own evidence had already named.
 - [x] **Task 5 — Regression** (AC: #6) — 923 streaming / dispatch / progressive-playback / trip-wire unit tests pass (47 of them new). Integration 166 pass / 4 fail; a combined unit+integration process shows 9, all of them cross-test pollution. Every failure verified pre-existing and unchanged in count and identity by stashing the whole change and re-running.
 - [x] **Task 6 — Phase 4** (AC: #3 follow-through) — neutralise the 64-sample `StreamingChunkBuffer` crossfade, **gated on producer-declared continuity** so SENTENCE_STREAM (where its discontinuities are real) is untouched. One variable.
-- [ ] **Task 7 — Phase 3 round 2** (AC: #4) — fixture + helper built, prediction pre-registered. **Audition not yet run — awaiting Commander.**
+- [x] **Task 7 — Phase 3 round 2** (AC: #4) — fixture + helper built, prediction pre-registered, audition run. **UNANIMOUS PASS**: candidate cleaner 10/14, equivalent 4/14, blocking 0, shared 0; preference 10–0–4. Both round-1 blockers resolved. Q5 held — the single-seam rows improved as much as the 8–9-seam ones, so the per-boundary diagnosis is confirmed rather than assumed.
+- [x] **Task 8 — Close-out** — story status, AC outcomes, Story 20.4 §17 amendment, sprint status, and the canonical follow-up list with the F1-before-F2 sequencing.
 
 ## Dev Notes
 
@@ -200,6 +280,55 @@ was built for a retune that did not ship, and this would be its real justificati
 - `_bmad-output/implementation-artifacts/20-4-chunk-size-and-adaptive-cushion-evidence.md` §11 (the splice/edge-loss discovery), §13.1 (why offline metrics do not gate), §13.2-13.3 (error profiles, correlation correction), §17 (chunk-size closure and what reopens it), §11.9 (re-filing Finding 1 as quality)
 - `python310/Lib/site-packages/qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py:170-192` (the zero left-pad), `:195+` (transposed conv), `:475+` (causal transformer), `:1256` (`decode_streaming` — not stateful)
 - `src/myvoice/services/qwen_tts_service.py` `_build_true_stream_decode_fn`; `src/myvoice/services/tts_streaming/streaming_decoder.py` (the seam fix)
+
+## Follow-ups — the canonical list
+
+Everything Story 20.5 opened or left open, in one place, with cost and value. **F1 must
+precede F2.** Nothing here was started.
+
+| id | item | cost | worth |
+|---|---|---|---|
+| **F1** | **Drop the 5-frame lookahead and the post-decode trim** | small — deletes code; one audition | removes the +7–10 ms/chunk Phase 2 tax outright, **and** gains 5 talker steps of TTFA on its own. **Blocks F2.** |
+| **F2** | **Reopen `chunk_size`** (discharges AC #5) | one latency sweep + one NFR3 audition | the actual prize: `cs10` measured 829 ms against `cs25`'s 1,491 ms — **662 ms** — and the harm that killed it is now gone at the cause |
+| **F3** | Retire the Story 20.4 1,024-sample decoder seam blend | ~free if bundled into an audition already running | removes dead weight from the hot path. **No quality argument either way** — it is now an identity. Do not spend a round on it alone. |
+| **F4** | Single-pass state capture in `codec_state_cache` | medium — more code, more risk, no behavioural change | recovers the decode-time tax *without* touching the trim contract. **Only relevant if F1 is rejected**; F1 makes it moot. |
+| **F5** | Persist captured tokens in the audition fixtures | trivial | lets a later round reuse *exact* content instead of a fresh realisation. Round 2 could not reuse round 1's audio for this reason. |
+| **F6** | RTX 3060 confirmation | one bench run on the ship-target card | **outstanding from an earlier story, not created here.** Every Story 20.5 number is from a 5090. The per-session cost is bounded and tiny, and the decode tax is launch-overhead dominated, so a slower card should behave the same or better in relative terms — but that is reasoning, not measurement. |
+| **F7** | qasync call-site audit | unscoped | **outstanding from Story 20.3, not created here.** Recorded so it does not fall off the list. |
+
+### F1 before F2 — the sequencing, and why it is not obvious
+
+`codec_state_cache.py`'s geometry section documents that the **two-pass decode exists only to
+serve the 5-frame lookahead**: it decodes `chunk_size` frames on the live state, snapshots,
+decodes the `lookahead` frames on the snapshot, then restores — because state must be committed
+at the *splice*, not at the end of the window, or the next chunk would resume five frames in its
+own future. Drop the lookahead and that collapses to a single pass.
+
+**So the Phase 2 decode-time regression is caused by the lookahead, not by state caching.**
+Phase 1's bench measured carrying state as 21–30 % *faster*; it decoded 25 frames in one call
+with no lookahead. The shipped path pays for two calls per chunk on a decoder that is
+launch-overhead dominated at these tensor sizes. That is the whole of the +7–10 ms.
+
+Two consequences, and they point the same way:
+
+1. **The tax scales with chunk count, which is the exact variable F2 varies.** On l-020 (231
+   frames) it is ~10 chunks at `cs25` and ~24 at `cs10` — roughly 85 ms against ~204 ms of
+   aggregate decode across a 19-second utterance. A chunk-size story run before F1 would be
+   measuring *geometry plus a known tax that grows with the thing under test*. That is the
+   two-variable confound that cost Story 20.4 its round-2 audition, and it is avoidable for
+   free by ordering the work.
+2. **F1 moves TTFA in the direction F2 is chasing**, independently of geometry: the first chunk
+   fires after 25 talker steps instead of 30. Doing it first means F2's sweep starts from a
+   clean, faster baseline rather than crediting the geometry with a win the lookahead removal
+   would have delivered anyway.
+
+One correction to the magnitude, for the record. The aggregate figures above are
+*producer-throughput* cost, not TTFA cost — TTFA sees the two-pass tax exactly once, ~7–10 ms,
+at any geometry, and ~200 ms spread across a 19-second utterance is ~1 % of real time against a
+producer ratio of 3.23×. So the tax does **not** meaningfully erode the 662 ms latency prize in
+absolute terms. The ordering argument does not rest on the magnitude: it rests on F1 being a
+**known, removable confound on F2's independent variable**, and on F1 being a TTFA win in its
+own right. Both hold regardless of how small the tax turns out to be.
 
 ## Dev Agent Record
 
@@ -524,6 +653,8 @@ Q5 is stated first-class deliberately: a round that cannot embarrass its own hyp
 worth running.
 
 ## Change Log
+
+- 2026-09-01 — **Story closed.** Phase 3 round 2 was a unanimous pass (candidate cleaner 10/14, equivalent 4/14, blocking 0, preference 10–0–4); the crossfade arm flagged a click on every seam-carrying trial and the no-crossfade arm on none. Q5 held — the single-seam rows improved as much as the 8–9-seam ones, so the per-boundary diagnosis is confirmed rather than assumed; Q4 was falsified in the good direction (predicted `equivalent` modal at 7–12, came in at 4 with candidate-cleaner modal at 10). Documentation close-out only, no code changed: AC outcomes recorded (#1–#4 and #6 met; **#5 deliberately NOT met** — no chunk-size measurement was taken and none should have been), Story 20.4 evidence §17 amended additively to record that its reopening condition is met (its four rounds and verdicts stand unchanged), sprint-status 20-5 → done, and the canonical follow-up list written with the **F1-before-F2** sequencing: the two-pass decode exists only to serve the 5-frame lookahead, so the +7–10 ms/chunk tax belongs to the lookahead and scales with chunk count — the exact variable a chunk-size retune varies.
 
 - 2026-09-01 — Phase 3 round 1 run: MIXED. State caching preferred 5-1 wherever the seam was exposed and the zero-seam control passed, but two single-seam rows blocked on the 64-sample consumer crossfade — a defect this story's own evidence had named, with numbers, before the round ran. Phase 4 neutralises it, **gated on producer-declared continuity** so SENTENCE_STREAM (real discontinuities) and the stateless fallback keep it; batch never reaches it. Story 20.4's 1,024-sample seam blend stays: *nearly* inert is not *provably* inert. Round 2 fixture built (both arms state-cached, crossfade the only variable, difference 100 % confined to 63 samples per boundary, zero-seam control byte-identical) and the prediction pre-registered. **Audition not run; awaiting Commander.**
 - 2026-09-01 — Phase 2 implemented and verified on the real model; Phase 3 fixture + helper built and the prediction pre-registered. State is carried per session by a wrapper that re-walks the decoder traversal (no vendoring); the `nn.ConvTranspose1d` bias correction is carried and pinned by its own test; the regression bar is bit-exactness rather than a tolerance; the trip-wire now pins the module chain. `cs25`, the lookahead and the trim are untouched. Both smoothing layers measured: the 20.4 seam blend is now an identity (left in), the 64-sample consumer crossfade is now the dominant error term (left in, flagged as the primary follow-up with its own audition). Decode time regresses +8.6 ms/chunk — the price of keeping the lookahead — which is 0.5 % of a chunk's audio duration and is recoverable by follow-up 2. **Audition not run; awaiting Commander.**

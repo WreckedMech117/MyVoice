@@ -614,17 +614,17 @@ python310\python.exe _bmad-output\implementation-artifacts\20-5-phase2-verify.py
 
 ## 8. Follow-ups this story deliberately did not take
 
-Updated after round 1 and Phase 4. Item 1 was promoted into the story — the
-audition made it blocking rather than optional.
+> **Superseded — the canonical list, with costs and the F1-before-F2 sequencing
+> constraint, now lives in `20-5-codec-state-caching.md` under "Follow-ups — the
+> canonical list".** Kept here only as a pointer so two lists cannot drift apart.
 
-| # | item | status | evidence |
-|---|---|---|---|
-| 1 | ~~Remove the 64-sample consumer crossfade~~ | **DONE in Phase 4** — gated on producer-declared continuity, so SENTENCE_STREAM is untouched | §4.2, §9, round 1 |
-| 2 | Drop the 5-frame lookahead and the post-decode trim | open — recovers the +8.6 ms/chunk *and* fires the first chunk 5 talker steps earlier | §5.2, Phase 1 §4.1 |
-| 3 | Remove the 1,024-sample decoder seam blend | open — *nearly* inert, not provably inert (worst-case seam 8.7e-02 in bf16), so it stays until it has its own round | §4.1, §9.5 |
-| 4 | Reopen `chunk_size` | open — AC #5's own story, gated on the audition passing | AC #5 |
-| 5 | Single-pass state capture | open — recovers the decode-time cost without touching the trim contract | §5.2 |
-| 6 | Persist captured tokens in the audition fixtures | new — would let a later round reuse *exact* content instead of a fresh realisation | §10.2 |
+Short form: **F1** drop the lookahead + trim (removes the +7–10 ms/chunk tax, which is the
+lookahead's doing, not state caching's — and gains 5 talker steps of TTFA); **F2** reopen
+`chunk_size`, which discharges AC #5 and **must come after F1**; **F3** retire the now-inert
+1,024-sample decoder seam blend, cheap if bundled into a round already running; **F4**
+single-pass state capture (moot if F1 lands); **F5** persist fixture tokens; **F6** RTX 3060
+confirmation and **F7** the qasync call-site audit, both outstanding from earlier stories
+rather than created here.
 
 ---
 

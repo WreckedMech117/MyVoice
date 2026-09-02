@@ -2073,6 +2073,10 @@ substantive reasons are stronger:
 
 ### The chunk-size question is now closed, with its boundary known
 
+> **Superseded in part — see the AMENDMENT at the end of this file (2026-09-01).**
+> The closure below stands as recorded; its stated reopening condition has since been
+> met by Story 20.5.
+
 - `cs10` — regresses, clearly (round 2, 3 blocking, never preferred)
 - `cs15` — indistinguishable from `cs25`, with one blocking row (round 4)
 - `cs25` — ships
@@ -2087,3 +2091,51 @@ Codec state caching across chunks (Mary's Finding 1, re-filed as an audio-qualit
 item in §11.9). It removes the residual rather than masking it. With long-form
 takes reliably clean, the geometry question becomes separable and worth asking
 again — with real headroom, since the harm that killed cs10 is the same residual.
+
+### AMENDMENT 2026-09-01 — the reopening condition above has been MET
+
+*Added by Story 20.5. Nothing above this line is changed: the four rounds, the 28
+judgements, and the `cs10` / `cs15` / `cs25` verdicts all stand exactly as recorded. They
+were correct for the code as it was then. What has changed is the code.*
+
+Story 20.5 built the thing the previous paragraph names. Codec state caching across chunks
+is implemented, verified and auditioned:
+
+- the residual is **removed at the cause, not masked** — head NRMSE at the seams
+  0.406 → **0.0078**, correlation **1.0000**, lag jitter **0 samples on every seam**,
+  error-by-position **flat** rather than head-weighted, single-chunk decode bit-exact
+  against `Decoder.forward`;
+- the deterministic 555-sample edge loss reaches **zero** — `decode(N) == 1920·N` for every
+  chunk after the first;
+- two blinded NFR3 rounds followed. Round 1 (state caching vs what shipped) preferred the
+  candidate **5–1** wherever the seam was exposed, and surfaced one coupling: with the cold
+  start gone, the 64-sample consumer crossfade became the loudest thing left. Round 2, after
+  scoping that crossfade to discontinuous producers, was a **unanimous pass** —
+  candidate cleaner **10 of 14**, blocking **0**, preference **10 – 0 – 4**.
+
+**So the precondition is satisfied.** "Long-form takes reliably clean" is now measured, not
+hoped for: in round 2 the seam-carrying trials flagged a click on the crossfade arm and
+**none** on the shipped arm.
+
+Three things a reader of §17 should carry forward, because they change how the reopened
+question must be asked:
+
+1. **The take-to-take variance finding above is not repealed — it is sidestepped.** Story
+   20.5's rounds decode *both arms of every pair from one talker run*, so within a pair the
+   wording, prosody and duration are identical to the sample. Story 20.4 could not do that,
+   because changing `chunk_size` changes what the streamer emits and therefore what the
+   talker samples. **A chunk-size story still cannot**, so §17's warning about needing many
+   samples per condition remains live for that question specifically.
+2. **Reason 3 above — "the binding constraint is not geometry"** — was right, and is now
+   spent. The codec-state residual was the binding constraint; it is gone. Geometry is next
+   in line, which is exactly why the question is worth reopening.
+3. **Do not reopen it yet.** Story 20.5's implementation carries a decode-time tax
+   (+7–10 ms per chunk) that exists *only* to serve the 5-frame lookahead, and it scales with
+   chunk count — the very variable a retune moves. Retiring the lookahead first removes that
+   confound and independently gains 5 talker steps of TTFA. See Story 20.5's follow-up list,
+   F1 before F2.
+
+Evidence: `20-5-codec-state-caching.md`, `20-5-codec-state-caching-evidence.md` (Phase 1
+mechanism), `20-5-phase2-evidence.md` (implementation, both audition rounds, the crossfade
+finding). Raw judgements: `20-5-state-cache-audition.csv`,
+`20-5-state-cache-audition-r2.csv`.
