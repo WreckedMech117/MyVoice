@@ -679,11 +679,21 @@ def main() -> int:
     for noisy in ("myvoice", "myvoice.metrics", "transformers", "urllib3"):
         logging.getLogger(noisy).setLevel(logging.ERROR)
 
+    # Story 20.6: the lookahead is no longer a constant this banner can
+    # restate. It is retired to 0 whenever the state-carrying decode path is
+    # live and left at DEFAULT_LOOKAHEAD otherwise, so print what will
+    # actually be resolved. A banner that says "lookahead=5" while the run
+    # measures 0 is precisely the class of trap Story 20.1 SS5.4 found in
+    # production.
+    from myvoice.services.tts_streaming import resolve_streamer_geometry
+    _resolved_cs, _resolved_la = resolve_streamer_geometry()
     print(
-        "TTFA harness: utterance={u} chunk_size={c} lookahead=5 precision={p} "
-        "compile={k} runs={r} (+{w} warmup)".format(
+        "TTFA harness: utterance={u} chunk_size={c} lookahead={l} "
+        "precision={p} compile={k} runs={r} (+{w} warmup)".format(
             u=args.utterance,
             c="committed" if args.chunk_size is None else args.chunk_size,
+            l="{} (retired)".format(_resolved_la) if _resolved_la == 0
+              else _resolved_la,
             p=args.precision, k=args.compile, r=args.runs, w=args.warmup,
         )
     )

@@ -602,3 +602,176 @@ This does not argue for reverting. The change removes real complexity, halves
 per-chunk decode, and is perceptually inert on 16 blinded trials. It argues for
 retiring the TTFA claim rather than the code, and for treating the per-frame
 talker regression as its own question.
+
+---
+
+## 11. The kill-switch A/B — harness built, prediction recorded, awaiting the run
+
+Approved by Commander after §10's verdict. **No production code changes in this
+pass**; this is a measurement harness and a pre-registered prediction.
+
+### 11.1 Why the 20.3 comparison could not settle it, and this can
+
+`1,353 → 1,364 ms` spans two stories, and there is no post-20.5, pre-20.6 GUI
+baseline to split it: Story 20.5 verified headless, and the last GUI capture
+predates codec state caching. Anything between those two captures — driver, OS,
+thermals, model pin, background load — is inside the delta and cannot be
+separated from the code.
+
+`MYVOICE_CODEC_STATE_CACHE=0` restores the **pre-20.5 geometry entire**:
+stateless decode, lookahead 5, the post-decode trim and the Story 20.4 seam
+blend. On today's code, today's machine, today's driver, in one sitting. That
+is a control the 20.3 numbers cannot be.
+
+That the kill switch does all four things at once is a direct consequence of
+AC #2. Had the lookahead been retired globally, the switch would restore only
+the decode and there would be **no way to reach the pre-20.5 geometry on a
+shipped binary at all** — the control this experiment depends on would not
+exist. The constraint that shaped the story is what makes the follow-up
+possible.
+
+### 11.2 What was built
+
+| artifact | what it does |
+|---|---|
+| `15_Story_20.6_KillSwitch_Baseline.bat` | arm A capture. Sets the kill switch for the whole shell, so the preflight verifies the same environment the app sees. Six launches, launch 1 a declared throwaway. Writes `20-6-killswitch-r0N.csv`. |
+| `20-6-killswitch-manifest.json` | written by the launcher at capture time: the geometry actually resolved in that process. Provenance, not a flag. |
+| `20-6-compare-arms.py` | the two-arm comparison, and a `--check` mode the launcher runs after every launch. |
+
+**Three preflights, and the third is the inverse of `13_`'s.** `13_` asserts
+`resolve_streamer_geometry() == (25, 0)`; `15_` asserts `== (25, 5)`. So an
+operator cannot capture the shipping arm under a kill-switch filename and
+compare a run against itself — which would silently "prove" a null result. The
+comparator refuses to run if both arms declare the same lookahead, and refuses
+if a declared arm disagrees with its capture manifest. Both guards tested.
+
+**Separate glob.** `20-6-killswitch-r*.csv`. The `20-6-gui-r*.csv` files are arm
+B and are not touched. (`13_` would have refused to run here anyway — its
+preflight demands `(25, 0)`.)
+
+### 11.3 Two things the old aggregator hid, now surfaced
+
+1. **Segment 1a was computed and never printed.** `20-4-aggregate-gui.py`
+   calculates `seg1a_dispatch_ms` and omits it from its output table, so a
+   dispatch stall lands in TOTAL with nothing naming it. That is how the two
+   spoiled generations reached the headline: `r04` long TOTAL 2,172.9 ms and
+   `r05` long TOTAL 3,052.4 ms, against a clean 1,364 ms. The comparator makes
+   1a a first-class column, prints `TOTAL-1a` beside `TOTAL`, and **excludes**
+   any generation with 1a > 200 ms, naming it and the reason. Clean dispatches
+   measure 2.0 ms; the two spoiled ones measured 840.2 and 1,382.6 — the
+   threshold sits in a gap three orders wide, so it is not a tuning knob.
+
+   Run against the existing capture, the checker flags exactly the two
+   generations §10 identified, at exactly those values.
+
+2. **Per-frame talker cost needs the arm's own divisor.** Segment 2 ends at the
+   first-emit threshold, which is `chunk_size + lookahead` — **30** frames in
+   arm A, **25** in arm B. Dividing both by the same number mis-attributes the
+   entire experiment, so each arm's lookahead is declared, echoed, and
+   cross-checked against the manifest. Long class only: a short utterance never
+   reaches either threshold and first-emits from `residual_flush`, where the
+   frame count is the whole utterance and varies per take. The tool says so
+   rather than dividing by a number it does not have.
+
+### 11.4 The prediction, recorded before the run
+
+Arm B is already captured. Excluding the two contaminated generations, its clean
+long class is **n = 3**, segment 2 median **1,125.2 ms** over a threshold of 25
+frames = **45.01 ms/frame** (spread 44.71–48.04).
+
+The two hypotheses make numerically separated predictions for **arm A's segment-2
+median**, which is therefore the discriminator:
+
+| | arm A ms/frame | arm A segment 2 (× 30 frames) |
+|---|---|---|
+| **P1 — the arms agree** | ≈ 45.0 | **≈ 1,350 ms** |
+| **P2 — the regression is real** | ≈ 38.2 | **≈ 1,147 ms** |
+
+They are **203 ms apart**, against a within-arm spread of ~83 ms on the clean
+long rows. Separable, but not by a wide margin at n = 3–5 — which is a reason to
+protect the sample from semaphore contamination, not a reason to discount the
+result.
+
+* **P1 (arms agree, within ±5 %).** Per-frame talker cost is unchanged by 20.5 +
+  20.6. Then neither story caused the 38.2 → 45.2 ms shift against Story 20.3,
+  that shift is cross-session drift, **the 20.3 baseline is not comparable and
+  should stop being used as one.** 20.5 + 20.6 are TTFA-neutral through the GUI:
+  the five frames saved are real and worth ~225 ms at this per-frame cost, but
+  they did not show against a baseline that had already moved underneath them.
+
+* **P2 (arm A ≈ 38 ms/frame, arm B ≈ 45).** The regression is real and caused by
+  20.5 or 20.6 on current code. F2 (the chunk-size reopen) is **blocked**: its
+  premise — cs10 at 829 ms against cs25 at 1,491 ms — was measured
+  pre-state-caching and would need re-establishing before that story is worth
+  running at all.
+
+* **P3 — THE ONE THAT EMBARRASSES *MY* DIAGNOSIS.** P1 and P2 both assume
+  segment 2 is gated on the first-emit threshold, so that arm B's segment 2
+  should be **shorter than arm A's by exactly five frames' worth**. The
+  comparator computes that residual explicitly:
+
+  ```
+  predicted B - A on segment 2 = -5 x (arm A ms/frame)
+  residual = observed - predicted
+  ```
+
+  If **P1 holds but the residual is large**, my model of segment 2 is wrong —
+  first emit is not actually gated on the frame threshold, and something else
+  (talker backpressure against the bounded queue, or the consumer) sets it. That
+  would invalidate the "five fewer talker steps" mechanism this whole story was
+  built on, independently of whether anything regressed, and it would mean the
+  ~190 ms in the story's Context was never reachable by this route.
+
+* **P4.** Arm B faster per frame than arm A. No hypothesis predicts it. Treat it
+  as a labelling failure first and check the manifest provenance line before
+  believing it.
+
+**The audio will sound slightly worse in arm A.** That is the pre-20.5 decode —
+cold codec state at every chunk, masked by the trim and the blend. It is the
+control working, not a regression, and the launcher says so before the operator
+starts.
+
+### 11.5 The semaphore problem, and what would fix it properly
+
+Requirement: make the wait louder without changing production behaviour in this
+pass. Two things done, one recommended and deliberately not done.
+
+**Done — the launcher shouts.** A banner block before the run, a reminder in
+every per-launch header, and an explicit note that launch 1's wait is longer
+because the kill switch moves `decode_window_frames` 25 → 30 and pays its own
+cold compile.
+
+**Done — the operator finds out immediately.** After every launch the script
+runs `20-6-compare-arms.py --check` on that launch's CSV and prints, per
+generation, the dispatch time and `ok` / `CONTAMINATED`, followed by a boxed
+warning naming the milliseconds involved. Previously an operator could spend all
+six launches before learning that two were spoiled; now they learn after the
+one that spoiled and can correct on the next. The launcher also reports a
+spoiled-launch count at the end.
+
+**Recommended, NOT done (production change, out of scope for this pass).** The
+real fix is that the app should not let a generation start while priming holds
+the semaphore in a measurement context — or, better, that the "Preparing TTS
+engine" indicator should disable the Generate button rather than merely
+appearing next to it. Today the indicator is advisory and the request queues
+silently behind priming, which is a user-facing latency trap and not only a
+measurement one: any user who types and hits Generate during startup gets a
+first generation that is up to 1.4 s slower for reasons they cannot see. Worth
+its own story; the telemetry to justify it now exists in two captures.
+
+### 11.6 Running it
+
+```
+15_Story_20.6_KillSwitch_Baseline.bat
+```
+
+Same procedure, same utterances, same profile as `13_`. Six launches, launch 1
+declared throwaway. Wait for "Preparing TTS engine" every time. The launcher
+runs the comparison itself at the end; to re-run it by hand:
+
+```
+python310\python.exe _bmad-output\implementation-artifacts\20-6-compare-arms.py
+```
+
+Defaults are already the two arms (`--a-glob 20-6-killswitch-r*.csv
+--a-lookahead 5`, `--b-glob 20-6-gui-r*.csv --b-lookahead 0`).
