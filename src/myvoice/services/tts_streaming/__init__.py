@@ -26,6 +26,7 @@ from myvoice.services.tts_streaming.torch_runtime import (
     enable_tf32_and_cudnn_benchmark,
     engage_compile_optimizations,
     is_ampere_or_newer,
+    resolve_streamer_geometry,
     resolve_tts_precision,
 )
 from myvoice.services.tts_streaming import compile_cache
@@ -44,4 +45,7 @@ __all__ = [
     "resolve_tts_precision",
     "engage_compile_optimizations",
     "compile_cache",
+    # Story 20.6 — the single derivation point for the conditional
+    # (chunk_size, lookahead) the compile path keys on. Append-only.
+    "resolve_streamer_geometry",
 ]

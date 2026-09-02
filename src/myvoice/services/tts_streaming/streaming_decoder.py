@@ -128,6 +128,40 @@ State lifecycle (AC #3): ``decode_fn.reset()`` is called on session start, on
 cancel, and on completion. It is strictly per-session — the decode_fn is
 built per dispatch and owns its own state object — so concurrent generations
 never share codec state.
+
+Story 20.6 — the lookahead is retired, and this file did not change
+-------------------------------------------------------------------
+Carried state IS the priming the 5-frame future lookahead existed to
+re-establish, so on the state-carrying path the dispatch layer now sets
+``streamer.lookahead = 0`` (``CodecTokenStreamer.apply_codec_state_geometry``,
+driven by the same ``decode_fn.carries_codec_state`` declaration this worker
+reads). No code below moved, because the arithmetic already degenerates
+correctly and *says so*:
+
+  * ``is_full_window`` requires ``self._lookahead > 0``, so with the lookahead
+    retired it is False for every chunk. The splice/trim branch is never
+    entered and ``pcm_segment = pcm_full`` — **the worker posts the whole
+    decode, untrimmed**, which is exactly right: with no overlap there is
+    nothing to trim.
+  * ``next_overlap`` is therefore never set, so ``_pending_overlap`` stays
+    ``None`` and ``_apply_overlap_add`` returns its input. **The Story 20.4
+    seam blend is removed by construction, not by a second decision.** It
+    cross-fades a retained lookahead tail into the next chunk's head; with no
+    lookahead there is no tail. Story 20.5 had already measured it as inert
+    under carried state — the two sides of the blend were bit-identical — so
+    nothing audible is given up here either.
+  * ``_codec_state_frames += n_frames``, which still mirrors
+    ``StatefulCodecDecoder.__call__``'s own commit rule exactly: built with
+    ``window_frames == commit_frames`` it likewise commits ``n_frames`` on
+    every chunk, and its two-pass snapshot/restore collapses to a single pass.
+  * the length identity is unaffected — the first decode of a session still
+    pays the 555-sample edge loss and every later one returns exactly
+    ``1920*N`` — so ``geometry_ok`` and the ``decode_geometry_unverified``
+    trip-wire keep working at the new window.
+
+The STATELESS path keeps ``lookahead = 5`` and therefore keeps every branch
+below: independent renderings of overlapping token spans are still all it
+produces, and the trim plus the blend are the only seam handling it has.
 """
 
 import queue
@@ -272,6 +306,40 @@ class StreamingDecoderWorker:
         self._carries_codec_state = bool(
             getattr(decode_fn, "carries_codec_state", False)
         )
+        # Story 20.6 — the one silent-wrong-audio path the conditional
+        # retirement introduces, closed here.
+        #
+        # A state-carrying decode_fn is built for ONE window width and commits
+        # at the splice implied by it. Pair it with a streamer emitting a
+        # DIFFERENT width and nothing raises: a decoder built for 25 handed a
+        # 30-frame chunk sees ``n_frames >= window`` fail its lookahead guard,
+        # commits all 30, and the next chunk resumes five frames in its own
+        # future — five frames of audio skipped at every seam, with the length
+        # identity still satisfied so the geometry trip-wire below stays quiet.
+        # That is the exact defect class Story 20.4 spent four audition rounds
+        # finding, and it is invisible to every per-chunk check.
+        #
+        # The dispatch layer cannot produce it (it derives both from one
+        # ``carries_codec_state`` read), and a source invariant pins that. This
+        # is the belt: any OTHER caller — a bench script, a fixture generator,
+        # a future dispatch path — gets told at construction instead of
+        # shipping mis-spliced audio. Soft on the attribute (a wrapper that
+        # does not expose its window is simply not checked) and hard on the
+        # answer, because a mismatch here is provable, not heuristic.
+        decode_fn_window = getattr(decode_fn, "_window_frames", None)
+        if isinstance(decode_fn_window, int):
+            streamer_window = self._chunk_size + self._lookahead
+            if decode_fn_window != streamer_window:
+                raise ValueError(
+                    f"decode_fn was built for a {decode_fn_window}-frame "
+                    f"window but the streamer emits {streamer_window} "
+                    f"(chunk_size={self._chunk_size}, "
+                    f"lookahead={self._lookahead}). The two must agree or the "
+                    f"codec state commits at the wrong splice and every seam "
+                    f"skips or repeats audio. Apply "
+                    f"CodecTokenStreamer.apply_codec_state_geometry() with the "
+                    f"same carries_codec_state the decode_fn was built from."
+                )
         # Frames the decode_fn has committed to its codec state. Mirrors the
         # decode_fn's own advance, and both derive it from the SAME
         # snapshotted streamer geometry — the agreement is pinned by
@@ -403,6 +471,11 @@ class StreamingDecoderWorker:
         )
 
         n_frames = len(chunk)
+        # Story 20.6: ``self._lookahead > 0`` is what makes the retirement a
+        # by-construction consequence rather than a second edit. With the
+        # lookahead retired this is False for every chunk, so no trim runs, no
+        # tail is retained, and the blend below has nothing to blend. See the
+        # module docstring's Story 20.6 section.
         is_full_window = (
             n_frames >= self._chunk_size + self._lookahead
             and self._lookahead > 0

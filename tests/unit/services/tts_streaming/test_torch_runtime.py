@@ -40,16 +40,20 @@ from myvoice.services.tts_streaming import (
     enable_tf32_and_cudnn_benchmark,
     engage_compile_optimizations,
     is_ampere_or_newer,
+    resolve_streamer_geometry,
     resolve_tts_precision,
 )
 
 # Story 20.4 AC #1 — the compile path's decode window is DERIVED from the
 # streamer's committed geometry, never restated as a literal in this file.
 # Restating it is exactly the drift Story 20.1 SS5.4 found in production.
-_STREAMER_WINDOW = (
-    codec_token_streamer.DEFAULT_CHUNK_SIZE
-    + codec_token_streamer.DEFAULT_LOOKAHEAD
-)
+#
+# Story 20.6 AC #1 — the lookahead half of that geometry is now CONDITIONAL
+# (retired to 0 whenever the state-carrying decode path is live), so this is a
+# function rather than an import-time constant: the answer depends on the
+# ``MYVOICE_CODEC_STATE_CACHE`` kill switch, which a test may flip.
+def _streamer_window() -> int:
+    return sum(resolve_streamer_geometry())
 
 
 # -- Fixtures ---------------------------------------------------------------- #
@@ -799,7 +803,7 @@ def test_engage_compile_engaged_cold_compile_populates_cache(
     assert result["cache_warm"] is False
     model.enable_streaming_optimizations.assert_called_once()
     call_kwargs = model.enable_streaming_optimizations.call_args.kwargs
-    assert call_kwargs["decode_window_frames"] == _STREAMER_WINDOW
+    assert call_kwargs["decode_window_frames"] == _streamer_window()
     assert call_kwargs["use_compile"] is True
     assert call_kwargs["compile_mode"] == "reduce-overhead"
     # Story 18.4 bundled-smoke regression fix: compile_talker MUST be False
@@ -831,7 +835,7 @@ def test_engage_compile_engaged_warm_cache_short_circuits_probe_label(
         model_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
         precision_str="bf16",
         torch_version=torch.__version__,
-        decode_window_frames=_STREAMER_WINDOW,
+        decode_window_frames=_streamer_window(),
         cuda_capability=(8, 9),
         compile_mode="reduce-overhead",
     )
@@ -952,32 +956,47 @@ def test_engage_compile_resolves_window_from_live_streamer_constants(
 
     model = _make_fake_model_with_compile_api(api_succeeds=True, probe_engages=True)
     result = engage_compile_optimizations(model)
-    assert result["decode_window_frames"] == _STREAMER_WINDOW
+    assert result["decode_window_frames"] == _streamer_window()
     assert (
         model.enable_streaming_optimizations.call_args.kwargs[
             "decode_window_frames"
         ]
-        == _STREAMER_WINDOW
+        == _streamer_window()
     )
 
     # Arm 2 — a retune of the streamer constants must move the compile
-    # geometry with it, with no edit anywhere else.
+    # geometry with it, with no edit anywhere else. Story 20.6: on the
+    # shipping (state-carrying) path the lookahead is retired, so the window
+    # follows chunk_size ALONE.
     monkeypatch.setattr(codec_token_streamer, "DEFAULT_CHUNK_SIZE", 17)
     monkeypatch.setattr(codec_token_streamer, "DEFAULT_LOOKAHEAD", 3)
     model2 = _make_fake_model_with_compile_api(api_succeeds=True, probe_engages=True)
     result2 = engage_compile_optimizations(model2)
-    assert result2["decode_window_frames"] == 20
+    assert result2["decode_window_frames"] == 17
     assert (
         model2.enable_streaming_optimizations.call_args.kwargs[
             "decode_window_frames"
         ]
-        == 20
+        == 17
     )
+
+    # Arm 3 (Story 20.6 AC #2) — with the kill switch set, the STATELESS
+    # geometry is what the compile path describes, lookahead included. If the
+    # retirement were a global constant change this row could not exist: the
+    # window would be 17 either way and the fallback path's real 20-frame
+    # decode would be compiled and keyed as something it is not.
+    monkeypatch.setenv("MYVOICE_CODEC_STATE_CACHE", "0")
+    model3 = _make_fake_model_with_compile_api(api_succeeds=True, probe_engages=True)
+    result3 = engage_compile_optimizations(model3)
+    assert result3["decode_window_frames"] == 20
 
     # And the D-25 hard-fail still fires against the RETUNED geometry, so
     # the invariant is live rather than decorative.
     with pytest.raises(AssertionError, match="Decode-window drift"):
-        engage_compile_optimizations(model2, decode_window_frames=30)
+        engage_compile_optimizations(model3, decode_window_frames=30)
+    monkeypatch.delenv("MYVOICE_CODEC_STATE_CACHE")
+    with pytest.raises(AssertionError, match="Decode-window drift"):
+        engage_compile_optimizations(model2, decode_window_frames=20)
 
 
 def test_engage_compile_probe_failed_returns_eager_fallback(

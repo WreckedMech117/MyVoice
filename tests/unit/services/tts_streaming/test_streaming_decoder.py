@@ -102,7 +102,8 @@ def test_package_all_lists_expected_symbols_in_declaration_order():
     # added one more (`resolve_tts_precision`); Story 18.4 appends two
     # (`engage_compile_optimizations` + the `compile_cache` module re-export);
     # the compile-disengage-post-generation-reload spec appends
-    # `apply_reload_compile_fix` + `collect_compile_gate_diagnostic` —
+    # `apply_reload_compile_fix` + `collect_compile_gate_diagnostic`;
+    # Story 20.6 appends `resolve_streamer_geometry` —
     # append-only declaration-order discipline.
     assert pkg.__all__ == [
         "StreamingMode",
@@ -118,6 +119,7 @@ def test_package_all_lists_expected_symbols_in_declaration_order():
         "resolve_tts_precision",
         "engage_compile_optimizations",
         "compile_cache",
+        "resolve_streamer_geometry",
     ]
 
 
@@ -1806,3 +1808,163 @@ def test_decode_fn_without_reset_is_tolerated():
     worker.start()
     worker.join(timeout=5.0)
     assert [c[0] for c in fake_post.calls] == ["append_chunk", "finalize"]
+
+
+# ============================================================================
+# Story 20.6 — the retired-lookahead geometry
+#
+# On the state-carrying path the dispatch layer sets ``streamer.lookahead = 0``
+# (``CodecTokenStreamer.apply_codec_state_geometry``). Nothing in
+# ``streaming_decoder.py`` changed for it, which is the claim these rows test:
+# ``is_full_window`` requires ``lookahead > 0``, so the trim branch is never
+# entered, ``_pending_overlap`` is never populated, and the worker posts the
+# whole decode. Both the trim and the Story 20.4 seam blend are removed *by
+# construction* rather than by a second decision — with no lookahead there is
+# no retained tail to blend.
+#
+# The STATELESS rows above are unchanged and still run: that path keeps
+# lookahead = 5, and the trim plus the blend are the only seam handling it has.
+# ============================================================================
+
+
+def _run_retired(cs, chunk_frames, session_id="abc-123"):
+    """Drive a worker over a state-cached decode_fn at the RETIRED geometry.
+
+    Returns ``(posted, decode_fn, worker)`` — the worker so a row can assert
+    that no overlap tail was ever retained.
+    """
+    streamer = _build_streamer(chunk_size=cs, lookahead=0)
+    fake_post = _RecordingPostMutation()
+    decode_fn = _StatefulCodecLikeDecode(cs, 0)
+    for first, count in chunk_frames:
+        streamer.queue.put(_frames(first, count))
+    streamer.queue.put(END_OF_STREAM)
+
+    worker = StreamingDecoderWorker(
+        streamer=streamer, decode_fn=decode_fn,
+        post_mutation=fake_post, session_id=session_id,
+    )
+    worker.start()
+    worker.join(timeout=5.0)
+    posted = [c[2] for c in fake_post.calls if c[0] == "append_chunk"]
+    return posted, decode_fn, worker
+
+
+def test_retired_lookahead_posts_the_whole_decode_untrimmed():
+    """AC #1 — ``chunk_size`` frames in, the full decode out.
+
+    The lengths are the SAME as the lookahead-5 rows above, which is the
+    point: the trim existed only to remove the lookahead's worth of PCM, so
+    decoding 25 frames and posting all of it produces exactly what decoding
+    30 and trimming 5 produced — for five fewer talker steps and one decode
+    pass instead of two.
+    """
+    cs = 10
+    posted, _, _ = _run_retired(cs, [(k * cs, cs) for k in range(3)])
+    assert [p.size for p in posted] == [cs * SPF - EDGE, cs * SPF, cs * SPF]
+
+
+def test_retired_lookahead_retains_no_tail_so_the_seam_blend_is_gone():
+    """The Story 20.4 blend is a DEPENDENT, not a second variable.
+
+    It cross-fades the retained lookahead tail into the next chunk's head.
+    With no lookahead there is no tail: ``next_overlap`` is never assigned,
+    ``_pending_overlap`` stays ``None``, and ``_apply_overlap_add`` returns
+    its input. Removing it is not a decision this story took — it is a
+    consequence of the one it did.
+    """
+    cs = 10
+    posted, _, worker = _run_retired(cs, [(k * cs, cs) for k in range(3)])
+    assert worker._pending_overlap is None
+    # And the audio shows it: the first sample of each chunk is the exact
+    # next sample of the codec's ideal output, unblended.
+    for previous, following in zip(posted, posted[1:]):
+        assert following[0] == pytest.approx(previous[-1] + 1, abs=0.05)
+
+
+def test_retired_lookahead_stream_is_time_contiguous_through_every_seam():
+    cs = 10
+    posted, _, _ = _run_retired(cs, [(k * cs, cs) for k in range(4)])
+    stitched = np.concatenate(posted)
+    expected = np.arange(EDGE, EDGE + stitched.size, dtype=np.float32)
+    np.testing.assert_allclose(stitched, expected, rtol=0, atol=0.05)
+
+
+def test_retired_lookahead_total_equals_a_whole_sequence_decode():
+    """``1920*N - 555`` for the utterance, the same as a single-shot decode
+    of all N frames — unchanged from the lookahead-5 state-cached geometry."""
+    cs = 10
+    chunks = [(k * cs, cs) for k in range(4)]
+    chunks.append((4 * cs, 7))
+    posted, _, _ = _run_retired(cs, chunks)
+    assert sum(p.size for p in posted) == SPF * (4 * cs + 7) - EDGE
+
+
+def test_retired_commit_predicate_still_matches_the_decode_fn():
+    """The Story 20.5 duplication, pinned at the new geometry too.
+
+    With the lookahead retired, ``StatefulCodecDecoder`` is constructed with
+    ``window_frames == commit_frames`` and commits ``n_frames`` on every
+    chunk; the worker's ``is_full_window`` is False for every chunk and it
+    likewise advances by ``n_frames``. A desync here would put the worker's
+    ``first_decode`` flag out of step with the decoder's own state and
+    mis-splice a chunk mid-utterance, where nothing else would catch it.
+    """
+    cs = 10
+    chunks = [(k * cs, cs) for k in range(3)] + [(3 * cs, 4)]
+    streamer = _build_streamer(chunk_size=cs, lookahead=0)
+    decode_fn = _StatefulCodecLikeDecode(cs, 0)
+    for first, count in chunks:
+        streamer.queue.put(_frames(first, count))
+    streamer.queue.put(END_OF_STREAM)
+
+    seen = []
+    worker = StreamingDecoderWorker(
+        streamer=streamer, decode_fn=decode_fn,
+        post_mutation=lambda *a: seen.append(
+            (a[0], worker._codec_state_frames, decode_fn.frames)
+        ),
+        session_id="abc-123",
+    )
+    worker.start()
+    worker.join(timeout=5.0)
+
+    appends = [s for s in seen if s[0] == "append_chunk"]
+    assert len(appends) == 4
+    for _, worker_frames, decoder_frames in appends:
+        assert worker_frames == decoder_frames
+    assert decode_fn.commits == [cs, cs, cs, 4]
+
+
+def test_retired_lookahead_keeps_the_geometry_trip_wire_live():
+    """The length identity still guards the new window. A decode_fn that
+    advertises carried state but returns an unrecognised length must still
+    trip ``decode_geometry_unverified`` — the retirement must not have
+    silently disabled the check by taking a branch that never evaluates it."""
+    recorder = _RecordingMetrics()
+    cs = 10
+
+    class _WrongLength(_StatefulCodecLikeDecode):
+        def __call__(self, chunk):
+            out = super().__call__(chunk)
+            return out[:-17]
+
+    streamer = _build_streamer(chunk_size=cs, lookahead=0)
+    for k in range(2):
+        streamer.queue.put(_frames(k * cs, cs))
+    streamer.queue.put(END_OF_STREAM)
+    worker = StreamingDecoderWorker(
+        streamer=streamer, decode_fn=_WrongLength(cs, 0),
+        post_mutation=_RecordingPostMutation(), session_id="abc-123",
+    )
+    import myvoice.observability.metrics as _m
+    original = _m.record
+    _m.record = recorder
+    try:
+        worker.start()
+        worker.join(timeout=5.0)
+    finally:
+        _m.record = original
+
+    names = [c["metric_name"] for c in recorder.calls]
+    assert names.count("decode_geometry_unverified") == 1

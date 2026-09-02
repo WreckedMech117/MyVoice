@@ -27,6 +27,11 @@ Defaults: chunk_size=25, lookahead=5. Story 20.4 attempted a retune to
 and REVERTED it after the NFR3 perceptual gate failed twice. See the
 constants below for the full record. Story 16.7's empirical-validation
 harness may revise via direct module-constant edit.
+
+Story 20.6 retires the lookahead on the STATE-CARRYING decode path only:
+``DEFAULT_LOOKAHEAD`` stays 5 (it is the stateless fallback's only seam
+handling) and the live value is resolved per stream by
+:func:`effective_lookahead` / :meth:`CodecTokenStreamer.apply_codec_state_geometry`.
 """
 
 import queue
@@ -99,6 +104,53 @@ DEFAULT_CHUNK_SIZE = 25
 DEFAULT_LOOKAHEAD = 5
 DEFAULT_QUEUE_MAX_FACTOR = 4  # D-10: maxsize = factor * chunk_size
 
+# Story 20.6 — the lookahead a STATE-CARRYING stream runs with.
+#
+# ``DEFAULT_LOOKAHEAD`` above stays 5 and that is not an oversight: it is the
+# lookahead of the STATELESS decode path, which is still reachable two ways
+# (the ``MYVOICE_CODEC_STATE_CACHE`` kill switch, and any build-time refusal
+# by ``codec_state_cache.build_stateful_decode_fn``). On that path chunks are
+# still independent renderings of overlapping token spans, so the lookahead,
+# the post-decode trim and the Story 20.4 seam blend are the ONLY seam
+# handling it has. Retiring the constant globally would strip all three from
+# the path a user reaches precisely when something else has already failed,
+# and would reintroduce the artefact Epic 20 spent six audition rounds
+# eliminating.
+#
+# So retirement is CONDITIONAL, resolved by :func:`effective_lookahead` from
+# the decode_fn's own ``carries_codec_state`` declaration — the same
+# producer-declares / consumer-acts shape Story 20.5 used for the consumer
+# crossfade (``qwen_tts_service._progressive_stream_continuous``).
+RETIRED_LOOKAHEAD = 0
+
+
+def effective_lookahead(
+    carries_codec_state: bool, lookahead: Optional[int] = None
+) -> int:
+    """Return the lookahead a stream should actually run with (Story 20.6).
+
+    ``carries_codec_state`` is the decode_fn's own declaration (see
+    ``codec_state_cache.StatefulCodecDecoder.carries_codec_state``). When it
+    is true, consecutive chunks are continuous *by construction* — the codec
+    resumes each chunk from the previous chunk's real state — so the five
+    future-lookahead frames Story 16.4 introduced re-establish, at a cost of
+    five talker steps of TTFA and a two-pass decode, priming the carried
+    state already provides exactly.
+
+    When it is false the pre-20.6 geometry is returned unchanged.
+
+    This is a **pure function of the flag**, deliberately: the geometry can
+    never end up half-retired, no matter how often the kill switch is
+    flipped, because there is no accumulated state to get out of step.
+
+    Args:
+        carries_codec_state: the decode_fn's declaration.
+        lookahead: the stream's configured lookahead. ``None`` resolves
+            :data:`DEFAULT_LOOKAHEAD`.
+    """
+    base = DEFAULT_LOOKAHEAD if lookahead is None else lookahead
+    return RETIRED_LOOKAHEAD if carries_codec_state else base
+
 
 class CodecTokenStreamer(BaseStreamer):
     """HF BaseStreamer subclass: codec-token producer for the streaming
@@ -111,6 +163,13 @@ class CodecTokenStreamer(BaseStreamer):
     per architecture line 184), signals end-of-stream via the
     END_OF_STREAM sentinel on end(), and goes silent (no-op) while a
     threading.Event cancel hook is set.
+
+    Story 20.6: with ``lookahead == 0`` (what
+    :meth:`apply_codec_state_geometry` sets on the state-carrying path) the
+    chunks are exactly ``chunk_size`` tokens and do not overlap at all, so
+    the slide keeps nothing back and the first emit lands five talker steps
+    earlier. The arithmetic below already degenerates correctly; no branch
+    is needed.
 
     Forbidden by P-5 (architecture line 429): this class does NOT call
     into the session, registry, or audio coordinator. Composition with
@@ -165,6 +224,12 @@ class CodecTokenStreamer(BaseStreamer):
         self.chunk_size = chunk_size
         self.lookahead = lookahead
         self._chunk_with_lookahead = chunk_size + lookahead
+        # Story 20.6 — the lookahead this instance was CONSTRUCTED with, kept
+        # so ``apply_codec_state_geometry`` is a pure function of its argument
+        # rather than a one-way door. Retiring and then un-retiring returns
+        # the exact pre-20.6 geometry, which is what makes a runtime kill-
+        # switch flip incapable of leaving a half-retired streamer behind.
+        self._configured_lookahead = lookahead
         # D-10: bounded queue. maxsize = factor * chunk_size keeps the
         # backpressure characteristic stable across chunk-size choices.
         self.queue: queue.Queue = queue.Queue(
@@ -177,6 +242,48 @@ class CodecTokenStreamer(BaseStreamer):
             cancel_event if cancel_event is not None else threading.Event()
         )
         self._buffer: List[Any] = []
+
+    # Story 20.6 — the CONSUMER half of producer-declares / consumer-acts.
+    def apply_codec_state_geometry(self, carries_codec_state: bool) -> int:
+        """Set this streamer's lookahead from the decode_fn's declaration.
+
+        The dispatch layer builds the decode_fn, reads
+        ``decode_fn.carries_codec_state`` off it, and hands the answer here.
+        With carried state the lookahead retires to 0 — chunks become
+        non-overlapping, the streamer's first emit waits for ``chunk_size``
+        frames instead of ``chunk_size + lookahead``, and the decoder worker's
+        trim and seam blend fall away *by construction* (its ``is_full_window``
+        predicate requires ``lookahead > 0``). Without it, the pre-20.6
+        geometry is restored exactly.
+
+        Reversible and idempotent: the result is a pure function of the
+        argument and of the lookahead this streamer was constructed with, so
+        a kill-switch flip between generations cannot leave a half-retired
+        geometry behind.
+
+        MUST NOT be called mid-generation — the same caller contract
+        :meth:`reset` carries. Changing ``_chunk_with_lookahead`` while
+        ``put()`` is sliding the buffer, or while
+        ``qwen_tts_service._build_true_stream_talker``'s forward-hook is
+        chunking against a snapshot of it, would emit one malformed chunk.
+        Guarded rather than documented, because "the geometry changed
+        mid-stream" is exactly the class of defect that is inaudible as a bug
+        and audible only as "the codec got worse".
+
+        Returns:
+            The lookahead now in effect.
+        """
+        if self._buffer or not self.queue.empty():
+            raise RuntimeError(
+                "apply_codec_state_geometry() called on a streamer with "
+                "buffered tokens or queued chunks; the geometry may only be "
+                "set between generations (same contract as reset())."
+            )
+        self.lookahead = effective_lookahead(
+            carries_codec_state, self._configured_lookahead
+        )
+        self._chunk_with_lookahead = self.chunk_size + self.lookahead
+        return self.lookahead
 
     # P-5 / D-10 / D-11
     def put(self, value: Any) -> None:

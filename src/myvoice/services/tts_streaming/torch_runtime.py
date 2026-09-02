@@ -512,6 +512,51 @@ def collect_compile_gate_diagnostic(stage: str, cycle_idx: int) -> dict:
     return probe
 
 
+def resolve_streamer_geometry() -> Tuple[int, int]:
+    """Return ``(chunk_size, lookahead)`` the shipping decode path will run at.
+
+    **The single derivation point for D-25's ``decode_window_frames``.**
+    Story 20.4 made the three compile sites read the streamer's constants
+    instead of restating them; Story 20.6 makes the *lookahead* half of that
+    conditional, and this function is where the condition lives so the three
+    sites keep following the geometry automatically rather than each growing
+    a copy of the rule.
+
+    Why the resolution can happen here, before any dispatch: of the three
+    gates that decide whether the state-cached decoder is used, only the
+    ``MYVOICE_CODEC_STATE_CACHE`` kill switch is knowable at model-load time,
+    and it is the only one an operator flips. The other two (``probe_decoder``
+    refusing the graph, the numerical self-test failing) are build-time
+    refusals that mean "this model is not the model we verified", and a
+    process that hits them has bigger problems than a cache-key mismatch.
+
+    A mismatch is in any case benign rather than dangerous. In the shipping
+    configuration ``compile_mode="reduce-overhead"``, and the fork's
+    ``Qwen3TTSTokenizerV2Model.enable_streaming_optimizations``
+    (``modeling_qwen3_tts_tokenizer_v2.py:1244-1250``) *skips* the manual
+    ``capture_cuda_graph(window_size=decode_window_frames)`` in that mode —
+    reduce-overhead captures its own graphs. So the value's only live effect
+    today is as one of ``compile_cache``'s seven key dimensions: it decides
+    which inductor cache directory priming warms, not what gets compiled.
+    Retiring the lookahead therefore costs exactly one cold compile on first
+    launch (a new key), which is the expected, stated cost.
+    """
+    # Lazy imports: ``codec_token_streamer`` for the DLL-ordering reason the
+    # rest of this module lazy-imports torch, and ``codec_state_cache``
+    # because it imports ``streaming_decoder`` which imports
+    # ``codec_token_streamer`` — a module-level import here would close that
+    # cycle.
+    from myvoice.services.tts_streaming import codec_state_cache
+    from myvoice.services.tts_streaming import codec_token_streamer
+
+    return (
+        codec_token_streamer.DEFAULT_CHUNK_SIZE,
+        codec_token_streamer.effective_lookahead(
+            codec_state_cache.state_cache_enabled()
+        ),
+    )
+
+
 def engage_compile_optimizations(
     model: Any,
     *,
@@ -629,7 +674,6 @@ def engage_compile_optimizations(
     # Lazy-import: torch (DLL ordering); compile_cache (avoid __init__.py
     # partial-init recursion since __init__.py imports both leaf modules).
     import torch
-    from myvoice.services.tts_streaming import codec_token_streamer
     from myvoice.services.tts_streaming import compile_cache
 
     # ----- Resolve the streamer geometry from its single source of truth --- #
@@ -639,10 +683,18 @@ def engage_compile_optimizations(
     # streamer retune would silently tell the compile path the wrong window
     # (Story 20.1 §5.4). Resolving here means the two cannot diverge even if
     # a future call site also forgets to pass them.
+    #
+    # Story 20.6 (AC #1): the lookahead half of that resolution is now
+    # CONDITIONAL — retired to 0 on the state-carrying path, left at
+    # ``DEFAULT_LOOKAHEAD`` on the stateless fallback — so both defaults come
+    # from ``resolve_streamer_geometry()``, the single place that rule lives.
+    # Reading ``DEFAULT_LOOKAHEAD`` directly here would pin the compile window
+    # at 30 while the shipping streamer emits 25.
+    _default_chunk_size, _default_lookahead = resolve_streamer_geometry()
     if streamer_chunk_size is None:
-        streamer_chunk_size = codec_token_streamer.DEFAULT_CHUNK_SIZE
+        streamer_chunk_size = _default_chunk_size
     if streamer_lookahead is None:
-        streamer_lookahead = codec_token_streamer.DEFAULT_LOOKAHEAD
+        streamer_lookahead = _default_lookahead
 
     # ----- D-25 invariant (architecture-bound; P-11 "loud at startup") ----- #
     # The streamer's chunk_size + lookahead is the canonical decode-window.

@@ -1,0 +1,114 @@
+{
+  "_meta": {
+    "story": "20.6",
+    "round": 1,
+    "candidate": "la0",
+    "reference": "la5",
+    "candidate_desc": "codec state caching, gated consumer crossfade, lookahead RETIRED \u2014 the streamer emits 25-frame chunks with no overlap and the worker posts each decode whole (no trim, no seam blend)",
+    "reference_desc": "what ships today: codec state caching, gated consumer crossfade, lookahead 5 \u2014 30-frame windows at stride 25, trimmed to the splice and cross-faded over 1024 samples",
+    "isolates": "the 5-frame lookahead ONLY. Both arms carry codec state caching, chunk_size 25 and the same gated consumer crossfade, and BOTH ARMS OF EACH PAIR ARE DECODED FROM THE SAME TALKER RUN \u2014 identical wording, prosody and duration. The Story 20.4 seam blend is a DEPENDENT of the lookahead, not a second variable: with no lookahead there is no retained tail to blend.",
+    "control_trial": "ctl-020",
+    "control_desc": "short enough to produce one chunk in BOTH geometries, so the two files are byte-identical. Any difference reported on this trial is a property of the listening, not of the change.",
+    "takes_per_utterance": 2,
+    "prediction": "No audible difference on any trial. If anything is audible it should be at the END of a long utterance, where the residual flush splits differently. A listener hearing the candidate as WORSE AT THE INTERIOR SEAMS falsifies the diagnosis: it would mean the Story 20.4 blend was doing real perceptual work under carried state, and the retirement has to be reverted.",
+    "variance_note": "Within a pair there is no take-to-take variance to average over: the two files are the same take decoded two ways. The second take samples the CONTENT lottery, not arm variance."
+  },
+  "L1": {
+    "ctl-020-t1": {
+      "trial_A_filename": "ctl-020-t1-la0.wav",
+      "trial_A_arm": "la0",
+      "trial_B_filename": "ctl-020-t1-la5.wav",
+      "trial_B_arm": "la5"
+    },
+    "ctl-020-t2": {
+      "trial_A_filename": "ctl-020-t2-la5.wav",
+      "trial_A_arm": "la5",
+      "trial_B_filename": "ctl-020-t2-la0.wav",
+      "trial_B_arm": "la0"
+    },
+    "l-020-t1": {
+      "trial_A_filename": "l-020-t1-la0.wav",
+      "trial_A_arm": "la0",
+      "trial_B_filename": "l-020-t1-la5.wav",
+      "trial_B_arm": "la5"
+    },
+    "l-020-t2": {
+      "trial_A_filename": "l-020-t2-la0.wav",
+      "trial_A_arm": "la0",
+      "trial_B_filename": "l-020-t2-la5.wav",
+      "trial_B_arm": "la5"
+    },
+    "l-021-t1": {
+      "trial_A_filename": "l-021-t1-la5.wav",
+      "trial_A_arm": "la5",
+      "trial_B_filename": "l-021-t1-la0.wav",
+      "trial_B_arm": "la0"
+    },
+    "l-021-t2": {
+      "trial_A_filename": "l-021-t2-la0.wav",
+      "trial_A_arm": "la0",
+      "trial_B_filename": "l-021-t2-la5.wav",
+      "trial_B_arm": "la5"
+    },
+    "m-020-t1": {
+      "trial_A_filename": "m-020-t1-la0.wav",
+      "trial_A_arm": "la0",
+      "trial_B_filename": "m-020-t1-la5.wav",
+      "trial_B_arm": "la5"
+    },
+    "m-020-t2": {
+      "trial_A_filename": "m-020-t2-la5.wav",
+      "trial_A_arm": "la5",
+      "trial_B_filename": "m-020-t2-la0.wav",
+      "trial_B_arm": "la0"
+    },
+    "m-021-t1": {
+      "trial_A_filename": "m-021-t1-la0.wav",
+      "trial_A_arm": "la0",
+      "trial_B_filename": "m-021-t1-la5.wav",
+      "trial_B_arm": "la5"
+    },
+    "m-021-t2": {
+      "trial_A_filename": "m-021-t2-la0.wav",
+      "trial_A_arm": "la0",
+      "trial_B_filename": "m-021-t2-la5.wav",
+      "trial_B_arm": "la5"
+    },
+    "s-020-t1": {
+      "trial_A_filename": "s-020-t1-la5.wav",
+      "trial_A_arm": "la5",
+      "trial_B_filename": "s-020-t1-la0.wav",
+      "trial_B_arm": "la0"
+    },
+    "s-020-t2": {
+      "trial_A_filename": "s-020-t2-la5.wav",
+      "trial_A_arm": "la5",
+      "trial_B_filename": "s-020-t2-la0.wav",
+      "trial_B_arm": "la0"
+    },
+    "s-021-t1": {
+      "trial_A_filename": "s-021-t1-la0.wav",
+      "trial_A_arm": "la0",
+      "trial_B_filename": "s-021-t1-la5.wav",
+      "trial_B_arm": "la5"
+    },
+    "s-021-t2": {
+      "trial_A_filename": "s-021-t2-la5.wav",
+      "trial_A_arm": "la5",
+      "trial_B_filename": "s-021-t2-la0.wav",
+      "trial_B_arm": "la0"
+    },
+    "s-022-t1": {
+      "trial_A_filename": "s-022-t1-la5.wav",
+      "trial_A_arm": "la5",
+      "trial_B_filename": "s-022-t1-la0.wav",
+      "trial_B_arm": "la0"
+    },
+    "s-022-t2": {
+      "trial_A_filename": "s-022-t2-la5.wav",
+      "trial_A_arm": "la5",
+      "trial_B_filename": "s-022-t2-la0.wav",
+      "trial_B_arm": "la0"
+    }
+  }
+}

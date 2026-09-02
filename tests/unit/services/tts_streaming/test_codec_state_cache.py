@@ -708,3 +708,225 @@ def test_empty_chunk_is_a_no_op(tiny_decoder, tiny_geometry):
     out = decoder(torch.zeros((0, 2), dtype=torch.long))
     assert out.size == 0
     assert decoder.state_frames == 0
+
+
+# ============================================================================
+# Story 20.6 — the retired-lookahead geometry
+#
+# ``codec_state_cache.py`` is NOT modified by Story 20.6. The retirement is
+# expressed entirely in the ARGUMENT the dispatch layer builds this decoder
+# with: ``lookahead = 0``, so ``window_frames == commit_frames``. The rows
+# below pin the two consequences that argument has here — the two-pass decode
+# collapses to a single pass, and the Phase 1 regression bars still hold at
+# the new geometry — because both are properties this file is the only place
+# that can test against a real decoder.
+# ============================================================================
+
+
+def test_build_accepts_the_retired_geometry(tiny_decoder, tiny_geometry):
+    """``window_frames == commit_frames`` is legal; only ``<`` is rejected.
+    If this ever became an error the retirement would have to be expressed by
+    modifying this module instead of by an argument to it."""
+    decoder = csc.StatefulCodecDecoder(tiny_decoder, tiny_geometry, 10, 10)
+    assert decoder.commit_frames == 10
+    with pytest.raises(ValueError, match="window_frames"):
+        csc.StatefulCodecDecoder(tiny_decoder, tiny_geometry, 10, 9)
+
+
+def test_retired_lookahead_decode_is_single_pass(
+    tiny_decoder, tiny_geometry, monkeypatch
+):
+    """AC #1 / Task 2 — the snapshot/restore collapses.
+
+    The two-pass decode exists *solely* to serve the lookahead: commit
+    ``chunk_size`` frames on the live state, snapshot, decode the trailing
+    lookahead on the snapshot, restore. Story 20.5 measured the tax at
+    +7-10 ms/chunk. With ``window_frames == commit_frames`` the commit rule
+    takes ``commit = n_frames`` on every chunk, so the second pass is never
+    entered — asserted by counting snapshots rather than inferred from timing.
+    """
+    calls = {"snapshot": 0, "restore": 0}
+    real_snapshot = csc.CodecStreamState.snapshot
+    real_restore = csc.CodecStreamState.restore
+
+    def _snapshot(self):
+        calls["snapshot"] += 1
+        return real_snapshot(self)
+
+    def _restore(self, snap):
+        calls["restore"] += 1
+        return real_restore(self, snap)
+
+    monkeypatch.setattr(csc.CodecStreamState, "snapshot", _snapshot)
+    monkeypatch.setattr(csc.CodecStreamState, "restore", _restore)
+
+    cs = 10
+    frames = _codes(40)[0].transpose(0, 1)
+
+    # Control: the pre-20.6 geometry pays two passes per full window.
+    with_lookahead = csc.StatefulCodecDecoder(tiny_decoder, tiny_geometry, cs, cs + 3)
+    for k in range(3):
+        with_lookahead(frames[k * cs:k * cs + cs + 3])
+    assert calls["snapshot"] == 3 and calls["restore"] == 3
+
+    calls["snapshot"] = calls["restore"] = 0
+    retired = csc.StatefulCodecDecoder(tiny_decoder, tiny_geometry, cs, cs)
+    for k in range(3):
+        retired(frames[k * cs:(k + 1) * cs])
+    assert calls == {"snapshot": 0, "restore": 0}, (
+        "the retired geometry still runs the lookahead's two-pass decode; "
+        "the producer-throughput half of Story 20.6 is not being realised"
+    )
+
+
+def test_retired_lookahead_stitched_stream_reconstructs_the_whole_decode(
+    tiny_decoder, tiny_geometry
+):
+    """The Phase 1 regression bar, at the new geometry.
+
+    With no lookahead there is no splice arithmetic left: the worker posts
+    every decode whole. The posted chunks must still concatenate into the
+    whole-sequence decode sample for sample, first chunk short by the edge
+    loss and every later one frame-exact.
+    """
+    spf = tiny_geometry.samples_per_frame
+    edge = tiny_geometry.edge_loss_samples
+    cs = 10
+    n_frames = 43
+    codes = _codes(n_frames)
+    with torch.inference_mode():
+        whole = tiny_decoder(codes)[0, 0].to(torch.float64).numpy()
+
+    decoder = csc.StatefulCodecDecoder(tiny_decoder, tiny_geometry, cs, cs)
+    frames = codes[0].transpose(0, 1)
+
+    posted = []
+    index = 0
+    while index < n_frames:
+        take = min(cs, n_frames - index)
+        pcm = decoder(frames[index:index + take])
+        expected = spf * take - (edge if index == 0 else 0)
+        assert pcm.size == expected, (
+            f"chunk at frame {index} returned {pcm.size} samples, expected "
+            f"{expected} — the edge loss moved"
+        )
+        posted.append(pcm)
+        index += take
+
+    stitched = np.concatenate(posted).astype(np.float64)
+    assert stitched.size == whole.size == spf * n_frames - edge
+    np.testing.assert_allclose(stitched, whole, rtol=0, atol=1e-6)
+
+
+def test_retired_lookahead_matches_the_lookahead_geometrys_output(
+    tiny_decoder, tiny_geometry
+):
+    """The audible claim, made exactly.
+
+    Retiring the lookahead is meant to change *what work is done*, not *what
+    audio is posted*: the trim removed precisely the lookahead's worth of PCM,
+    and under carried state the retained tail was bit-identical to the next
+    chunk's head, so the blend was an identity. The two geometries must
+    therefore produce the same posted stream — which is what makes the AC #4
+    audition a test of that claim rather than of an unknown.
+    """
+    spf = tiny_geometry.samples_per_frame
+    edge = tiny_geometry.edge_loss_samples
+    cs, la = 10, 3
+    n_frames = 43
+    codes = _codes(n_frames)
+    frames = codes[0].transpose(0, 1)
+
+    with_la = csc.StatefulCodecDecoder(tiny_decoder, tiny_geometry, cs, cs + la)
+    posted_la = []
+    index = 0
+    while index + cs + la <= n_frames:
+        pcm = with_la(frames[index:index + cs + la])
+        splice = cs * spf - (edge if index == 0 else 0)
+        posted_la.append(pcm[:splice])
+        index += cs
+    if index < n_frames:
+        posted_la.append(with_la(frames[index:]))
+
+    retired = csc.StatefulCodecDecoder(tiny_decoder, tiny_geometry, cs, cs)
+    posted_retired = []
+    index = 0
+    while index < n_frames:
+        posted_retired.append(retired(frames[index:index + cs]))
+        index += cs
+
+    a = np.concatenate(posted_la).astype(np.float64)
+    b = np.concatenate(posted_retired).astype(np.float64)
+    assert a.size == b.size
+    np.testing.assert_allclose(a, b, rtol=0, atol=1e-6)
+
+
+def test_worker_refuses_a_decode_fn_built_for_a_different_window(
+    tiny_decoder, tiny_geometry
+):
+    """Story 20.6 — the one silent-wrong-audio path the conditional
+    retirement introduces.
+
+    A ``StatefulCodecDecoder`` built for a 25-frame window, handed 30-frame
+    chunks, fails its own ``window_frames > commit_frames`` guard and commits
+    all 30 — so the next chunk resumes five frames in its own future and every
+    seam skips 400 ms of speech. Nothing raises, and the length identity is
+    still satisfied, so the worker's geometry trip-wire stays quiet: exactly
+    the defect class Story 20.4 spent four audition rounds locating.
+
+    The dispatch layer cannot produce the mismatch (it derives the streamer
+    geometry and the decode_fn from one ``carries_codec_state`` read, and a
+    source invariant pins that). This row is the belt for every other caller.
+    """
+    from myvoice.services.tts_streaming import CodecTokenStreamer
+    from myvoice.services.tts_streaming.streaming_decoder import (
+        StreamingDecoderWorker,
+    )
+
+    retired = csc.StatefulCodecDecoder(tiny_decoder, tiny_geometry, 25, 25)
+
+    # The mismatch: a retired decode_fn behind an un-retired streamer.
+    with pytest.raises(ValueError, match="window"):
+        StreamingDecoderWorker(
+            streamer=CodecTokenStreamer(chunk_size=25, lookahead=5),
+            decode_fn=retired, post_mutation=lambda *a: None,
+            session_id="s",
+        )
+
+    # And the matching pair is accepted, both ways round.
+    matched = CodecTokenStreamer(chunk_size=25, lookahead=5)
+    matched.apply_codec_state_geometry(True)
+    StreamingDecoderWorker(
+        streamer=matched, decode_fn=retired,
+        post_mutation=lambda *a: None, session_id="s",
+    )
+    with_lookahead = csc.StatefulCodecDecoder(tiny_decoder, tiny_geometry, 25, 30)
+    StreamingDecoderWorker(
+        streamer=CodecTokenStreamer(chunk_size=25, lookahead=5),
+        decode_fn=with_lookahead, post_mutation=lambda *a: None,
+        session_id="s",
+    )
+
+
+def test_the_mismatch_the_worker_refuses_really_does_desync(
+    tiny_decoder, tiny_geometry
+):
+    """The row above is only worth having if the thing it refuses is
+    genuinely broken. Demonstrate the desync directly, so the guard is
+    justified in executable form rather than by assertion."""
+    cs, la = 10, 3
+    frames = _codes(40)[0].transpose(0, 1)
+
+    retired = csc.StatefulCodecDecoder(tiny_decoder, tiny_geometry, cs, cs)
+    retired(frames[0:cs + la])          # a full pre-20.6 window
+    assert retired.state_frames == cs + la, (
+        "a decode_fn built for the retired window did not over-commit on a "
+        "wider chunk; this test's premise no longer holds and the worker "
+        "guard above may be unnecessary."
+    )
+
+    matched = csc.StatefulCodecDecoder(tiny_decoder, tiny_geometry, cs, cs + la)
+    matched(frames[0:cs + la])
+    assert matched.state_frames == cs, (
+        "the correctly-paired decoder must commit only to the splice"
+    )

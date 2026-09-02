@@ -1,0 +1,57 @@
+{
+  "_meta": {
+    "story": "20.6",
+    "chunk_size": 25,
+    "reference_lookahead": 5,
+    "candidate_lookahead": 0,
+    "reps": 5,
+    "device": "cuda:0",
+    "dtype": "torch.bfloat16",
+    "tokens": "Story 20.5 Phase 1 capture (reused, not redrawn)",
+    "per_chunk_saving_ms_median": 11.44
+  },
+  "utterances": {
+    "l-020": {
+      "frames": 231,
+      "reference_chunks": 10,
+      "candidate_chunks": 10,
+      "reference_per_chunk_ms_median": 23.385,
+      "candidate_per_chunk_ms_median": 11.815,
+      "per_chunk_saving_ms": 11.57,
+      "reference_total_decode_ms": 223.12,
+      "candidate_total_decode_ms": 118.7,
+      "posted_samples_reference": 442965,
+      "posted_samples_candidate": 442965,
+      "posted_nrmse": 0.0,
+      "whole_sequence_samples": 442965
+    },
+    "l-021": {
+      "frames": 176,
+      "reference_chunks": 7,
+      "candidate_chunks": 8,
+      "reference_per_chunk_ms_median": 23.293,
+      "candidate_per_chunk_ms_median": 11.853,
+      "per_chunk_saving_ms": 11.44,
+      "reference_total_decode_ms": 153.1,
+      "candidate_total_decode_ms": 95.27,
+      "posted_samples_reference": 337365,
+      "posted_samples_candidate": 337365,
+      "posted_nrmse": 0.00109496,
+      "whole_sequence_samples": 337365
+    },
+    "m-020": {
+      "frames": 44,
+      "reference_chunks": 2,
+      "candidate_chunks": 2,
+      "reference_per_chunk_ms_median": 17.149,
+      "candidate_per_chunk_ms_median": 11.451,
+      "per_chunk_saving_ms": 5.699,
+      "reference_total_decode_ms": 34.84,
+      "candidate_total_decode_ms": 23.06,
+      "posted_samples_reference": 83925,
+      "posted_samples_candidate": 83925,
+      "posted_nrmse": 0.0,
+      "whole_sequence_samples": 83925
+    }
+  }
+}

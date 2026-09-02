@@ -569,7 +569,16 @@ class ModelRegistry:
         # ``engage_compile_optimizations`` resolves ``None`` from the same
         # module, so this pass-through is belt-and-braces: it makes the
         # dependency visible at the call site the trap was found at.
-        from myvoice.services.tts_streaming import codec_token_streamer
+        # Story 20.6 AC #1 — the lookahead half of that geometry is now
+        # CONDITIONAL (retired to 0 on the state-carrying decode path, kept
+        # at 5 on the stateless fallback), so the pass-through reads
+        # ``resolve_streamer_geometry()`` rather than the raw module
+        # constants. Restating ``DEFAULT_LOOKAHEAD`` here would pin
+        # ``decode_window_frames`` at 30 while the shipping streamer emits
+        # 25 — the same D-25 drift Story 20.4 closed, re-opened from the
+        # other side.
+        from myvoice.services.tts_streaming import resolve_streamer_geometry
+        _streamer_chunk_size, _streamer_lookahead = resolve_streamer_geometry()
         # Read the canonical pin-hash constant here (the
         # ``services.qwen_tts_service`` boundary is allowed at this caller
         # site; the architecture's module-boundary rule scopes
@@ -603,8 +612,8 @@ class ModelRegistry:
             self._compile_engage_result = engage_compile_optimizations(
                 model,
                 app_settings=self._app_settings,
-                streamer_chunk_size=codec_token_streamer.DEFAULT_CHUNK_SIZE,
-                streamer_lookahead=codec_token_streamer.DEFAULT_LOOKAHEAD,
+                streamer_chunk_size=_streamer_chunk_size,
+                streamer_lookahead=_streamer_lookahead,
                 qwen_tts_pin_hash=qwen_tts_pin_hash,
                 reload_cycle_idx=self._reload_cycle_counter,
             )

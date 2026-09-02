@@ -1,0 +1,9 @@
+{
+  "arm": "kill-switch (pre-20.5 geometry)",
+  "env_MYVOICE_CODEC_STATE_CACHE": "0",
+  "resolved_chunk_size": 25,
+  "resolved_lookahead": 5,
+  "decode_window_frames": 30,
+  "captured_utc": "2026-09-02T15:42:21Z",
+  "glob": "20-6-killswitch-r*.csv"
+}

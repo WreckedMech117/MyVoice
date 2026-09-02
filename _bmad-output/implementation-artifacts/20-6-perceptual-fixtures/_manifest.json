@@ -1,0 +1,338 @@
+{
+  "ctl-020-t1": {
+    "la5": {
+      "filename": "ctl-020-t1-la5.wav",
+      "samples": 30165,
+      "seconds": 1.257,
+      "posted_chunks": 1,
+      "crossfade_samples": 0,
+      "active_rms_db": -18.188
+    },
+    "la0": {
+      "filename": "ctl-020-t1-la0.wav",
+      "samples": 30165,
+      "seconds": 1.257,
+      "posted_chunks": 1,
+      "crossfade_samples": 0,
+      "active_rms_db": -18.188
+    },
+    "byte_identical": true,
+    "level_delta_db": 0.0,
+    "length_delta_samples": 0
+  },
+  "ctl-020-t2": {
+    "la5": {
+      "filename": "ctl-020-t2-la5.wav",
+      "samples": 28245,
+      "seconds": 1.177,
+      "posted_chunks": 1,
+      "crossfade_samples": 0,
+      "active_rms_db": -19.017
+    },
+    "la0": {
+      "filename": "ctl-020-t2-la0.wav",
+      "samples": 28245,
+      "seconds": 1.177,
+      "posted_chunks": 1,
+      "crossfade_samples": 0,
+      "active_rms_db": -19.017
+    },
+    "byte_identical": true,
+    "level_delta_db": 0.0,
+    "length_delta_samples": 0
+  },
+  "l-020-t1": {
+    "la5": {
+      "filename": "l-020-t1-la5.wav",
+      "samples": 483285,
+      "seconds": 20.137,
+      "posted_chunks": 10,
+      "crossfade_samples": 0,
+      "active_rms_db": -20.85
+    },
+    "la0": {
+      "filename": "l-020-t1-la0.wav",
+      "samples": 483285,
+      "seconds": 20.137,
+      "posted_chunks": 11,
+      "crossfade_samples": 0,
+      "active_rms_db": -20.85
+    },
+    "byte_identical": false,
+    "level_delta_db": 0.0,
+    "length_delta_samples": 0
+  },
+  "l-020-t2": {
+    "la5": {
+      "filename": "l-020-t2-la5.wav",
+      "samples": 458325,
+      "seconds": 19.097,
+      "posted_chunks": 10,
+      "crossfade_samples": 0,
+      "active_rms_db": -20.318
+    },
+    "la0": {
+      "filename": "l-020-t2-la0.wav",
+      "samples": 458325,
+      "seconds": 19.097,
+      "posted_chunks": 10,
+      "crossfade_samples": 0,
+      "active_rms_db": -20.318
+    },
+    "byte_identical": false,
+    "level_delta_db": 0.0,
+    "length_delta_samples": 0
+  },
+  "l-021-t1": {
+    "la5": {
+      "filename": "l-021-t1-la5.wav",
+      "samples": 331605,
+      "seconds": 13.817,
+      "posted_chunks": 7,
+      "crossfade_samples": 0,
+      "active_rms_db": -21.487
+    },
+    "la0": {
+      "filename": "l-021-t1-la0.wav",
+      "samples": 331605,
+      "seconds": 13.817,
+      "posted_chunks": 7,
+      "crossfade_samples": 0,
+      "active_rms_db": -21.487
+    },
+    "byte_identical": false,
+    "level_delta_db": 0.0,
+    "length_delta_samples": 0
+  },
+  "l-021-t2": {
+    "la5": {
+      "filename": "l-021-t2-la5.wav",
+      "samples": 318165,
+      "seconds": 13.257,
+      "posted_chunks": 7,
+      "crossfade_samples": 0,
+      "active_rms_db": -20.773
+    },
+    "la0": {
+      "filename": "l-021-t2-la0.wav",
+      "samples": 318165,
+      "seconds": 13.257,
+      "posted_chunks": 7,
+      "crossfade_samples": 0,
+      "active_rms_db": -20.774
+    },
+    "byte_identical": false,
+    "level_delta_db": -0.001,
+    "length_delta_samples": 0
+  },
+  "m-020-t1": {
+    "la5": {
+      "filename": "m-020-t1-la5.wav",
+      "samples": 83925,
+      "seconds": 3.497,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -20.507
+    },
+    "la0": {
+      "filename": "m-020-t1-la0.wav",
+      "samples": 83925,
+      "seconds": 3.497,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -20.507
+    },
+    "byte_identical": false,
+    "level_delta_db": 0.0,
+    "length_delta_samples": 0
+  },
+  "m-020-t2": {
+    "la5": {
+      "filename": "m-020-t2-la5.wav",
+      "samples": 85845,
+      "seconds": 3.577,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -21.024
+    },
+    "la0": {
+      "filename": "m-020-t2-la0.wav",
+      "samples": 85845,
+      "seconds": 3.577,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -21.024
+    },
+    "byte_identical": false,
+    "level_delta_db": 0.0,
+    "length_delta_samples": 0
+  },
+  "m-021-t1": {
+    "la5": {
+      "filename": "m-021-t1-la5.wav",
+      "samples": 95445,
+      "seconds": 3.977,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -19.085
+    },
+    "la0": {
+      "filename": "m-021-t1-la0.wav",
+      "samples": 95445,
+      "seconds": 3.977,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -19.085
+    },
+    "byte_identical": false,
+    "level_delta_db": 0.0,
+    "length_delta_samples": 0
+  },
+  "m-021-t2": {
+    "la5": {
+      "filename": "m-021-t2-la5.wav",
+      "samples": 89685,
+      "seconds": 3.737,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -19.027
+    },
+    "la0": {
+      "filename": "m-021-t2-la0.wav",
+      "samples": 89685,
+      "seconds": 3.737,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -19.027
+    },
+    "byte_identical": false,
+    "level_delta_db": 0.0,
+    "length_delta_samples": 0
+  },
+  "s-020-t1": {
+    "la5": {
+      "filename": "s-020-t1-la5.wav",
+      "samples": 57045,
+      "seconds": 2.377,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -19.544
+    },
+    "la0": {
+      "filename": "s-020-t1-la0.wav",
+      "samples": 57045,
+      "seconds": 2.377,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -19.544
+    },
+    "byte_identical": true,
+    "level_delta_db": 0.0,
+    "length_delta_samples": 0
+  },
+  "s-020-t2": {
+    "la5": {
+      "filename": "s-020-t2-la5.wav",
+      "samples": 58965,
+      "seconds": 2.457,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -18.376
+    },
+    "la0": {
+      "filename": "s-020-t2-la0.wav",
+      "samples": 58965,
+      "seconds": 2.457,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -18.376
+    },
+    "byte_identical": false,
+    "level_delta_db": 0.0,
+    "length_delta_samples": 0
+  },
+  "s-021-t1": {
+    "la5": {
+      "filename": "s-021-t1-la5.wav",
+      "samples": 64725,
+      "seconds": 2.697,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -22.621
+    },
+    "la0": {
+      "filename": "s-021-t1-la0.wav",
+      "samples": 64725,
+      "seconds": 2.697,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -22.621
+    },
+    "byte_identical": false,
+    "level_delta_db": 0.0,
+    "length_delta_samples": 0
+  },
+  "s-021-t2": {
+    "la5": {
+      "filename": "s-021-t2-la5.wav",
+      "samples": 55125,
+      "seconds": 2.297,
+      "posted_chunks": 1,
+      "crossfade_samples": 0,
+      "active_rms_db": -22.4
+    },
+    "la0": {
+      "filename": "s-021-t2-la0.wav",
+      "samples": 55125,
+      "seconds": 2.297,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -22.395
+    },
+    "byte_identical": false,
+    "level_delta_db": 0.005,
+    "length_delta_samples": 0
+  },
+  "s-022-t1": {
+    "la5": {
+      "filename": "s-022-t1-la5.wav",
+      "samples": 74325,
+      "seconds": 3.097,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -19.824
+    },
+    "la0": {
+      "filename": "s-022-t1-la0.wav",
+      "samples": 74325,
+      "seconds": 3.097,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -19.824
+    },
+    "byte_identical": false,
+    "level_delta_db": 0.0,
+    "length_delta_samples": 0
+  },
+  "s-022-t2": {
+    "la5": {
+      "filename": "s-022-t2-la5.wav",
+      "samples": 122325,
+      "seconds": 5.097,
+      "posted_chunks": 3,
+      "crossfade_samples": 0,
+      "active_rms_db": -19.035
+    },
+    "la0": {
+      "filename": "s-022-t2-la0.wav",
+      "samples": 122325,
+      "seconds": 5.097,
+      "posted_chunks": 3,
+      "crossfade_samples": 0,
+      "active_rms_db": -19.035
+    },
+    "byte_identical": false,
+    "level_delta_db": 0.0,
+    "length_delta_samples": 0
+  }
+}
