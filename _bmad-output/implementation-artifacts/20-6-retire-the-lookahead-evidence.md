@@ -531,3 +531,74 @@ needs an invariant over the source:
    than a CUDA-graph shape. If the fork ever stops skipping
    `capture_cuda_graph` under `reduce-overhead`, the resolution point built here
    becomes load-bearing for correctness, not just for cache hits.
+
+---
+
+## §11. Operator results, 2026-09-01 — AC #4 PASSES cleanly; AC #3's TTFA claim is NOT substantiated
+
+### AC #4 — audition: unanimous, zero defects
+
+16 blinded trials, including two byte-identical controls. **Every trial returned
+`equivalent`, with `none` recorded on both arms.** Zero blocking, zero shared,
+zero preference either way.
+
+That is the predicted outcome and a clean pass: retiring the lookahead changes
+nothing audible. Worth noting the reference arm also scored clean on the long
+fixtures, where earlier rounds flagged it — consistent with Story 20.5 having
+removed the underlying cause.
+
+### AC #3 — the ~190 ms TTFA win did not appear
+
+Retirement was live in every run (`myvoice.log`: *"TRUE_STREAM geometry:
+chunk_size=25 lookahead=0 (carries_codec_state=True)"*), so this is not a
+configuration miss.
+
+Two of ten user generations carried an anomalous **840 ms / 1,383 ms** segment-1a
+prefill against ~2 ms everywhere else — almost certainly generating before
+priming released the request semaphore. Excluded as operator-procedure outliers,
+which is stated rather than silently dropped.
+
+Clean long-utterance results against the Story 20.3 baseline:
+
+| | baseline (20.3) | now (20.6) |
+|---|---:|---:|
+| segment 1b (first forward) | 192.5 ms | **89.7 ms** |
+| segment 2 (talker to first emit) | 1,147.5 ms | 1,125.2 ms |
+| segment 3 (first decode) | 89.2 ms | 128.9 ms |
+| **TOTAL** | **1,353.4 ms** | **1,364.4 ms** |
+
+**Segment 2 is the one that should have moved and did not.** First emit now
+requires 25 frames rather than 30, so it should have fallen by roughly a sixth —
+~190 ms. Instead it is flat, which means **per-frame talker time rose from
+~38.2 ms to ~45.2 ms**, offsetting the five frames saved.
+
+### Why this cannot be attributed yet — a measurement gap
+
+**There is no post-20.5, pre-20.6 GUI baseline.** Story 20.5's verification was
+headless; the last GUI capture was Story 20.3's, taken *before* codec state
+caching. So the 1,353 → 1,364 ms comparison spans **two** stories, and 20.5's and
+20.6's TTFA effects cannot be separated from each other with the data in hand.
+
+The headless decode measurement is unaffected and stands: per-chunk decode
+**23.4 → 11.8 ms**, roughly halved, over-recovering Story 20.5's +7–10 ms tax.
+That is a real, independently measured throughput win.
+
+### The cheap experiment that would settle it
+
+`MYVOICE_CODEC_STATE_CACHE=0` restores stateless decoding **and** the lookahead —
+i.e. exactly the pre-20.5 geometry — on today's code and today's machine. A
+kill-switch A/B in one sitting isolates 20.5+20.6 combined against the pre-both
+baseline without the cross-session, cross-driver confounds that make the
+20.3-vs-now comparison weak.
+
+### Verdict
+
+AC #4 met. AC #1, #2, #5 met (§4–§6). **AC #3 is partially met**: the producer-side
+half is measured and positive; the TTFA half is **not substantiated and must not be
+claimed**. The story's own Context section predicted ~190 ms and the measurement
+does not support it.
+
+This does not argue for reverting. The change removes real complexity, halves
+per-chunk decode, and is perceptually inert on 16 blinded trials. It argues for
+retiring the TTFA claim rather than the code, and for treating the per-frame
+talker regression as its own question.
