@@ -512,6 +512,14 @@ class MyVoiceApp(QObject):
             self._tts_service.set_preparing_voice_callback(
                 self._on_tts_preparing_voice_message
             )
+            # Story 20.7 — compile priming is a real generation and holds the
+            # service's single ``_request_semaphore`` slot, so a Generate
+            # pressed during it queues silently (840 ms and 1,383 ms of hidden
+            # wait in two of eighteen Story 20.6 captures, against ~2 ms
+            # clean). The service declares; the main window gates.
+            self._tts_service.set_compile_priming_callback(
+                self._on_tts_compile_priming_changed
+            )
             # Story 17.2 — orchestrator-driven on-demand Whisper init.
             # When the precompute hits a cache miss with no Whisper service
             # wired (e.g. user has not opened Voice Design Studio yet), the
@@ -1119,7 +1127,19 @@ class MyVoiceApp(QObject):
                 "warmup time; a BASE prime will skip with no_priming_prompt "
                 "rather than switch models"
             )
-        await coro_factory()
+        try:
+            await coro_factory()
+        finally:
+            # Story 20.7 AC #2 — the second, independent guarantee that
+            # Generate comes back. The service releases its own gate in a
+            # ``finally`` around each priming call; this one is at the task
+            # boundary, so it also covers anything that could go wrong
+            # *outside* those blocks — a raise from inside the service's own
+            # finally, a future refactor that moves the priming call, or the
+            # whole warmup coroutine unwinding. Idempotent (a redundant
+            # ``False`` is a no-op) and cheap, and a dead Generate button is
+            # strictly worse than the silent queue this story fixes.
+            self._on_tts_compile_priming_changed(False)
 
     def _run_async_task(self, coro, on_success=None, on_error=None):
         """
@@ -2403,6 +2423,37 @@ class MyVoiceApp(QObject):
                 error_message=str(error)
             )
             self._main_window.update_service_status("TTS", status_info)
+
+    def _on_tts_compile_priming_changed(self, is_priming: bool):
+        """Story 20.7 AC #1/#2 — consumer half of the compile-priming
+        declaration: gate Generate while priming owns the request slot.
+
+        The user-visible *reason* stays the pre-existing "Preparing TTS
+        engine…" message that the same priming region already emits through
+        ``_on_tts_preparing_voice_message``; this callback carries only the
+        enable/disable decision, so no second message channel is added.
+
+        AC #3: Story 17.2's voice_clone_prompt precompute emits that same
+        message but serialises on a per-voice lock rather than on
+        ``_request_semaphore``, and never reaches this callback — its
+        behaviour is unchanged.
+
+        Never raises — and that includes the attribute lookup. The producer
+        calls this from a ``finally`` whose whole job is guaranteeing the
+        button comes back, and it can fire before the main window exists
+        (the warmup is scheduled during service init, ahead of UI
+        construction) or against a half-built app. Every failure here is
+        fail-safe in the same direction: the gate simply does not apply.
+        """
+        try:
+            window = getattr(self, "_main_window", None)
+            if window is None:
+                return
+            window.set_engine_priming(bool(is_priming))
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(
+                f"set_engine_priming({is_priming}) raised: {exc}"
+            )
 
     def _on_tts_preparing_voice_message(self, message: Optional[str]):
         """Story 17.2 AC #4 — surface the lazy-precompute status on the TTS

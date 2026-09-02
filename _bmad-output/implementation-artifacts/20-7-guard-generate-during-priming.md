@@ -1,6 +1,6 @@
 # Story 20.7: Don't Let Generate Silently Queue Behind Priming (Phase ⊥-Polish-3)
 
-Status: ready-for-dev
+Status: ready-for-review
 
 <!-- Phase tag: Phase ⊥-Polish-3. Seventh story of Epic 20. -->
 <!-- Source: measured twice during Story 20.6's operator captures. Not on any follow-up list — found by telemetry, not by design review. -->
@@ -105,11 +105,11 @@ never engages and the button is never disabled
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Gate** (AC: #1, #3) — key off priming holding the semaphore; reuse the existing indicator channel.
-- [ ] **Task 2 — Guaranteed release** (AC: #2) — release on every path including raise, cancel and each early-exit gate; tests for each.
-- [ ] **Task 3 — Overlap with normal generation** (AC: #4) — tests in both orders.
-- [ ] **Task 4 — Regression sweep** (AC: #5).
-- [ ] **Task 5 — Verify by observation** — confirm the gate engages and releases on a real launch, ideally from `myvoice.log` rather than requiring an operator sitting. If it needs an operator, keep it to a single short check.
+- [x] **Task 1 — Gate** (AC: #1, #3) — key off priming holding the semaphore; reuse the existing indicator channel.
+- [x] **Task 2 — Guaranteed release** (AC: #2) — release on every path including raise, cancel and each early-exit gate; tests for each.
+- [x] **Task 3 — Overlap with normal generation** (AC: #4) — tests in both orders.
+- [x] **Task 4 — Regression sweep** (AC: #5).
+- [x] **Task 5 — Verify by observation** — confirm the gate engages and releases on a real launch, ideally from `myvoice.log` rather than requiring an operator sitting. If it needs an operator, keep it to a single short check.
 
 ## Dev Notes
 
@@ -147,8 +147,138 @@ is the *silence*, and disabling with a visible reason removes it.
 
 ## Dev Agent Record
 
-_(to be filled by dev agent)_
+### What was built
+
+**Producer (`qwen_tts_service.py`).** `_set_compile_priming_active(bool)` - a
+total, non-raising declaration - plus `set_compile_priming_callback()` and a
+`compile_priming_active` property. Called with `True` as the **first statement
+inside** each of the two priming `try` blocks (warm path, cold path) and with
+`False` as the **first statement of** each block's existing `finally`. This is
+the Story 20.5 producer-declares / consumer-acts shape: the service is the only
+component that knows when priming owns the slot; it does not reason about
+widgets.
+
+**Consumer (`app.py` -> `main_window.py`).** `_on_tts_compile_priming_changed`
+forwards to `MainWindow.set_engine_priming`, which records `_is_priming` and
+calls the new `_refresh_generate_enabled()`. `set_generation_status` was rewired
+from `setEnabled(not is_generating)` to record-then-derive through that same
+helper, so `_refresh_generate_enabled` is the **single owner** of the button's
+enabled state. Every other call site in the app already routes through
+`set_generation_status`, so they all inherit the derivation.
+
+### AC #2 - why re-enablement is guaranteed, not hoped for
+
+Three independent mechanisms, in order of how much would have to fail:
+
+1. **The gate is only ever engaged inside a `try` with a releasing `finally`.**
+   Every early-exit gate - `MYVOICE_DISABLE_COMPILE_WARMUP`, `tts_compile="off"`,
+   the D-9 hardware probe and its raise, no `model_registry`, no model loaded,
+   the cache-key computation failure, and Story 20.2's
+   `MYVOICE_DISABLE_WARM_COMPILE_PRIMING` - returns *before* the flag is ever
+   set. There is nothing to release, which is stronger than releasing correctly.
+2. **The release is the `finally`'s first statement and cannot raise.** It
+   covers the success return, `CompilePrimingSkipped`, any other exception,
+   `CancelledError`, and the cold path's early `return` from inside the `try`
+   (Story 20.3's key/model coherence veto). Ordering is load-bearing: the same
+   `finally` also clears the preparing-voice indicator, so a release placed
+   after that clear could be skipped by a raise from it.
+3. **A second, independent release at the task boundary.**
+   `_compile_warmup_entrypoint` now wraps `await coro_factory()` in a
+   `try/finally` that calls `_on_tts_compile_priming_changed(False)`, covering
+   anything outside the service's own blocks. The consumer hop is total in both
+   directions - no window yet, a half-built app, or a raising window all
+   fail-safe toward *enabled*.
+
+Two AST source invariants pin the structure those rows sample (the Story
+20.5/20.6 device): every `_run_compile_priming` call site must sit in a `try`
+whose `finally` releases, and that release must be the `finally`'s first
+statement. A third invariant pins that the Generate button's enabled state is
+assigned from exactly one place.
+
+### AC #3 - the precompute is untouched, and one finding
+
+Story 17.2's `prepare_voice_clone_prompt` is unchanged and drives only the
+advisory message channel. A source invariant asserts `_set_compile_priming_active`
+is written from `warmup_compile_async` alone.
+
+**Finding, not folded in (AC #3's escape hatch):** the 17.2 precompute *can*
+serialise against a user generation - `generate_voice_clone`'s cache-miss branch
+takes the same per-voice `asyncio.Lock` (`qwen_tts_service.py:1859-1861` vs the
+dispatch-path acquisition around `:2918`). It differs from this story's defect
+in two ways: the waiting generation is waiting for work it would otherwise have
+to do itself, so the wait is not pure loss; and `app.py` already defers presses
+behind that path via `_voice_pipeline_in_flight` / `_fire_pending_generation`.
+**No measured cost** - it did not appear in Story 20.6's captures. Recorded here
+for whoever wants to measure it.
+
+### Scope
+
+The three warned-against expansions were not done: the TTS status indicator is
+untouched, no queueing/feedback system was built, and priming itself is
+unchanged.
+
+**One judgment call:** the Generate button's tooltip is left as "Generate speech
+(Enter)" while gated, rather than restated to the priming reason. AC #1's "the
+reason is visible" is served by the pre-existing "Preparing TTS engine..."
+indicator the same priming region already emits, and the AC explicitly says to
+reuse it rather than invent a second channel. If a reviewer wants the tooltip
+too, it is a two-line follow-up.
+
+### Tests
+
+- `tests/unit/services/test_compile_priming_generate_gate.py` (25 rows) -
+  engage/release on both priming paths, the not-a-timer property, raise, skip,
+  cancel, early-return, a raising consumer, no consumer wired, all seven skip
+  gates, AC #3, and the three source invariants.
+- `tests/ui/test_generate_gate_during_priming.py` (12 rows) - disable/re-enable,
+  idempotence, the AC #4 overlap in **both** orders, the unchanged normal
+  generation path, the single-owner invariant, the app wiring, an end-to-end
+  producer -> orchestrator -> button hop with no mocks in the middle, and the
+  task-boundary safety net under both raise and cancel.
+
+### Regressions (AC #5)
+
+Full suite run twice on this machine - stashed `main` vs this branch, same
+command, same ordering (`-p no:randomly -v`): **49 failed / 4 errors / 2,883
+passed** before, **49 failed / 4 errors / 2,920 passed** after (+37 = the 25 +
+12 new rows). The pre-existing failure set is unchanged in **count and
+identity** - the sorted diff of the two FAILED+ERROR id lists (53 entries each)
+is empty. The `main` numbers reproduce Story 20.6's recorded baseline exactly.
+
+**Pre-existing flake found while doing this, unrelated to the story.** Both
+runs above deselect
+`tests/settings/test_reset_to_defaults.py::TestResetQuickSpeak::test_reset_quick_speak_entries`,
+which **intermittently hangs the whole run** - observed on stashed `main` as
+well as on this branch, and not reproducible when that file is run alone. It
+touches quick-speak persistence and nothing this story changed. Flagged, not
+fixed.
+
+### Verification by observation (Task 5)
+
+The **defect** is now pinned in `logs/myvoice.log` from an existing Story 20.6
+capture launch, harder than the story's own numbers: `09:42:45.216` priming
+dispatched; `09:42:52.491` the operator pressed Generate; priming did not finish
+until `09:43:02.893`. That press waited **~10.4 s** behind the semaphore with
+nothing but the advisory indicator on screen.
+
+`_set_compile_priming_active` now logs two INFO lines, so the fix is verifiable
+from the same file without watching the button.
+
+**Operator check - one launch, about 30 seconds.** Run `01_Run_MyVoice.bat`,
+wait for the window, then close it. In `logs/myvoice.log`, confirm the newest
+launch contains **both** lines:
+
+    QwenTTSService - INFO - Compile-priming Generate gate: ENGAGED ...
+    QwenTTSService - INFO - Compile-priming Generate gate: RELEASED (Generate re-enabled)
+
+`ENGAGED` should sit immediately before `Compile priming: dispatching against
+the resident model ...`, and `RELEASED` immediately after `warm-path priming
+completed (duration=...)`. **`RELEASED` is the one that matters** - if it is
+absent, the Generate button is dead for that session and this must not ship.
+Optionally, press Generate during the ~5 s window: the button should be greyed
+out with "Preparing TTS engine..." on the TTS indicator.
 
 ## Change Log
 
 - 2026-09-02 — Drafted by Winston. Found by Story 20.6's telemetry rather than by design review: two of eighteen captured generations carried 840 ms and 1,383 ms of silent semaphore wait against ~2 ms clean. Scoped deliberately small, with AC #2 as the load-bearing constraint — a Generate button that never returns is worse than the defect being fixed.
+- 2026-09-02 - Implemented. The gate is keyed to the two priming `try` blocks rather than to any duration. AC #2 is discharged by three layers (every skip gate returns before the flag is set; a first-statement, non-raising release in each `finally`; a second release at the warmup task boundary) plus two AST invariants so the structure cannot drift. AC #3's escape hatch used once: the 17.2 precompute's per-voice lock can block a same-voice generation, recorded as an unmeasured finding rather than folded in. One deliberate omission recorded under Scope (the gated button's tooltip). Task 5's headless half found the defect itself in `myvoice.log` at ~10.4 s of hidden wait; one short operator launch remains, to confirm the RELEASED line.
