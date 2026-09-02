@@ -241,7 +241,7 @@ development_status:
   # eliminating -- on the path a user lands on when something has already gone wrong.
   # Retirement must therefore be CONDITIONAL on carried state, by the same
   # producer-declares/consumer-acts pattern 20.5 used for the crossfade.
-  20-6-retire-the-lookahead: ready-for-dev
+  20-6-retire-the-lookahead: done
 
   # Out-of-epic UI work, following the tooling-N precedent for non-epic stories.
   # Commander 2026-09-01: the X minimizes to tray and Settings/Interface has no

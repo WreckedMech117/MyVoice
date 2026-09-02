@@ -775,3 +775,71 @@ python310\python.exe _bmad-output\implementation-artifacts\20-6-compare-arms.py
 
 Defaults are already the two arms (`--a-glob 20-6-killswitch-r*.csv
 --a-lookahead 5`, `--b-glob 20-6-gui-r*.csv --b-lookahead 0`).
+
+---
+
+## §12. Kill-switch A/B — **P1 holds, and it overturns §11.** 2026-09-02
+
+Same code, same machine, same sitting. Arm A = `MYVOICE_CODEC_STATE_CACHE=0`
+(pre-20.5 geometry: stateless decode, lookahead 5, trim, blend). Arm B = shipping
+(20.5 state cache + 20.6 retirement).
+
+| long class | arm A (pre-20.5) | arm B (shipping) | delta |
+|---|---:|---:|---:|
+| segment 2 (talker to first emit) | 1,399.8 ms | 1,125.2 ms | **−274.6 ms** |
+| **TOTAL−1a** | **1,723.7 ms** | **1,362.4 ms** | **−361.3 ms (−21.0 %)** |
+
+| short class | arm A | arm B | delta |
+|---|---:|---:|---:|
+| **TOTAL−1a** | **1,720.6 ms** | **1,468.7 ms** | **−251.9 ms (−14.6 %)** |
+
+### Per-frame talker cost — the quantity in dispute
+
+| | ms/frame |
+|---|---:|
+| arm A (30-frame threshold) | 46.66 [45.15–46.97, n=5] |
+| arm B (25-frame threshold) | 45.01 [44.71–48.04, n=3] |
+| **difference** | **−1.65 ms (−3.5 %)** |
+
+**The arms agree.** P1 holds. Neither Story 20.5 nor 20.6 caused a per-frame
+talker regression.
+
+### §11's conclusion was wrong, and the baseline is why
+
+§11 compared against Story 20.3's GUI capture (38.25 ms/frame) and concluded the
+TTFA win "did not appear". That baseline was taken in a different session in a
+different month, before state caching. **It is not comparable, and this A/B proves
+it**: the same code measured today yields 46.66 ms/frame on the pre-20.5 geometry
+— the drift is between sessions, not between builds.
+
+**Story 20.3's 1,353 ms figure must stop being quoted as a baseline**, including
+in the PR description for #7 and anywhere the epic's headline is restated. The
+correct control for anything measured from here is a same-sitting kill-switch arm.
+
+### The cross-check confirms the mechanism, not just the outcome
+
+If the only thing that changed is the frame count, segment 2 should fall by
+exactly five frames' worth:
+
+- predicted: −233 ms (5 × 46.66)
+- observed: −274.6 ms
+- **residual: −41.3 ms**
+
+Near zero, and marginally *better* than predicted. So the saving is the five
+frames, by the route the story claimed — the P3 falsifier (a large residual,
+meaning first emit is not gated on the threshold at all) did not fire.
+
+### Corrected verdict for AC #3
+
+**AC #3 is MET.** The story predicted ~190 ms; the measured saving is **−274.6 ms
+on segment 2 and −361.3 ms end-to-end on long utterances**, against the only valid
+control. The earlier "not substantiated" finding was an artefact of the baseline,
+not of the change.
+
+### Two anomalies in arm A, named not hidden
+
+`r03` produced three generations rather than two; its extra row shows a 8,997 ms
+segment-4 cushion (`TOTAL−1a` 10,774 ms) — an operator double-generation, excluded
+from the medians by the long/short pairing rather than by a threshold. And arm A's
+short-class `chunks` ranges 1–52, which the residual-flush path makes meaningless
+as a median; it is reported, not used.

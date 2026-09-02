@@ -1,6 +1,6 @@
 # Story 20.6: Retire the Lookahead and the Post-Decode Trim (Phase ⊥-Polish-3)
 
-Status: awaiting-operator (AC #3 GUI capture, AC #4 audition)
+Status: done — 2026-09-02. AC #1/#2/#4/#5 met; **AC #3 MET** after the kill-switch A/B (§12) overturned §11's baseline-artefact finding. Long TTFA −361.3 ms (−21.0 %), short −251.9 ms (−14.6 %) against a same-sitting pre-20.5 control.
 
 <!-- Phase tag: Phase ⊥-Polish-3. Sixth story of Epic 20. Follow-up F1 from Story 20.5. -->
 <!-- Risk: MEDIUM. Small change, but the machinery being retired is the ONLY seam handling the stateless fallback path has — see AC #2, which is the story's load-bearing constraint. -->
