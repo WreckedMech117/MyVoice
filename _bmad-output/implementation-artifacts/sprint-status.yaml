@@ -242,6 +242,18 @@ development_status:
   # Retirement must therefore be CONDITIONAL on carried state, by the same
   # producer-declares/consumer-acts pattern 20.5 used for the crossfade.
   20-6-retire-the-lookahead: done
+  # Story 20.7 added 2026-09-02. NOT on any follow-up list -- found by Story 20.6's
+  # telemetry, not by design review. Compile priming is a REAL generation and holds
+  # _request_semaphore, so a user pressing Generate during the ~4.4-4.9 s startup
+  # window queues silently behind it. Measured twice in the segment-1a dispatch
+  # interval: 840.2 ms and 1,382.6 ms against ~1.5-3.0 ms on the other 16 of 18
+  # captured generations, with nothing on screen to explain it.
+  # The 'Preparing TTS engine' indicator already exists and is advisory only; it was
+  # ignored twice by an operator who knew what it meant and had been warned in the
+  # launcher banner, so making it louder was considered and rejected.
+  # AC #2 is load-bearing: a Generate button that never comes back is strictly worse
+  # than the silent queue being fixed.
+  20-7-guard-generate-during-priming: ready-for-dev
 
   # Out-of-epic UI work, following the tooling-N precedent for non-epic stories.
   # Commander 2026-09-01: the X minimizes to tray and Settings/Interface has no
