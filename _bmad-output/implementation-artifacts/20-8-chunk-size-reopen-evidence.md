@@ -554,7 +554,220 @@ source file was modified by Phase 1 — `git diff` is one additive column in
 
 ---
 
-## §7. Artifacts
+## §7. The one-talker-per-pair VIABILITY CHECK (run at Commander's direction, 2026-09-02)
+
+Run before any candidate selection or fixture building. **Nothing was built, no
+geometry was chosen, no production source was touched.**
+
+### 8.1 Four claims, not two
+
+§5.4 proposed one check. Commander correctly split it: verifying that an offline
+render matches a live one says nothing about whether the *tokens* being
+re-chunked are the tokens a real run at that geometry would produce. Two more
+were added — one control on each side, because a claim of identity is
+unreadable without knowing whether the thing is identical to itself:
+
+| | claim | why it is here |
+|---|---|---|
+| **(a)** | offline re-chunk render == live render, bit-for-bit, through the REAL streamer / worker / buffer | the render is faithful |
+| **(a-ctl)** | the same offline render, run twice, is bit-identical | if the decoder is not reproducible against itself, bit-exactness against a live run is unattainable and the bar must be restated, not failed |
+| **(b)** | the talker's token stream does not depend on `chunk_size` | without it the candidate arm is a fiction |
+| **(c)** | the pipeline reproduces its own token stream at a fixed seed at all | without it a (b) mismatch means "not reproducible", not "chunk size perturbs the talker" |
+
+And a **fourth**, which the in-process design cannot reach and which I am
+naming because nobody had: **(d) cross-compile-key invariance** — a shipped
+`cs7` build loads with `decode_window_frames = 7`, one of `compile_cache`'s
+seven key dimensions, so it reads a *different inductor cache directory* and
+may run different compiled kernels. Chunk size can therefore reach the talker
+by a route that has nothing to do with the forward pass.
+
+Method: `20-8-onetalker-viability.py` (in-process, a/a-ctl/b/c) and
+`20-8-crossprocess-tokens.py` (fresh process per capture, d). Both drive
+production `_generate_true_stream`; the offline renderer constructs
+`CodecTokenStreamer` → `_build_true_stream_decode_fn` → `apply_codec_state_geometry`
+→ `StreamingDecoderWorker` in the same order and with the same arguments as
+`qwen_tts_service.py:5281-5331, :5437-5444`, and pushes posted PCM through a
+real `StreamingChunkBuffer` with **`crossfade_samples = 0`** — the value
+`app.py:3242-3247` passes when the producer declares continuity, not the
+harness's 64.
+
+Two seeds (1234, 99991), long utterance, one model load, one compiled state.
+
+### 8.2 (c) SEEDED DETERMINISM — **PASS**
+
+Two live `cs25` runs at the same seed produce **bit-identical** token streams:
+`[244, 16]` at seed 1234, `[252, 16]` at seed 99991. The pipeline is
+seed-reproducible, so (b) is answerable.
+
+### 8.3 (b) TOKEN INVARIANCE — **PASS, exactly, 4/4**
+
+| seed | comparison | result |
+|---|---|---|
+| 1234 | live cs25 vs live cs7 | **identical**, `[244, 16]` |
+| 1234 | live cs25 vs live cs10 | **identical**, `[244, 16]` |
+| 99991 | live cs25 vs live cs7 | **identical**, `[252, 16]` |
+| 99991 | live cs25 vs live cs10 | **identical**, `[252, 16]` |
+
+Not "no differences found" — bit-identical tensors, same shape, same values.
+Within one compiled state, **chunk size does not reach the talker**. The code
+reading in §5.4 was right, and is now measured rather than argued.
+
+A self-check also passed: re-splitting the captured flat stream at its own
+chunk size reproduces the captured chunk boundaries exactly, so the
+concatenate-and-re-split step introduces nothing.
+
+### 8.4 (a) RENDER FIDELITY — **PASS, at the strongest bar the pipeline supports**
+
+**Bit-exact in 9 of 12 comparisons. The 3 misses are decoder self-noise, and
+the (a-ctl) control proves it rather than assuming it.**
+
+Seed 1234 — every comparison bit-exact:
+
+| comparison | result |
+|---|---|
+| (a-ctl) offline cs25 vs offline cs25 | bit-exact |
+| (a-ctl) offline cs7 vs offline cs7 | bit-exact |
+| (a-ctl) offline cs10 vs offline cs10 | bit-exact |
+| (a) offline cs25 vs **live cs25** — same geometry | **bit-exact** (PCM and buffer bytes) |
+| (a) offline cs7 vs **live cs7** — **cross geometry** | **bit-exact** (PCM and buffer bytes) |
+| (a) offline cs10 vs **live cs10** — **cross geometry** | **bit-exact** (PCM and buffer bytes) |
+
+Seed 99991 — three cells are not bit-exact, **and so is their own control**:
+
+| comparison | bit-exact | differing samples | max abs diff | NRMSE |
+|---|---|---:|---:|---:|
+| **(a-ctl) offline cs25 vs itself** | **no** | 529 / 483,285 (0.11 %) | 4.88e-4 | 3.3e-5 |
+| (a-ctl) offline cs7 vs itself | yes | — | — | — |
+| **(a-ctl) offline cs10 vs itself** | **no** | 787 (0.16 %) | 6.10e-4 | 5.3e-5 |
+| (a) offline cs25 vs live cs25 | no | 544 (0.11 %) | 4.88e-4 | 3.4e-5 |
+| (a) offline cs7 vs live cs7 | **yes** | — | — | — |
+| (a) offline cs10 vs live cs10 | no | 572 (0.12 %) | 4.88e-4 | 3.8e-5 |
+
+**Every cell where offline≠live is a cell where the decoder differs from
+itself, by the same magnitude, at the same location.** Where the decoder is
+reproducible (cs7 at seed 99991, and all of seed 1234), offline == live
+**bit-for-bit** — including in the cross-geometry form, which is the form the
+audition needs.
+
+**Where the non-determinism lives, mechanically.** Every miss starts at sample
+479,829–479,836 of 483,285 — the final ~3,450 samples. At seed 99991 the
+utterance is 252 frames; `cs25` leaves a terminal residual of **2 frames**,
+`cs10` leaves **2**, and `cs7` divides exactly (36 × 7 = 252) and leaves
+**none**. At seed 1234 (244 frames) the residuals are 19 / 4 / 6 frames and
+everything is bit-exact. Six configurations, perfect separation:
+
+> **The decoder is bit-reproducible except on a 2-frame terminal residual
+> chunk.** A 2-frame decode is the smallest window the codec is ever handed,
+> and it is the only shape that misbehaves in this data.
+
+Magnitude: `max_abs_diff = 4.88e-4` in float32 is exactly **16 int16 units out
+of 32,767** — about −66 dBFS, on 0.1 % of samples, in the last 144 ms. It is
+present **between two live runs of the same code**, so it is not a cost of the
+offline design.
+
+**Labelled honestly, per the instruction not to round a near-miss up:** (a) is
+not "bit-exact in all cases". It is *"bit-exact wherever the pipeline is
+bit-exact against itself, and otherwise identical to within the decoder's own
+self-noise, which is confined to a 2-frame terminal residual chunk at
+−66 dBFS."* That is the strongest form of (a) this pipeline can support, and
+the fixture generator can make it moot by not letting either arm end on a
+2-frame residual.
+
+### 8.5 (d) CROSS-COMPILE-KEY INVARIANCE — **FAILS**, and this is the one finding that changes the design
+
+Fresh process per capture, same seed (1234), same prompt, same text:
+
+| capture | compile-cache dir | frames | chunks |
+|---|---|---:|---:|
+| cs25 | `205b94cf67d78d0a` | 244 | 10 |
+| cs25 (repeat, fresh process) | `205b94cf67d78d0a` | 244 | 10 |
+| cs7 | `5afc7362ef27323b` | **256** | 37 |
+| cs7 (repeat, fresh process) | `5afc7362ef27323b` | **256** | 37 |
+
+| comparison | result |
+|---|---|
+| **control** — cs25 vs cs25, two fresh processes, same key | **IDENTICAL** `[244, 16]` |
+| **control** — cs7 vs cs7, two fresh processes, same key | **IDENTICAL** `[256, 16]` |
+| cs25 vs cs7, different key | **DIFFER** — `[244,16]` vs `[256,16]`, identical for the first **5 frames**, then diverge |
+
+The two controls are what make this attributable. Process boundaries, seeding
+and RNG are ruled out: the same key reproduces exactly across processes, twice.
+The draw is a **deterministic function of (seed, compiled state)**, and the
+compiled state depends on chunk size *only* through `decode_window_frames` →
+the inductor cache directory. Different compiled kernels, different
+floating-point rounding, divergent sampling from frame 6 onward.
+
+**What it does and does not mean.** It is **not** a discovery that chunk size
+perturbs the talker — §7.3 proves it does not, within a compiled state. It is
+the same class of thing as a torch upgrade or a different GPU: the model draws
+a different, equally valid sample. But it does mean the naive fixture recipe
+("capture at cs25, re-chunk at cs7") produces a candidate arm whose *content*
+no `cs7` build would have drawn for that seed — which is precisely the fiction
+Commander named.
+
+**And it is closed by a design choice, not by more measurement:** capture the
+talker run in a process running **at the candidate geometry**, then re-chunk
+that one stream for both arms. By §7.3 the tokens are chunk-size-invariant
+within that process, and by §7.4 the render is faithful, so:
+
+* the **candidate** arm is bit-for-bit what a shipped `cs7` build produces —
+  the arm that has to be real;
+* the **reference** arm is `cs25` geometry over that same stream, which is not
+  what a `cs25` build would draw for that seed but *is* exactly what a `cs25`
+  build would render if handed that stream (§7.3 again). It is the correct
+  control: it holds content constant, which is the entire point.
+
+### 8.6 Verdict
+
+**The one-talker-run-per-pair trick IS valid for chunk size**, subject to one
+design constraint (§7.5: generate in the candidate's process) and one named
+tolerance (§7.4: a 2-frame terminal residual is reproducible only to −66 dBFS,
+avoidable by fixture choice).
+
+Consequences, using Commander's own framing:
+
+* The audition collapses to Story 20.5's shape — **one round, ~14–16 trials,
+  ~20–25 minutes**, instead of ~50–170 trials and 1.5–3.5 hours.
+* Attribution is restored: within a pair, wording, prosody, pauses and duration
+  are identical **to the sample**, so anything heard is caused by the geometry.
+  Story 20.4 §17's take-to-take variance problem is not repealed — it is
+  sidestepped, the same way Story 20.5 sidestepped it.
+* Because it is cheap, **testing more than one candidate is affordable**:
+  cs15 / cs10 / cs7 against one reference is ~3× the trials of a single pair
+  set, i.e. roughly one longer sitting rather than five.
+
+### 8.7 Residual risks, stated
+
+1. **`n = 1` seed on the (d) length effect.** The `cs7`-keyed draw was 256
+   frames against `cs25`-keyed 244 for the same seed — 4.9 % longer. With one
+   seed there is no way to tell a coincidence from a systematic bias of the
+   `cs7`-keyed build toward longer output. It does not affect audition
+   validity under §7.5's design (both arms come from one draw), but it is a
+   claim nobody should make in either direction yet. Cheap test: 5–10 seeds ×
+   {cs25 key, cs7 key}, compare the length distributions.
+2. **One host, one model.** Everything above is RTX 5090 / cc 12.0 /
+   torch 2.10.0+cu128 / `Qwen3-TTS-12Hz-1.7B-Base` / bf16. (d) is a statement
+   about compiled-kernel numerics and is exactly the kind of thing that varies
+   by host — F6 (RTX 3060) would need its own check before any claim is made
+   for that tier.
+3. **The 2-frame residual non-determinism is unexplained**, only located. It is
+   benign at −66 dBFS and it predates this story (it is present between two
+   live runs), but it is now on the record and it has a falsifiable shape: if
+   a future capture shows non-determinism on a residual larger than 2 frames,
+   §7.4's mechanism is wrong.
+4. **A bug was found and fixed in the check itself, not in production.** The
+   first run of the offline renderer deadlocked at `cs7`: it filled the
+   streamer queue before starting the worker, and the queue is bounded at
+   `queue_max_factor × chunk_size` = 28, against 35 chunks. Story 20.5's
+   fixture renderer has the same shape and never hit it because `cs25` gives
+   maxsize 100 against 10 chunks. **Any Phase 2 fixture generator derived from
+   `20-5-regen-audition-fixture.py` will deadlock at small chunk sizes unless
+   it starts the worker first** — which is production's order anyway. Aborted
+   run: `20-8-onetalker-viability-ABORTED-queue-deadlock.log`.
+
+---
+
+## §8. Artifacts
 
 | file | what |
 |---|---|
@@ -569,3 +782,6 @@ source file was modified by Phase 1 — `git diff` is one additive column in
 | `20-8-cachekey-probe.py` | which compile-cache key each geometry lands on |
 | `20-8-sweep-*-FAILED-*.log` | the two failed first attempts (§4.4) |
 | `20-8-sweep-manifest-retry*.json` | the two retry invocations |
+| `20-8-onetalker-viability.py` / `.json` / `.log` | §7's in-process check: claims (a), (a-ctl), (b), (c) |
+| `20-8-onetalker-viability-ABORTED-queue-deadlock.log` | the first run, which found the bounded-queue deadlock (§7.7.4) |
+| `20-8-crossprocess-tokens.py`, `xp-cs*.pt` | §7's fresh-process captures: claim (d) |

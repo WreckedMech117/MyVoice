@@ -1,0 +1,41 @@
+'sox' is not recognized as an internal or external command,
+operable program or batch file.
+SoX could not be found!
+
+    If you do not have SoX, proceed here:
+     - - - http://sox.sourceforge.net/ - - -
+
+    If you do (or think that you should) have SoX, double-check your
+    path variables.
+    
+
+********
+Warning: flash-attn is not installed. Will only run the manual PyTorch version. Please install flash-attn for faster inference.
+********
+ 
+  host: {"device": "NVIDIA GeForce RTX 5090", "torch": "2.10.0+cu128", "capability": "12.0", "tf32_matmul": false, "cudnn_benchmark": false, "cudnn_deterministic": false}
+`torch_dtype` is deprecated! Use `dtype` instead!
+Fetching 4 files:   0%|          | 0/4 [00:00<?, ?it/s]Fetching 4 files: 100%|##########| 4/4 [00:00<?, ?it/s]
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+CUDAGraph supports dynamic shapes by recording a new graph for each distinct input size. Recording too many CUDAGraphs may lead to extra overhead. We have observed 9 distinct sizes. Please consider the following options for better performance: a) padding inputs to a few fixed number of shapes; or b) set torch._inductor.config.triton.cudagraph_skip_dynamic_graphs=True. Set torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit=None to silence this warning.
+[Tokenizer] Enabling streaming optimizations...
+  use_compile=True, compile_mode=reduce-overhead
+  use_cuda_graphs=True (manual)
+[Decoder] Compiling forward with mode=reduce-overhead, backend=inductor...
+[Decoder] Note: mode='reduce-overhead' includes CUDA graphs automatically
+[Decoder] Compilation complete
+[Tokenizer] Note: compile_mode='reduce-overhead' already includes CUDA graphs
+[Tokenizer] Manual CUDA graph capture skipped (not needed)
+[CodePredictor] Compiling model with mode=reduce-overhead...
+  priming done
+
+=== seed 1234 ===
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+  live cs25#0    244 frames   10 chunks  11.7s
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+  live cs25#1    244 frames   10 chunks  12.0s
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+  live cs7#2     244 frames   35 chunks  12.4s
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+  live cs10#3    244 frames   25 chunks  12.1s
+  offline cs25   10 chunks (x2)

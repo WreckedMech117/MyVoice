@@ -200,8 +200,50 @@ collapse that to one ~20-minute round via offline re-chunking of one captured
 token stream, together with the single bit-exactness check that would confirm
 or kill it — that check should be Phase 2's first task.
 
+### Viability check for the one-talker-per-pair audition design (2026-09-02, at Commander's direction, post-gate)
+
+Run before any candidate selection or fixture building. Nothing built, no
+geometry chosen, no production source touched. Evidence §7.
+
+| claim | result |
+|---|---|
+| **(c)** seeded determinism (control for b) | **PASS** — two live `cs25` runs at one seed give bit-identical token streams, both seeds |
+| **(b)** token invariance vs `chunk_size` | **PASS, exactly, 4/4** — live cs25 vs cs7 and vs cs10, two seeds, bit-identical tensors |
+| **(a-ctl)** decode determinism (control for a) | mixed, and diagnostic — see below |
+| **(a)** offline re-chunk render == live render | **PASS at the strongest bar the pipeline supports** — bit-exact in 9/12 comparisons *including the cross-geometry ones*; every miss is a cell where the decoder also differs from itself, same magnitude, same location |
+| **(d)** cross-compile-key invariance *(newly named — the in-process design cannot reach it)* | **FAILS** — a `cs7`-keyed build draws a different (but stable) token stream |
+
+- (a)'s misses are confined to a **2-frame terminal residual chunk**, at
+  −66 dBFS on 0.1 % of samples, and are present **between two live runs**, so
+  they are not a cost of the offline design. Six configurations separate
+  perfectly on residual size (2 frames non-deterministic; 0/4/6/19 exact).
+- (d) is **not** chunk size reaching the talker — (b) proves it does not within
+  a compiled state. It is `decode_window_frames` selecting a different inductor
+  cache directory, hence different compiled kernels and a different draw. Two
+  cross-process controls (same key → identical, twice) rule out process/seed.
+- **(d) is closed by a design choice, not more measurement:** capture the
+  talker run in a process running **at the candidate geometry**, then re-chunk
+  that one stream for both arms. The candidate arm is then bit-for-bit what a
+  shipped build produces, and the reference arm is the correct
+  content-constant control.
+
+**Verdict: the one-talker trick IS valid for chunk size.** The audition
+collapses to **one round, ~14–16 trials, ~20–25 min** instead of ~50–170 trials
+and 1.5–3.5 h — and being cheap, testing more than one candidate becomes
+affordable. Residual risks are stated in evidence §7.7, including an `n = 1`
+observation that the `cs7`-keyed draw ran 4.9 % longer (not a claim in either
+direction yet) and a bounded-queue deadlock that **any Phase 2 fixture
+generator derived from `20-5-regen-audition-fixture.py` will hit at small chunk
+sizes** unless it starts the worker before filling the queue.
+
 ## Change Log
 
+- 2026-09-02 — Viability check run at Commander's direction after the gate.
+  Four claims tested, two of them controls added because a claim of identity is
+  unreadable without knowing whether the thing is identical to itself; a fourth
+  (cross-compile-key) named and tested because the in-process design cannot
+  reach it. Trick validated subject to one design constraint. Still stopped:
+  no fixture, no candidate geometry, no production source touched.
 - 2026-09-02 — Phase 1 executed (Tasks 1–4). Headless re-baseline on one
   machine in one sitting with `cs25` measured as the control twice, first and
   last. Verdict **GO on latency**; stopped at the gate for Commander. Evidence
