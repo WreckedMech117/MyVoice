@@ -230,6 +230,18 @@ development_status:
   # F2 varies. F1 also gains 5 talker steps of TTFA on its own. Full list with costs:
   # 20-5-codec-state-caching.md, 'Follow-ups - the canonical list'.
   20-5-codec-state-caching: done
+  # Story 20.6 added 2026-09-01 as Story 20.5 follow-up F1, sequenced AHEAD of the
+  # chunk-size reopen (F2) because the two-pass decode tax scales with chunk count --
+  # exactly what F2 varies -- so shipping them together would recreate the
+  # two-variable confound that cost Story 20.4 its round-2 audition.
+  # Scope is dominated by AC #2: the lookahead + trim + seam blend are the ONLY seam
+  # handling the STATELESS fallback path has (kill switch MYVOICE_CODEC_STATE_CACHE,
+  # carries_codec_state=False). Retiring them globally would silently strip that path
+  # of every defence and reintroduce the artefact this epic spent six audition rounds
+  # eliminating -- on the path a user lands on when something has already gone wrong.
+  # Retirement must therefore be CONDITIONAL on carried state, by the same
+  # producer-declares/consumer-acts pattern 20.5 used for the crossfade.
+  20-6-retire-the-lookahead: ready-for-dev
 
   # Out-of-epic UI work, following the tooling-N precedent for non-epic stories.
   # Commander 2026-09-01: the X minimizes to tray and Settings/Interface has no
