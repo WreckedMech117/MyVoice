@@ -767,6 +767,16 @@ class QwenTTSService(BaseService):
         # "no contradiction" rather than as a mismatch.
         self._last_priming_model_type: Optional[QwenModelType] = None
 
+        # Story 20.7 — producer-declares / consumer-acts (the Story 20.5
+        # shape). Compile priming is a REAL generation and takes
+        # ``_request_semaphore`` (max_concurrent_requests defaults to 1), so
+        # a Generate pressed while it runs queues silently behind it. This
+        # service is the only component that knows when that is true; the
+        # orchestrator decides what the UI does about it. Nothing here
+        # reasons about widgets.
+        self._compile_priming_callback: Optional[Callable[[bool], None]] = None
+        self._compile_priming_active: bool = False
+
         self.logger.info(
             f"QwenTTSService initialized: device={device}, cache_dir={self._cache_dir}"
         )
@@ -1380,6 +1390,30 @@ class QwenTTSService(BaseService):
         failure). Cache hits do NOT invoke this callback — only misses.
         """
         self._preparing_voice_callback = callback
+
+    def set_compile_priming_callback(
+        self, callback: Optional[Callable[[bool], None]]
+    ) -> None:
+        """Story 20.7 AC #1 — orchestrator-wired gate for the Generate
+        control.
+
+        Invoked with ``True`` when compile priming takes
+        ``_request_semaphore`` and with ``False`` when it lets go, on every
+        exit path including a raise, a cancellation and each early-exit
+        gate. Distinct from :meth:`set_preparing_voice_callback`, which is
+        the *advisory message* channel shared with Story 17.2's
+        voice_clone_prompt precompute: that precompute serialises on a
+        per-voice ``asyncio.Lock``, not on ``_request_semaphore``, so it
+        must NOT drive this gate (AC #3).
+        """
+        self._compile_priming_callback = callback
+
+    @property
+    def compile_priming_active(self) -> bool:
+        """Story 20.7 — True exactly while compile priming holds
+        ``_request_semaphore``. Read by tests and by any consumer that wires
+        up after the declaration has already fired."""
+        return self._compile_priming_active
 
     def set_app_settings(self, app_settings: AppSettings) -> None:
         """Replace the AppSettings reference consulted at dispatch time.
@@ -1999,6 +2033,38 @@ class QwenTTSService(BaseService):
         if self._last_preparing_voice_message == message:
             self._emit_preparing_voice(None)
 
+    def _set_compile_priming_active(self, active: bool) -> None:
+        """Story 20.7 AC #2 — declare whether compile priming currently
+        holds ``_request_semaphore``.
+
+        **Total by construction.** The release call (``False``) lives as the
+        first statement of a ``finally`` whose other job is clearing the
+        "Preparing TTS engine…" indicator. A callback that raises there must
+        neither propagate (the caller's contract is "warmup never raises")
+        nor skip the rest of that ``finally``. So this swallows, exactly as
+        :meth:`_emit_preparing_voice` does, and the local flag is updated
+        BEFORE the callback so the flag is right even if the UI hop fails.
+        """
+        self._compile_priming_active = bool(active)
+        # Story 20.7 Task 5 — observable in ``myvoice.log`` on a real launch,
+        # so "the gate engaged AND released" is verifiable from the log
+        # without an operator watching the button. Two lines per launch, and
+        # only on launches where priming actually runs.
+        self.logger.info(
+            "Compile-priming Generate gate: %s",
+            "ENGAGED (Generate disabled while priming holds the request "
+            "semaphore)" if self._compile_priming_active
+            else "RELEASED (Generate re-enabled)",
+        )
+        if self._compile_priming_callback is None:
+            return
+        try:
+            self._compile_priming_callback(self._compile_priming_active)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(
+                f"compile_priming callback raised: {exc}"
+            )
+
     # ------------------------------------------------------------------ #
     # Story 18.4 — torch.compile warmup worker (D-23)
     # ------------------------------------------------------------------ #
@@ -2294,6 +2360,11 @@ class QwenTTSService(BaseService):
             self._emit_preparing_voice(self._PREPARING_TTS_ENGINE_MESSAGE)
             self._last_priming_model_type = None
             try:
+                # Story 20.7 AC #1/#2 — declare busy as the FIRST statement
+                # inside the try, so the ``finally`` that releases it is
+                # already installed. From here to that ``finally`` is the
+                # window in which priming holds ``_request_semaphore``.
+                self._set_compile_priming_active(True)
                 await self._run_compile_priming()
                 duration_ms = int((time.monotonic() - start_ms) * 1000)
                 self.logger.info(
@@ -2347,6 +2418,11 @@ class QwenTTSService(BaseService):
                     error=type(exc).__name__,
                 )
             finally:
+                # Story 20.7 AC #2 (load-bearing) — FIRST statement in the
+                # ``finally`` and non-raising, so nothing above it can strand
+                # the gate. Covers the success return, CompilePrimingSkipped,
+                # any other raise, and cancellation.
+                self._set_compile_priming_active(False)
                 # Story 20.2 review F7: do not erase a concurrent Story
                 # 17.2 "Preparing voice for streaming..." message.
                 self._clear_preparing_voice_if_mine(
@@ -2358,6 +2434,9 @@ class QwenTTSService(BaseService):
         self._emit_preparing_voice(self._PREPARING_TTS_ENGINE_MESSAGE)
         self._last_priming_model_type = None
         try:
+            # Story 20.7 AC #1/#2 — see the warm path above: declared first
+            # inside the try, released in the try's own ``finally``.
+            self._set_compile_priming_active(True)
             await self._run_compile_priming()
             # Story 20.3 AC #3 — mark_warm ONLY when the key and the primed
             # model agree. A cold cache that retries next launch is strictly
@@ -2426,6 +2505,11 @@ class QwenTTSService(BaseService):
                 error=type(exc).__name__,
             )
         finally:
+            # Story 20.7 AC #2 (load-bearing) — FIRST statement in the
+            # ``finally`` and non-raising. This path also carries an early
+            # ``return`` from inside the try (the AC #3 key/model mismatch
+            # branch); the ``finally`` covers that too.
+            self._set_compile_priming_active(False)
             # Always clear the indicator — even on priming failure the
             # user should not be left looking at a stuck "Preparing TTS
             # engine…" message. Story 20.2 review F7: clear it only if it

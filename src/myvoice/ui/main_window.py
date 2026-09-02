@@ -164,6 +164,13 @@ class MainWindow(QMainWindow):
         # ``set_generation_status``; consulted by ``_on_clear_clicked``.
         self._is_generating = False
 
+        # Story 20.7: track startup compile priming, which holds the TTS
+        # service's single ``_request_semaphore`` slot. Generate must be
+        # gated while it does, or the press queues silently behind it.
+        # Updated by ``set_engine_priming``; consulted only by
+        # ``_refresh_generate_enabled``.
+        self._is_priming = False
+
         # Story 11.4 follow-up: track playback in-flight so the Stop mode
         # extends through audio playback (not just generation). Updated by
         # ``set_playback_active``.
@@ -1554,14 +1561,19 @@ class MainWindow(QMainWindow):
             is_generating: Whether generation is in progress
         """
         self.status_bar.showMessage(status)
-        self.generate_button.setEnabled(not is_generating)
-
-        # Story 7.4: Enable/disable pulsing animation during generation
-        self.set_generation_pulsing(is_generating)
 
         # Story 11.4 follow-up: track in-flight state so the Clear button
         # knows whether to clear text (idle) or emit cancel (generating).
+        # Story 20.7 AC #4: record here, then DERIVE the button state in
+        # ``_refresh_generate_enabled``. Assigning ``setEnabled`` directly
+        # from ``is_generating`` alone would let a generation finishing
+        # mid-priming re-enable a button that compile priming is still
+        # blocking, and vice versa.
         self._is_generating = is_generating
+        self._refresh_generate_enabled()
+
+        # Story 7.4: Enable/disable pulsing animation during generation
+        self.set_generation_pulsing(is_generating)
 
         if is_generating:
             # Change icon to indicate loading/processing for icon button
@@ -1577,6 +1589,43 @@ class MainWindow(QMainWindow):
         # Story 11.4 follow-up: Clear-vs-Stop visuals are driven by the
         # combined state (generating OR playing), not just generating.
         self._refresh_clear_button_mode()
+
+    def set_engine_priming(self, is_priming: bool) -> None:
+        """Story 20.7 AC #1/#2 — consumer half of the compile-priming
+        declaration.
+
+        ``QwenTTSService`` declares when startup compile priming holds
+        ``_request_semaphore``; this window acts on it by gating Generate.
+        A press during that window does not fail — it *queues*, silently,
+        for as long as priming runs (~4.4-4.9 s on an RTX 5090; measured at
+        840 ms and 1,383 ms of hidden wait in two of eighteen Story 20.6
+        captures). The visible reason is the "Preparing TTS engine…"
+        message the same priming region already puts on the TTS indicator;
+        this method deliberately introduces no second message channel.
+
+        AC #2 is load-bearing: priming is non-fatal and can end by raising,
+        by cancellation, or via any of its gates, so the producer calls this
+        with ``False`` from a ``finally``. Keep this method total — no early
+        return, no raise, no dependency on the True call having happened.
+        """
+        self._is_priming = bool(is_priming)
+        self._refresh_generate_enabled()
+
+    def _refresh_generate_enabled(self) -> None:
+        """Story 20.7 AC #4 — the single owner of the Generate button's
+        enabled state.
+
+        Two independent producers can block Generate: the user's own
+        generation (``_is_generating``) and startup compile priming
+        (``_is_priming``). They overlap in both orders on a real launch, so
+        each records its own flag and the button is *derived* from both.
+        Neither producer may assign ``setEnabled`` itself; whichever
+        finished last would otherwise decide for the one still running.
+        Idempotent.
+        """
+        self.generate_button.setEnabled(
+            not (self._is_generating or self._is_priming)
+        )
 
     def set_playback_active(self, is_playing: bool) -> None:
         """
