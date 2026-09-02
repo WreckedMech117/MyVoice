@@ -1180,6 +1180,7 @@ class AudioCoordinator(BaseService):
         sample_width: int = 2,
         text_length: Optional[int] = None,
         session_id: Optional[str] = None,
+        crossfade_samples: Optional[int] = None,
     ) -> Dict[str, Optional[str]]:
         """
         Start streaming sessions on both audio services for immediate chunk playback.
@@ -1215,6 +1216,29 @@ class AudioCoordinator(BaseService):
                 ``stop_streaming_session`` so a multi-generation playback
                 session emits the boundary once per session rather than once
                 per process.
+            crossfade_samples: Width of the consumer-side chunk-boundary
+                cross-fade, in samples. ``None`` (every pre-existing caller)
+                keeps the 64-sample default.
+
+                Story 20.5 added this because the cross-fade's premise is
+                that consecutive chunks are *independent renderings butt-
+                spliced together*, so a short dissolve hides the step. It
+                blends the last K samples of one chunk with the first K of
+                the next — DIFFERENT moments in time — so when that premise
+                is false and the chunks are already one continuous waveform,
+                it is not a repair: it is a 2.7 ms comb over audio that
+                needed none. With codec state caching active on TRUE_STREAM
+                the premise is false, and the Story 20.5 Phase 3 audition
+                flagged the unmasked comb as a blocking defect on two
+                single-seam trials. Measured against the codec's true output,
+                the cross-fade made that stream 2.6-3.3x worse
+                (``20-5-phase2-evidence.md`` SS4.2).
+
+                Pass 0 only when the producer guarantees its chunks are
+                sample-continuous. SENTENCE_STREAM butt-splices independently
+                generated sentences and its discontinuities are real, so it
+                keeps the default — Story 20.5 measured nothing on that path
+                and deliberately did not change it.
 
         Returns:
             Dict with session IDs: {"monitor": id_or_none, "virtual": id_or_none}
@@ -1276,9 +1300,22 @@ class AudioCoordinator(BaseService):
                     )
 
             # Per-session consumer-side smoothing buffer.
+            effective_crossfade = (
+                _DEFAULT_STREAMING_CROSSFADE_SAMPLES
+                if crossfade_samples is None
+                else int(crossfade_samples)
+            )
+            if effective_crossfade != _DEFAULT_STREAMING_CROSSFADE_SAMPLES:
+                self.logger.info(
+                    "Streaming buffer: consumer cross-fade %d samples "
+                    "(default %d) - the producer declared this chunk stream "
+                    "sample-continuous, so a cross-dissolve between "
+                    "consecutive chunks would comb rather than repair",
+                    effective_crossfade, _DEFAULT_STREAMING_CROSSFADE_SAMPLES,
+                )
             self._streaming_buffer = StreamingChunkBuffer(
                 watermark_ms=_DEFAULT_STREAMING_WATERMARK_MS,
-                crossfade_samples=_DEFAULT_STREAMING_CROSSFADE_SAMPLES,
+                crossfade_samples=effective_crossfade,
                 sample_rate=sample_rate,
                 channels=channels,
                 sample_width=sample_width,

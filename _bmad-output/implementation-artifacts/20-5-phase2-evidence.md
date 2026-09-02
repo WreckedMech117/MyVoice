@@ -614,10 +614,346 @@ python310\python.exe _bmad-output\implementation-artifacts\20-5-phase2-verify.py
 
 ## 8. Follow-ups this story deliberately did not take
 
-| # | item | why it was left | evidence |
+Updated after round 1 and Phase 4. Item 1 was promoted into the story — the
+audition made it blocking rather than optional.
+
+| # | item | status | evidence |
 |---|---|---|---|
-| 1 | Remove the 64-sample consumer crossfade | a real change with a real expected effect — needs its own audition | §4.2 |
-| 2 | Drop the 5-frame lookahead and the post-decode trim | recovers the +8.6 ms/chunk *and* fires the first chunk 5 talker steps earlier; also removes the (inert) blend's input | §5.2, Phase 1 §4.1 |
-| 3 | Remove the 1,024-sample decoder seam blend | now provably an identity — dead weight, no quality argument either way | §4.1 |
-| 4 | Reopen `chunk_size` | AC #5's own story, gated on Phase 3 passing | AC #5 |
-| 5 | Single-pass state capture | recovers the decode-time cost without touching the trim contract | §5.2 |
+| 1 | ~~Remove the 64-sample consumer crossfade~~ | **DONE in Phase 4** — gated on producer-declared continuity, so SENTENCE_STREAM is untouched | §4.2, §9, round 1 |
+| 2 | Drop the 5-frame lookahead and the post-decode trim | open — recovers the +8.6 ms/chunk *and* fires the first chunk 5 talker steps earlier | §5.2, Phase 1 §4.1 |
+| 3 | Remove the 1,024-sample decoder seam blend | open — *nearly* inert, not provably inert (worst-case seam 8.7e-02 in bf16), so it stays until it has its own round | §4.1, §9.5 |
+| 4 | Reopen `chunk_size` | open — AC #5's own story, gated on the audition passing | AC #5 |
+| 5 | Single-pass state capture | open — recovers the decode-time cost without touching the trim contract | §5.2 |
+| 6 | Persist captured tokens in the audition fixtures | new — would let a later round reuse *exact* content instead of a fresh realisation | §10.2 |
+
+---
+
+## §N. Phase 3 audition — MIXED. State caching works; the crossfade it unmasked does not. 2026-09-01
+
+14 trials, L1 solo, blinded. Candidate = `cs25 + fix + state caching`;
+reference = `cs25 + fix` (ships today). Both arms decoded from **one** talker run.
+
+| trial | reference | candidate (+state) | preferred | verdict |
+|---|---|---|---|---|
+| l-020-t1 | click | click | **state** | shared |
+| l-020-t2 | click | audible_seam | **state** | shared |
+| l-021-t1 | tonal_distortion | click | **state** | shared |
+| l-021-t2 | tonal_distortion | click | **state** | shared |
+| m-020-t1 | click | click | **state** | shared |
+| m-020-t2 | none | **click** | ref | **BLOCKING** |
+| m-021-t1 | click | click | ref | shared |
+| m-021-t2 | none | none | equivalent | clean |
+| s-020-t1 | none | none | equivalent | clean *(byte-identical control — passed)* |
+| s-020-t2 | none | **click** | ref | **BLOCKING** |
+| s-021-t1/t2, s-022-t1/t2 | none | none | equivalent | clean |
+
+**Preference: state 5 — reference 3 — equivalent 6.** Two blocking rows.
+
+### The prediction was wrong in both directions, and informatively
+
+P3 predicted `equivalent` as modal at 6–11 of 14. It is modal at exactly 6 — the
+bottom of the range — because **both arms flagged far more often than rounds 3–4
+did on the same utterances**. Round 3 scored `cs25+fix` clean on l-020 and l-021;
+here it flags on six rows. That is a fixture-construction difference, not a code
+one: this round reuses a single talker run per pair, so the content is a
+different realisation with different seam exposure, and 14 trials sample more
+content than 7.
+
+### What the data actually says
+
+**Where both arms flag, the candidate is preferred 5–1**, and the listener's own
+notes are consistent and directional: *"B click was minor compared to A"*,
+*"A clicks were very minor"*, *"very minor pops at the seam compared to the rest
+of the clicks noted"*. State caching is audibly *better* on the rows where the
+seam is exposed.
+
+**The two blocking rows are the problem, and they have a named cause.** §"two
+smoothing layers" of this evidence predicted it before the audition ran:
+
+> *The 64-sample `StreamingChunkBuffer` crossfade is now the dominant error term.
+> It blends different moments (sample `n+i` with `n−64+i`), so on continuous
+> audio it is a 2.7 ms comb… 2.6×/3.3× worse against ground truth.*
+
+That is exactly the observed signature. The crossfade was **masking** while the
+cold start dominated; with the cold start removed it is the largest remaining
+error and becomes audible on its own. `m-020-t2` and `s-020-t2` are single-seam
+rows where the reference's cold start happened not to be audible and the
+candidate's newly-unmasked comb is.
+
+**The byte-identical control passed** (`s-020-t1`, no seam, both arms identical →
+`equivalent`), so the fixture is sound.
+
+### Verdict and recommendation
+
+**Do not revert.** The mechanism result stands: head NRMSE 0.406 → 0.0078,
+correlation 1.0000, zero lag jitter, error-by-position flat. The cause of
+`cs10`'s failure is removed.
+
+**The one-variable discipline surfaced a real coupling rather than hiding it.**
+Leaving the crossfade in was correct for attribution and is precisely why we can
+name the blocker instead of guessing at it.
+
+**Next: neutralise the 64-sample crossfade with state caching in place, then
+re-audition.** It already has measured evidence against it (2.6×/3.3× worse
+against ground truth, touching 0.13 % of samples) and no remaining argument for
+it — its job was masking a discontinuity that no longer exists. That is one
+variable, one round.
+
+Story 20.4's 1,024-sample seam blend is a separate question: it is now an
+identity (inputs differ by NRMSE 0.0037–0.0046, bit-identical in fp64), so it is
+harmless but pointless. Remove it in the same pass only if the evidence says it
+is *provably* inert; if there is any doubt, leave it and change one thing.
+
+> **Editorial note (added while writing §9).** A patch script of mine
+> overwrote this section by mistake and it was restored immediately. Every
+> line above is verbatim from the recorded original except the final clause of
+> the last sentence, which was reconstructed from the coordinator's written
+> instruction ("Do not remove it in the same pass unless you can show it is
+> provably inert… If there is any doubt, leave it and change one thing"). The
+> raw per-trial data is independently preserved in
+> `20-5-state-cache-audition.csv`, which was not touched. §9.5 records the
+> decision this section asked for: the seam blend stays.
+
+---
+
+## §9. Phase 4 — neutralising the consumer crossfade (the round-1 blocker)
+
+Round 1's two blocking rows had a cause this file named before the round ran.
+Phase 4 removes it. **One variable:** the 64-sample `StreamingChunkBuffer`
+crossfade. Nothing else moves — not `chunk_size`, not the lookahead, not the
+trim, not the 1,024-sample decoder seam blend.
+
+### 9.1 Remove, reduce, or gate? — the decision, on evidence
+
+**Gate it.** Neither of the other two options survives contact with the
+measurements.
+
+**Not "reduce".** The harm is qualitative, not proportional. The crossfade
+blends the last K samples of one released chunk with the first K of the next —
+sample `n+i` mixed with sample `n−64+i` — which on continuous audio is a comb
+filter with notches at odd multiples of `sample_rate / 2K`. Halving K moves the
+notches up and shortens the artefact; it does not make the operation correct.
+There is no width at which cross-dissolving a signal with its own past is right.
+Picking 32 would trade one arbitrary constant for another and would still have
+to be auditioned.
+
+**Not "remove globally".** The same buffer is on **SENTENCE_STREAM**. That path
+butt-splices independently generated sentences, so its chunk boundaries are
+genuine discontinuities and the crossfade is doing the job it was written for.
+Story 20.5 has measured *nothing* on that path. Removing the crossfade outright
+would silently change audio this story never looked at — precisely the failure
+mode the coordinator flagged.
+
+**Gating is what the evidence actually supports.** The crossfade's premise is
+*"consecutive chunks are independent renderings butt-spliced together, so bridge
+the step."* That premise is a property of the **producer**, and it is now false
+for exactly one producer: TRUE_STREAM with codec state caching engaged, whose
+posted chunks concatenate into the codec's true output sample for sample (§2).
+So the producer declares it and the consumer acts on it. Everything else keeps
+today's behaviour bit-for-bit.
+
+And on the declared-continuous stream, **0 is not "less of a bad thing" — it is
+the correct value**, because the concatenation is then exactly what the codec
+produced. §4.2 measured that directly: crossfade-off is 2.6×/3.3× closer to
+ground truth than crossfade-on.
+
+### 9.2 The blast radius, mapped rather than assumed
+
+`StreamingChunkBuffer` is constructed in exactly one place
+(`audio_coordinator.py:start_streaming_session`) and consumed in exactly one
+(`AudioCoordinator.play_audio_chunk`), which has exactly one production caller
+(`MyVoiceApp._handle_progressive_chunk_async`). That consumer serves **two**
+producers, and app.py's own comment says so:
+
+> *Covers SENTENCE_STREAM's last data chunk (is_final=True with real
+> audio_data) AND TRUE_STREAM's data chunks (is_final=False).*
+
+An AST sweep confirms only two methods emit AudioChunks at all —
+`_generate_streaming` (SENTENCE_STREAM) and `_generate_true_stream`. **The batch
+path never opens a progressive session**: it plays through `play_dual_stream`,
+which does not touch `_streaming_buffer`. So the crossfade is on TRUE_STREAM and
+SENTENCE_STREAM, and not on batch.
+
+| path | chunks continuous? | crossfade after Phase 4 |
+|---|---|---|
+| TRUE_STREAM + state caching | **yes** — sample-exact concatenation | **0** |
+| TRUE_STREAM, stateless fallback / kill switch set | no — each chunk decodes cold | 64 (unchanged) |
+| SENTENCE_STREAM | no — independently generated sentences | 64 (unchanged) |
+| BATCH | n/a — never opens a progressive session | n/a |
+
+### 9.3 The wiring
+
+Three small changes, each in the layer that owns the knowledge:
+
+1. **`QwenTTSService`** gains `_progressive_stream_continuous`, set at the top
+   of every dispatch path that emits AudioChunks — `_generate_true_stream` reads
+   it off `decode_fn.carries_codec_state`, `_generate_streaming` sets `False`.
+   Exposed as the read-only property `progressive_stream_is_continuous`.
+2. **`AudioCoordinator.start_streaming_session`** gains
+   `crossfade_samples: Optional[int] = None`. `None` means the 64-sample
+   default, so every pre-existing caller is unaffected; a non-default value is
+   logged.
+3. **`MyVoiceApp._handle_progressive_chunk_async`** passes
+   `crossfade_samples=0` iff the producer declares continuity, via a
+   double-guarded `getattr` so an app without a wired TTS service falls through
+   to today's behaviour rather than raising inside the session-open try.
+
+`StreamingChunkBuffer` itself is **unchanged** — it already accepted and
+validated 0, and `test_crossfade_disabled_passes_through_unchanged` already
+pinned that 0 means untouched.
+
+**Reading the declaration off the decode_fn rather than hard-coding `True` is
+load-bearing.** It means the stateless fallback and the
+`MYVOICE_CODEC_STATE_CACHE` kill switch each keep the crossfade they still need,
+automatically, with no second place to keep in sync.
+
+### 9.4 The staleness trap, and the test that closes it
+
+The flag is per-generation state on a long-lived service. If only
+`_generate_true_stream` set it, a TRUE_STREAM generation would leave `True`
+behind and the **next SENTENCE_STREAM generation would silently lose its
+crossfade** — a cross-path audio change on a path this story never measured, and
+one that no single-generation test would ever catch.
+
+`test_every_audio_chunk_producer_declares_stream_continuity` is an AST source
+invariant, in the spirit of the Story 20.2 `_audio_chunk_sink` rule: it derives
+the set of AudioChunk-emitting `_generate*` methods from the source and requires
+every one of them to assign the flag in its own body. It currently finds
+`{_generate_streaming, _generate_true_stream}` as both producers and assigners,
+and it fails loudly if a third producer is ever added without a declaration.
+
+Ten tests in `tests/unit/services/test_consumer_crossfade_scoping.py` cover the
+pass-through default, `None`-means-default (getting that backwards would strip
+the crossfade from SENTENCE_STREAM), explicit 0, the log line, the flag's safe
+`False` default before any generation, its derivation from the decode_fn, the
+source invariant, and the consumer's defensive lookup.
+
+### 9.5 What was NOT changed, and why
+
+**The Story 20.4 1,024-sample decoder seam blend stays.** The coordinator's
+instruction was to remove it only if it is *provably* inert. It is not — not in
+the shipping regime. §4.1 measured its two inputs differing by NRMSE 0.0037–
+0.0046 median **with a maximum of 8.7e-02** on one l-020 seam. Bit-identical in
+fp64 on CPU is not the same claim as inert in bf16 on a 5090, and an 8.7e-02
+worst-case over a 1,024-sample window is not nothing. It is *nearly* inert,
+which is not the standard that was set. It stays, and this round changes one
+thing.
+
+---
+
+## §10. Phase 3 round 2 — pre-registration (AC #4)
+
+**Not yet run.** Written before the round, as with round 1.
+
+### 10.1 The arms
+
+    reference = cs25 + fix + state caching + 64-sample consumer crossfade
+    candidate = cs25 + fix + state caching + NO consumer crossfade
+
+**Both arms carry state caching.** Round 1 already scored state caching against
+what ships today (preferred 5–1 wherever the seam was exposed); this round holds
+that fixed and varies only the crossfade, which is the one thing that can
+attribute the two blocking rows.
+
+The crossfade width for each arm is **derived** by the same rule the shipped
+wiring uses — `0 if decode_fn.carries_codec_state else 64` — rather than
+hard-coded in the fixture, so the fixture cannot render an arm production would
+not produce. The generator's preflight also refuses to run unless
+`AudioCoordinator.start_streaming_session` actually has the `crossfade_samples`
+parameter and `QwenTTSService` actually exposes the continuity property, so a
+round cannot audition a configuration that is unreachable in the product.
+
+**A third arm is rendered but not auditioned.** Every take is also rendered as
+`cs25fix` — stateless decode plus the 64-sample crossfade, i.e. exactly what
+ships today. It is not in the truth table and costs no listening time. It exists
+because the talker is stochastic: a close-out comparison of "state caching + no
+crossfade" against "ships today" is only worth anything if it comes from the
+*same* takes, and those takes exist only while the generator is running.
+Rendering it now makes that comparison a truth-table edit rather than a
+regeneration.
+
+### 10.2 The fixture, generated and checked
+
+28 auditioned WAVs (42 rendered), 14 trials, in `20-5-perceptual-fixtures-r2/`.
+Chunk counts run 1–10, i.e. 0–9 seams.
+
+| check | result |
+|---|---|
+| length delta within each pair | **+0 samples on all 14** |
+| worst within-pair active-RMS level delta | **0.004 dB** (round 1: 0.32 dB) |
+| zero-seam trial (s-020 take 2, 28 frames → 1 chunk) | **byte-identical between arms** |
+| where the arms differ | **100 % of the squared difference is inside a ±4,096-sample window around a seam, on every trial** |
+| how many samples differ | **exactly 63 per boundary** — the crossfade's own width, minus the ramp's zero-weight first sample |
+| the third arm | differs from the candidate (max Δ 33,598 LSB); recorded crossfades 64 / 0 / 64 |
+
+That fourth and fifth row are what make this round sharp. The two arms are
+**identical everywhere except the 63 samples at each chunk boundary that the
+crossfade touches** — this is as clean an isolation as an A/B can be. Peak
+excursions inside those windows reach 12,414 LSB (0.38 full scale), which is why
+2.7 ms is enough to be audible. Three trials (s-021 t1/t2, s-022 t2) have peak
+deltas of only 9–34 LSB because their boundaries land in quiet material; those
+are a built-in low-effect control set and should come back `equivalent`.
+
+**One limitation, stated plainly.** Round 2's takes are *new* realisations —
+neither generator persisted its captured tokens, so round 1's exact audio could
+not be reused. Q1 below therefore tests the utterance *class* that blocked
+(`m-020`, `s-020` — the low-seam, exposed rows), not the identical waveforms.
+The design still compensates in the way that matters: both arms of every pair
+share a take, so attribution within a pair is exact. Persisting captured tokens
+is recorded as a follow-up so a future round can reuse exact content.
+
+### 10.3 The falsifiable prediction, recorded before listening
+
+- **Q1 (BLOCKING, the whole point).** The utterances that blocked round 1 —
+  `m-020` and `s-020` — come back clean on the candidate: neither carries a
+  blocking seam defect its paired reference does not. *Falsified if either still
+  flags candidate-only.*
+- **Q2 (NO NEW HARM).** No blocking seam defect on any candidate trial anywhere
+  in the round. *Falsified by one.*
+- **Q3 (DIRECTION).** The candidate is preferred at least as often as the
+  reference. *Falsified if the reference is preferred on ≥ 4 of 14.*
+- **Q4 (MAGNITUDE).** `equivalent` is modal, **7–12 of 14** — a little higher
+  than round 1's 6, because the arms differ on only 0.1 % of samples.
+  *Falsified either way:* ≥ 10 candidate-preferred would be a larger effect than
+  63 samples per boundary should be able to produce and would mean something
+  else moved; ≤ 4 equivalent means the arms are far more separable than a 2.7 ms
+  window can explain.
+- **Q5 (LOCATION — the one that can embarrass this diagnosis).** Round 1's
+  blocking rows were **single-seam** trials, which is the opposite of where
+  seam-density reasoning would put them. The Phase 2 measurement says the
+  crossfade is a *per-boundary* artefact, so it should be **more** exposed where
+  it is not buried under neighbouring seams. So the improvement should show on
+  the low-seam rows (`m-020`, `s-020`, `m-021`) at least as much as on the 8–9-
+  seam long ones. *Falsified if only the long fixtures improve* — which would
+  mean the two blocking rows had a different cause and this round fixed the
+  wrong thing.
+
+Q5 is stated first-class deliberately. It is the prediction that, if it fails,
+says the diagnosis in §9 is wrong — and a round that cannot embarrass its own
+hypothesis is not worth running.
+
+### 10.4 Verdict gate (blocking)
+
+FAIL if any chunk-boundary artefact is flagged on a candidate trial that the
+paired reference does not also carry. A defect on both files of a pair is
+upstream of the crossfade — demonstrably, since they are the same take decoded
+identically outside those 63 samples — and is recorded rather than blocking.
+
+### 10.5 What the operator runs
+
+The round-2 fixture is already generated. One command:
+
+```
+python310\python.exe _bmad-output\implementation-artifacts\20-5-l1-audition-helper.py L1 r2
+```
+
+14 trials. Results append to `20-5-state-cache-audition-r2.csv`; re-running
+skips rows already recorded; the helper unblinds and scores Q1–Q5 itself. Round
+1 can be replayed and re-scored with `... 20-5-l1-audition-helper.py L1 r1`.
+
+To regenerate the round-2 fixture (new takes):
+
+```
+python310\python.exe _bmad-output\implementation-artifacts\20-5-regen-audition-fixture-r2.py
+```
+

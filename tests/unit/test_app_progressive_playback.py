@@ -126,7 +126,7 @@ class TestProgressivePlaybackConsumer:
         # assertion rather than silently drifting again.
         coordinator.start_streaming_session.assert_awaited_once_with(
             sample_rate=24000, channels=1, sample_width=2,
-            text_length=None, session_id=None,
+            text_length=None, session_id=None, crossfade_samples=None,
         )
         assert app._progressive_playback_active is True
         assert app._progressive_playback_sample_rate == 24000
@@ -384,7 +384,7 @@ class TestProgressivePlaybackSampleRateAndFailure:
         # assertion rather than silently drifting again.
         coordinator.start_streaming_session.assert_awaited_once_with(
             sample_rate=22050, channels=1, sample_width=2,
-            text_length=None, session_id=None,
+            text_length=None, session_id=None, crossfade_samples=None,
         )
         assert app._progressive_playback_sample_rate == 22050
 

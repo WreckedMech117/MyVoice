@@ -655,6 +655,23 @@ class QwenTTSService(BaseService):
         self._generation_cancelled_callback: Optional[Callable[[], None]] = None
         self._text_validation_callback: Optional[Callable[[TextValidationResult], None]] = None
         self._audio_chunk_ready_callback: Optional[Callable[[AudioChunk], None]] = None
+        # Story 20.5 Phase 4 — does the CURRENT generation's chunk stream
+        # arrive at the consumer as one continuous waveform, or as
+        # independent renderings butt-spliced together?
+        #
+        # It decides whether the consumer-side 64-sample cross-fade in
+        # ``StreamingChunkBuffer`` is a repair or a defect. That cross-fade
+        # blends the last K samples of one chunk with the first K of the
+        # next — different moments in time — which bridges a real step but
+        # combs a continuous signal. TRUE_STREAM with codec state caching
+        # produces a continuous signal; SENTENCE_STREAM butt-splices
+        # separately generated sentences and does not.
+        #
+        # Set by EVERY dispatch path that emits AudioChunks, at the top of
+        # that path, so a TRUE_STREAM generation cannot leave a stale True
+        # behind for a following SENTENCE_STREAM one. Pinned by
+        # ``test_every_audio_chunk_producer_declares_stream_continuity``.
+        self._progressive_stream_continuous: bool = False
         self._model_loading_callback: Optional[Callable[[str], None]] = None
         self._model_ready_callback: Optional[Callable[[str], None]] = None
         self._health_status_callback: Optional[Callable[[ServiceHealthStatus, Optional[str]], None]] = None
@@ -3879,6 +3896,13 @@ class QwenTTSService(BaseService):
         self._streaming_requests += 1
         start_time = time.time()
         first_chunk_time: Optional[float] = None
+        # Story 20.5 — SENTENCE_STREAM butt-splices independently generated
+        # sentences, so consecutive chunks really are discontinuous and the
+        # consumer's cross-fade is doing real work. Declared False here, at
+        # the top of the path, so a preceding TRUE_STREAM generation cannot
+        # leave a stale True behind. Story 20.5 measured nothing on this path
+        # and deliberately changes nothing about it.
+        self._progressive_stream_continuous = False
         # Story 20.2 review F3/F4 - symmetry with the TRUE_STREAM path.
         # The compile-priming request carries ``suppress_audio_output``
         # through the whole TRUE_STREAM -> SENTENCE_STREAM -> BATCH
@@ -5160,6 +5184,19 @@ class QwenTTSService(BaseService):
                     lookahead=streamer.lookahead,
                 )
 
+                # Story 20.5 Phase 4 — with codec state caching engaged the
+                # posted chunks concatenate into the codec's true output
+                # sample for sample (evidence SS2), so the consumer's
+                # 64-sample cross-fade has nothing to bridge and combs
+                # instead. Without it (the stateless fallback) the two
+                # renditions at each seam genuinely differ and today's
+                # behaviour is kept. Read off the decode_fn rather than
+                # assumed, so the fallback and the kill switch both do the
+                # right thing automatically.
+                self._progressive_stream_continuous = bool(
+                    getattr(decode_fn, "carries_codec_state", False)
+                )
+
                 hardware_label = (
                     "gpu"
                     if "cuda" in str(self._model_registry.device).lower()
@@ -6183,6 +6220,19 @@ class QwenTTSService(BaseService):
         UI can use this to show inline validation messages.
         """
         self._text_validation_callback = callback
+
+    @property
+    def progressive_stream_is_continuous(self) -> bool:
+        """Whether the current generation's AudioChunks form one continuous
+        waveform (Story 20.5).
+
+        Read by the progressive-playback consumer when it opens the audio
+        session, to decide whether the consumer-side chunk-boundary
+        cross-fade is a repair or a defect. True only for TRUE_STREAM with
+        codec state caching engaged; False for SENTENCE_STREAM, for the
+        stateless TRUE_STREAM fallback, and before any generation starts.
+        """
+        return self._progressive_stream_continuous
 
     def set_audio_chunk_ready_callback(self, callback: Callable[[AudioChunk], None]):
         """

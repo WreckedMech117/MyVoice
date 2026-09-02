@@ -26,35 +26,44 @@ So: judge the two files as two renderings of the same performance, because
 that is exactly what they are. If they sound identical, say ``equivalent``;
 that is a legitimate and expected answer here in a way it was not in round 4.
 
-THE PREDICTION, RECORDED BEFORE LISTENING (AC #4)
---------------------------------------------------
-Written into ``20-5-codec-state-caching-evidence.md`` before this script was
-first run, and repeated here so the helper and the evidence cannot drift:
+ROUND 2'S PREDICTION, RECORDED BEFORE LISTENING (AC #4)
+--------------------------------------------------------
+Written into ``20-5-phase2-evidence.md`` before this round's fixture was
+generated, and repeated here so the helper and the evidence cannot drift.
 
-  P1 (BLOCKING). No blocking seam defect — ``audible_seam``,
-      ``click_or_discontinuity``, ``prosody_break_at_stitch`` — on any
-      candidate trial. **Falsified by one.**
-  P2 (DIRECTION). Where the two differ, the candidate is preferred. The
-      reference is never preferred on seam grounds.
-      **Falsified if the reference is preferred on >= 4 of 14 trials.**
-  P3 (MAGNITUDE). ``equivalent`` is the modal answer: 6-11 of 14 trials.
-      Story 20.4 round 3 already certified cs25 + blend as clean to this
-      listener, so there is little audible headroom left at this seam
-      density — the blend was masking the defect adequately at 25.
-      **Falsified in either direction**: >= 10 candidate-preferred is a large
-      effect (which would mean the blend was masking less well than round 3
-      suggested, and would strengthen AC #5's case for reopening chunk size);
-      <= 4 equivalent means the arms are far more distinguishable than
-      predicted and the round needs re-reading before any conclusion.
-  P4 (LOCATION). Any heard difference is on l-020 / l-021, which carry 8-9
-      seams. s-020 / s-021 / s-022 carry 0-1 and should be indistinguishable.
-      **Falsified by a difference heard on a short fixture but not a long one.**
+Round 2 arms: reference = state caching + the 64-sample crossfade (round 1's
+candidate, the configuration that produced the two blocking rows); candidate =
+the same, crossfade neutralised to 0.
 
-Note what P3 says: the honest prediction is that this change is **not**
-audible at cs25, and that is not a disappointment. The prize is that the seam
-harm which killed cs10 is removed at the cause — which AC #5 reopens as its
-own story. A round that returns "equivalent everywhere, no new defects" is a
-PASS.
+  Q1 (BLOCKING, the whole point). The two rows that blocked round 1 --
+      ``m-020`` and ``s-020`` -- come back clean on the candidate. Neither
+      carries a blocking seam defect that its paired reference does not.
+      **Falsified if either still flags candidate-only.**
+  Q2 (NO NEW HARM). No blocking seam defect on any candidate trial anywhere
+      in the round. **Falsified by one.**
+  Q3 (DIRECTION). The candidate is preferred at least as often as the
+      reference. **Falsified if the reference is preferred on >= 4 of 14.**
+  Q4 (MAGNITUDE). ``equivalent`` is modal, 7-12 of 14 -- slightly higher than
+      round 1's 6, because the crossfade only touches 64 samples at each of
+      0-9 boundaries (0.1 % of the timeline), so most trials should be
+      indistinguishable. **Falsified either way**: >= 10 candidate-preferred
+      is a larger effect than 0.1 % of samples should be able to produce and
+      would mean something else moved; <= 4 equivalent means the arms are far
+      more separable than a 2.7 ms window can explain.
+  Q5 (LOCATION, the risky one). Round 1's blocking rows were SINGLE-SEAM
+      trials, which is the opposite of where seam-density reasoning would put
+      them. If Q1 holds, the improvement should show on the low-seam rows
+      (m-020, s-020, m-021) at least as much as on the 8-9-seam long ones.
+      **Falsified if the long fixtures improve and the short ones do not** --
+      which would mean the blocking rows had a different cause than the
+      crossfade and this round fixed the wrong thing.
+
+Q5 is the one that can embarrass this diagnosis, and it is stated first-class
+for that reason. The Phase 2 measurement said the crossfade is a per-boundary
+artefact, so it should be *more* audible where it is not buried under
+neighbouring seams -- which is exactly the single-seam rows. If instead only
+the long fixtures move, the two blocking rows were something else and the
+crossfade removal is a coincidence.
 
 VERDICT GATE (blocking, not advisory):
     FAIL if any chunk-boundary artefact is flagged on a candidate trial that
@@ -70,8 +79,10 @@ but not inferable from listening order.
 Re-running is safe: trials already recorded for the same listener are
 skipped. To restart, delete those rows from the CSV first.
 
+Pass a round as the second CLI argument (``r1``) to replay round 1.
+
 Usage:
-    python310\\python.exe _bmad-output\\implementation-artifacts\\20-5-l1-audition-helper.py [L1]
+    python310\\python.exe _bmad-output\\implementation-artifacts\\20-5-l1-audition-helper.py [L1] [r2]
 
 Working file — gitignored under ``_bmad-output/``; force-add per
 ``memory/git_repo_state.md``.
@@ -86,8 +97,45 @@ import winsound
 from pathlib import Path
 
 ARTIFACTS_DIR = Path(__file__).resolve().parent
-FIXTURE_DIR = ARTIFACTS_DIR / "20-5-perceptual-fixtures"
-CANONICAL_CSV = ARTIFACTS_DIR / "20-5-state-cache-audition.csv"
+
+# Round -> (fixture dir, results CSV). Round 1's entries are frozen: its
+# result is recorded in 20-5-phase2-evidence.md and must stay reproducible.
+ROUNDS = {
+    "r1": ("20-5-perceptual-fixtures", "20-5-state-cache-audition.csv"),
+    "r2": ("20-5-perceptual-fixtures-r2", "20-5-state-cache-audition-r2.csv"),
+}
+DEFAULT_ROUND = "r2"
+
+FIXTURE_DIR = ARTIFACTS_DIR / ROUNDS[DEFAULT_ROUND][0]
+CANONICAL_CSV = ARTIFACTS_DIR / ROUNDS[DEFAULT_ROUND][1]
+
+# Per-round listening guidance. Round 1 asked "does carrying codec state
+# change what you hear"; round 2 asks "does removing the consumer crossfade
+# fix the two rows where it did".
+ROUND_BRIEF = {
+    "r1": [
+        "What is different between the two files:",
+        "  ONLY the decoder. Both arms use the same chunk size (25), the",
+        "  same 1024-sample seam blend and the same 64-sample consumer",
+        "  crossfade. One decodes every chunk from a cold codec state, the",
+        "  way the shipped build does; the other carries the codec's real",
+        "  state across each boundary.",
+    ],
+    "r2": [
+        "What is different between the two files:",
+        "  ONLY the 64-sample consumer crossfade. BOTH arms carry codec",
+        "  state caching -- that is settled, and round 1 preferred it 5-1",
+        "  wherever the seam was exposed. One arm still cross-dissolves 2.7",
+        "  ms across every chunk boundary; the other does not.",
+        "",
+        "  Why that matters: the crossfade blends the END of one chunk with",
+        "  the START of the next -- two different moments -- so on audio",
+        "  that is already continuous it smears rather than repairs. Round 1",
+        "  flagged exactly that on m-020 and s-020: a click the shipped",
+        "  build did not have. This round is whether removing it removes",
+        "  the click without costing anything else.",
+    ],
+}
 
 # Story 17.1's controlled vocabulary, unchanged from Story 20.4 so the two
 # stories' results are directly comparable.
@@ -225,15 +273,45 @@ def _verdict(listener_id: str, truth, meta) -> None:
     total = cand_pref + ref_pref + equal
     print("\n  Preference (unblinded): candidate={} reference={} equivalent={}"
           .format(cand_pref, ref_pref, equal))
+    if meta.get("round") == 2:
+        blockers = {t for t, _, _ in blocking}
+        r1_rows = {t for t in (r["trial_id"] for r in rows)
+                   if t.startswith("m-020") or t.startswith("s-020")}
+        print("\n  Against round 2's prediction, recorded before the round:")
+        print("    Q1 m-020 / s-020 come back clean  : {}".format(
+            "HELD" if not (blockers & r1_rows) else
+            "FALSIFIED — still blocking: {}".format(sorted(blockers & r1_rows))))
+        print("    Q2 no candidate-only defect at all: {}".format(
+            "HELD" if not blocking else
+            "FALSIFIED — {}".format(sorted(blockers))))
+        print("    Q3 reference not preferred >= 4/14: {}".format(
+            "HELD" if ref_pref < 4 else
+            "FALSIFIED ({} of {})".format(ref_pref, total)))
+        print("    Q4 equivalent modal, 7-12 of 14   : {}".format(
+            "HELD" if 7 <= equal <= 12 else
+            "FALSIFIED ({} equivalent, {} candidate-preferred)".format(
+                equal, cand_pref)))
+        print("    Q5 low-seam rows improve too      : {}".format(
+            "HELD" if short_diff >= 0 and (short_diff > 0 or long_diff == 0)
+            else "CHECK BY HAND (short={} long={})".format(
+                short_diff, long_diff)))
+        if long_diff > 0 and short_diff == 0:
+            print("      ^ only the long fixtures moved. Round 1's blocking")
+            print("        rows were SINGLE-SEAM. If they are still clean this")
+            print("        is fine, but if they are not, the crossfade was not")
+            print("        their cause and the diagnosis needs redoing.")
+        return
+    # Round 1's scoring, kept so `r1` can be replayed and re-scored.
     print("\n  Against the prediction recorded before the round:")
     print("    P1 no blocking candidate-only defect : {}".format(
         "HELD" if not blocking else "FALSIFIED"))
     print("    P2 reference not preferred >= 4/14   : {}".format(
-        "HELD" if ref_pref < 4 else "FALSIFIED ({} of {})".format(ref_pref, total)))
+        "HELD" if ref_pref < 4 else
+        "FALSIFIED ({} of {})".format(ref_pref, total)))
     p3 = "HELD" if 6 <= equal <= 11 else (
-        "FALSIFIED — large effect ({} candidate-preferred)".format(cand_pref)
+        "FALSIFIED - large effect ({} candidate-preferred)".format(cand_pref)
         if cand_pref >= 10 else
-        "FALSIFIED — arms far more distinguishable than predicted "
+        "FALSIFIED - arms far more distinguishable than predicted "
         "({} equivalent)".format(equal))
     print("    P3 equivalent modal, 6-11 of 14      : {}".format(p3))
     print("    P4 differences on long fixtures only : {}".format(
@@ -246,12 +324,22 @@ def _verdict(listener_id: str, truth, meta) -> None:
         print("  its own story, with its own audition.")
 
 
-def main(listener_id: str = "L1") -> int:
+def main(listener_id: str = "L1", round_id: str = DEFAULT_ROUND) -> int:
+    global FIXTURE_DIR, CANONICAL_CSV
+    if round_id not in ROUNDS:
+        print("FATAL: unknown round {!r}; known: {}".format(
+            round_id, sorted(ROUNDS)), file=sys.stderr)
+        return 2
+    fixture_name, csv_name = ROUNDS[round_id]
+    FIXTURE_DIR = ARTIFACTS_DIR / fixture_name
+    CANONICAL_CSV = ARTIFACTS_DIR / csv_name
+
     truth_path = FIXTURE_DIR / "_perlistener_truthtable.json"
     if not truth_path.exists():
         print("FATAL: truth table not found at {}".format(truth_path),
               file=sys.stderr)
-        print("Run 20-5-regen-audition-fixture.py first.", file=sys.stderr)
+        print("Run 20-5-regen-audition-fixture{}.py first.".format(
+            "" if round_id == "r1" else "-" + round_id), file=sys.stderr)
         return 2
     truth = json.loads(truth_path.read_text(encoding="utf-8"))
     meta = truth["_meta"]
@@ -274,12 +362,8 @@ def main(listener_id: str = "L1") -> int:
     if already:
         print("Already recorded: {} -- will skip.".format(sorted(already)))
     print()
-    print("What is different between the two files:")
-    print("  ONLY the decoder. Both arms use the same chunk size (25), the")
-    print("  same 1024-sample seam blend and the same 64-sample consumer")
-    print("  crossfade. One decodes every chunk from a cold codec state, the")
-    print("  way the shipped build does; the other carries the codec's real")
-    print("  state across each boundary.")
+    for line in ROUND_BRIEF.get(round_id, ROUND_BRIEF["r1"]):
+        print(line)
     print()
     print("  Both files in a pair come from the SAME generation. The words,")
     print("  the timing and the delivery are identical to the sample. If they")
@@ -344,4 +428,7 @@ def main(listener_id: str = "L1") -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1] if len(sys.argv) > 1 else "L1"))
+    raise SystemExit(main(
+        sys.argv[1] if len(sys.argv) > 1 else "L1",
+        sys.argv[2] if len(sys.argv) > 2 else DEFAULT_ROUND,
+    ))

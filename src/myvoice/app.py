@@ -3174,6 +3174,27 @@ class MyVoiceApp(QObject):
                             # side TTFA boundaries carry, so the Story 18.1
                             # CSV joins without a positional heuristic.
                             session_id=chunk.session_id,
+                            # Story 20.5 Phase 4 — the consumer's 64-sample
+                            # chunk-boundary cross-fade exists to hide the
+                            # step between two independently rendered
+                            # chunks. With codec state caching engaged on
+                            # TRUE_STREAM there is no step: the chunks
+                            # concatenate into the codec's true output
+                            # sample for sample, and a cross-dissolve
+                            # between consecutive chunks combs it instead
+                            # (2.6-3.3x further from ground truth, and
+                            # flagged as a blocking defect on two trials of
+                            # the Story 20.5 Phase 3 audition). Ask the
+                            # producer rather than assuming: SENTENCE_STREAM
+                            # and the stateless TRUE_STREAM fallback both
+                            # answer False and keep the 64-sample default.
+                            crossfade_samples=(
+                                0 if getattr(
+                                    getattr(self, "_tts_service", None),
+                                    "progressive_stream_is_continuous",
+                                    False,
+                                ) else None
+                            ),
                         )
                     )
                 except Exception:
