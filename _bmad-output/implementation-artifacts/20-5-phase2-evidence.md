@@ -957,3 +957,58 @@ To regenerate the round-2 fixture (new takes):
 python310\python.exe _bmad-output\implementation-artifacts\20-5-regen-audition-fixture-r2.py
 ```
 
+
+---
+
+## §N+1. Phase 4 audition round 2 — **UNANIMOUS PASS.** 2026-09-01
+
+Arms: `state + 64-sample crossfade` (round 1's blocker) vs `state + no crossfade`.
+Crossfade is the only variable; each width derived by the shipped rule.
+
+| | result |
+|---|---|
+| candidate cleaner | **10 of 14** |
+| equivalent | 4 of 14 |
+| blocking (candidate-only defect) | **0** |
+| shared | **0** |
+| **preference** | **no-crossfade 10 — crossfade 0 — equivalent 4** |
+
+**The crossfade arm flagged `click_or_discontinuity` on every single trial that
+contained a seam. The no-crossfade arm flagged on none of them.** The four
+`equivalent` rows are the zero- and low-seam trials where neither arm had
+anything to hear.
+
+### Both round-1 blockers are resolved
+
+`m-020-t2`: reference click → candidate none. `s-020-t2`: clean on both. The two
+rows that blocked Phase 3 are exactly the rows the diagnosis said the crossfade
+was responsible for.
+
+### The prediction scored
+
+- **Q1** (round-1 blockers come back clean) — **held**, both.
+- **Q2** (no candidate-only defect) — **held**, zero.
+- **Q3** (reference not preferred ≥4/14) — **held**; preferred **zero** times.
+- **Q4** (`equivalent` modal, 7–12) — **falsified, in the good direction.**
+  `equivalent` is 4; *candidate cleaner* is modal at 10. The effect is far larger
+  than predicted.
+- **Q5, the one that could have embarrassed the diagnosis** — **held.** Round 1's
+  blockers were single-seam rows, and the prediction was that if the crossfade is
+  genuinely a per-boundary artefact the low-seam rows must improve as much as the
+  8–9-seam ones. They did: `s-020-t1` and `s-022-t1` (single seam) improved
+  exactly as `l-020`/`l-021` did. **The right thing was fixed.**
+
+### What this closes
+
+The chain is complete and each link is measured:
+
+1. The codec zero-pads its left edge, so every chunk decodes from a cold state —
+   the cause of both the 555-sample deletion and the ~35 % head error.
+2. Carrying state removes it: head NRMSE 0.406 → 0.0078, correlation 1.0000,
+   zero lag jitter, error-by-position flat, single-chunk decode bit-exact.
+3. That exposed the 64-sample crossfade, which had been masking a discontinuity
+   that no longer exists and is a 2.7 ms comb on continuous audio.
+4. Scoping the crossfade to discontinuous producers removes the last audible
+   seam artefact — unanimously, on 14 blinded trials.
+
+**Story 20.4's precondition for reopening the chunk-size question (§17) is met.**
