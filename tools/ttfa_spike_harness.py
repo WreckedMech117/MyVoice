@@ -368,6 +368,17 @@ def _segments(col: RunCollector) -> Optional[Dict[str, Any]]:
         "first_chunk_latency_ms": b.get("first_chunk_latency_ms"),
         "measured_t0_to_post_ms": t_post - t0,
         "chunks": len(col.chunk_emit_ms),
+        # Story 20.8 AC #1 — per-chunk decode time. ``decode_chunk_latency_ms``
+        # was already collected by RunCollector and then dropped on the floor;
+        # AC #1 asks for it per sweep point, so it is surfaced here rather than
+        # re-derived from a second capture. Median over the generation's decode
+        # calls (n reported alongside so a one-chunk short run is visible as
+        # such rather than reading as a population statistic).
+        "median_decode_chunk_ms": (
+            statistics.median(col.decode_latency_ms)
+            if col.decode_latency_ms else None
+        ),
+        "n_decode_samples": len(col.decode_latency_ms),
         "consumer_chunks_held": col.consumer_chunks_held,
         "first_emit_path": col.first_emit_path,
         "first_emit_frames": col.first_emit_frames,
@@ -646,6 +657,8 @@ def _summarise(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "bracket_slack_ms",
         "producer_ratio",
         "producer_rate_P",
+        "median_decode_chunk_ms",
+        "median_chunk_audio_ms",
         "total_audio_ms",
         "generation_wall_ms",
     )

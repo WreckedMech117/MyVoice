@@ -1,0 +1,1351 @@
+==============================================================================
+Story 20.8 Phase 1 — chunk-size re-baseline, one sitting
+  started 2026-09-02T11:49:05
+  plan: cs25[A], cs15[P], cs10[P], cs7[P], cs25[B]
+  classes: long,short   runs/cell: 10 (+1 discarded warmup, --prime)
+  cache keys before the sitting: ['205b94cf67d78d0a', '391c2f2be3340b07', 'a514f2c991e58200', 'a58fe999b1fca2f3']
+==============================================================================
+
+>>> 20-8-sweep-A-long-cs25  (--utterance long --chunk-size 25 --runs 10 --warmup 1 --prime --out I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-A-long-cs25.csv)
+TTFA harness: utterance=long chunk_size=25 lookahead=0 (retired) precision=auto compile=auto runs=10 (+1 warmup)
+  device=NVIDIA GeForce RTX 5090 vram=31.8GiB cap=12.0 torch=2.10.0+cu128
+
+********
+Warning: flash-attn is not installed. Will only run the manual PyTorch version. Please install flash-attn for faster inference.
+********
+ 
+[Tokenizer] Enabling streaming optimizations...
+  use_compile=True, compile_mode=reduce-overhead
+  use_cuda_graphs=True (manual)
+[Decoder] Compiling forward with mode=reduce-overhead, backend=inductor...
+[Decoder] Note: mode='reduce-overhead' includes CUDA graphs automatically
+[Decoder] Compilation complete
+[Tokenizer] Note: compile_mode='reduce-overhead' already includes CUDA graphs
+[Tokenizer] Manual CUDA graph capture skipped (not needed)
+[CodePredictor] Compiling model with mode=reduce-overhead...
+  startup priming: ok in 8921ms; consumer chunks seen during priming = 0
+  warmup: TTFA(post)=1145ms [s1=76 s2=1019 s3=50 s4=0 res=0] bracket=1145 path=threshold ratio=0.541 chunks=10 gen=9988ms
+  run 1: TTFA(post)=1187ms [s1=78 s2=1047 s3=62 s4=0 res=0] bracket=1187 path=threshold ratio=0.549 chunks=10 gen=11062ms
+  run 2: TTFA(post)=1165ms [s1=79 s2=1030 s3=56 s4=0 res=0] bracket=1165 path=threshold ratio=0.539 chunks=10 gen=10399ms
+  run 3: TTFA(post)=1171ms [s1=77 s2=1035 s3=59 s4=1 res=0] bracket=1172 path=threshold ratio=0.535 chunks=10 gen=9877ms
+  run 4: TTFA(post)=1178ms [s1=78 s2=1046 s3=54 s4=1 res=0] bracket=1179 path=threshold ratio=0.536 chunks=10 gen=10480ms
+  run 5: TTFA(post)=1161ms [s1=79 s2=1022 s3=60 s4=0 res=1] bracket=1161 path=threshold ratio=0.535 chunks=10 gen=10114ms
+  run 6: TTFA(post)=1140ms [s1=77 s2=1017 s3=47 s4=0 res=0] bracket=1141 path=threshold ratio=0.535 chunks=10 gen=10852ms
+  run 7: TTFA(post)=1152ms [s1=77 s2=1027 s3=48 s4=1 res=0] bracket=1153 path=threshold ratio=0.54 chunks=10 gen=10220ms
+  run 8: TTFA(post)=1169ms [s1=79 s2=1046 s3=44 s4=1 res=0] bracket=1170 path=threshold ratio=0.545 chunks=10 gen=10865ms
+  run 9: TTFA(post)=1164ms [s1=77 s2=1037 s3=50 s4=1 res=0] bracket=1165 path=threshold ratio=0.601 chunks=10 gen=12058ms
+  run 10: TTFA(post)=1206ms [s1=89 s2=1065 s3=53 s4=0 res=0] bracket=1206 path=threshold ratio=0.554 chunks=11 gen=11809ms
+
+Wrote 11 rows -> I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-A-long-cs25.csv
+{
+  "seg1_prefill_ms": {
+    "n": 10,
+    "median": 78.26318359375,
+    "p95_interpolated": 84.1770263671875,
+    "min": 76.5234375,
+    "max": 88.591552734375
+  },
+  "seg1a_dispatch_overhead_ms": {
+    "n": 10,
+    "median": 0.753173828125,
+    "p95_interpolated": 1.507373046875,
+    "min": 0.5029296875,
+    "max": 1.5078125
+  },
+  "seg1b_prompt_encode_ms": {
+    "n": 10,
+    "median": 76.9388427734375,
+    "p95_interpolated": 83.67291259765624,
+    "min": 75.709228515625,
+    "max": 88.086669921875
+  },
+  "seg2_talker_to_first_chunk_ms": {
+    "n": 10,
+    "median": 1035.8670654296875,
+    "p95_interpolated": 1056.5712036132813,
+    "min": 1016.8974609375,
+    "max": 1064.767333984375
+  },
+  "seg3_first_decode_ms": {
+    "n": 10,
+    "median": 53.195556640625,
+    "p95_interpolated": 61.36783447265625,
+    "min": 44.45751953125,
+    "max": 62.451416015625
+  },
+  "seg4_consumer_cushion_ms": {
+    "n": 10,
+    "median": 0.2513427734375,
+    "p95_interpolated": 1.0055419921875,
+    "min": 0.0,
+    "max": 1.007080078125
+  },
+  "residual_post_ms": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 0.27701416015624947,
+    "min": 0.0,
+    "max": 0.503662109375
+  },
+  "measured_t0_to_post_ms": {
+    "n": 10,
+    "median": 1166.8624267578125,
+    "p95_interpolated": 1197.4909912109374,
+    "min": 1140.273681640625,
+    "max": 1205.988037109375
+  },
+  "first_chunk_latency_ms": {
+    "n": 10,
+    "median": 1166.8622493743896,
+    "p95_interpolated": 1197.4910140037537,
+    "min": 1140.2735710144043,
+    "max": 1205.9879302978516
+  },
+  "reconcile_error_pct": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 0.0,
+    "min": 0.0,
+    "max": 0.0
+  },
+  "independent_ttfa_bracket_ms": {
+    "n": 10,
+    "median": 1167.363149987068,
+    "p95_interpolated": 1197.4506899830885,
+    "min": 1140.535399899818,
+    "max": 1205.9780999552459
+  },
+  "bracket_slack_ms": {
+    "n": 10,
+    "median": 0.24591660173609853,
+    "p95_interpolated": 0.7512901383917778,
+    "min": -0.15203007962554693,
+    "max": 0.7562394263222814
+  },
+  "producer_ratio": {
+    "n": 10,
+    "median": 0.5393040771484374,
+    "p95_interpolated": 0.5796876495361327,
+    "min": 0.5346961669921875,
+    "max": 0.6007275390625
+  },
+  "producer_rate_P": {
+    "n": 10,
+    "median": 1.854242314319405,
+    "p95_interpolated": 1.8699858911656149,
+    "min": 1.6646481723821214,
+    "max": 1.8702209997600585
+  },
+  "median_decode_chunk_ms": {
+    "n": 10,
+    "median": 36.59047500696033,
+    "p95_interpolated": 42.032505018869415,
+    "min": 31.306050019338727,
+    "max": 43.285800027661026
+  },
+  "median_chunk_audio_ms": {
+    "n": 10,
+    "median": 2000.0,
+    "p95_interpolated": 2000.0,
+    "min": 2000.0,
+    "max": 2000.0
+  },
+  "total_audio_ms": {
+    "n": 10,
+    "median": 19336.875,
+    "p95_interpolated": 20592.875,
+    "min": 18216.875,
+    "max": 21096.875
+  },
+  "generation_wall_ms": {
+    "n": 10,
+    "median": 10666.085124015808,
+    "p95_interpolated": 11945.957064628601,
+    "min": 9877.346992492676,
+    "max": 12058.404922485352
+  }
+}
+
+<<< 20-8-sweep-A-long-cs25  rc=0  wall=146.8s  new_cache_keys=none
+
+>>> 20-8-sweep-A-short-cs25  (--utterance short --chunk-size 25 --runs 10 --warmup 1 --prime --out I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-A-short-cs25.csv)
+TTFA harness: utterance=short chunk_size=25 lookahead=0 (retired) precision=auto compile=auto runs=10 (+1 warmup)
+  device=NVIDIA GeForce RTX 5090 vram=31.8GiB cap=12.0 torch=2.10.0+cu128
+
+********
+Warning: flash-attn is not installed. Will only run the manual PyTorch version. Please install flash-attn for faster inference.
+********
+ 
+[Tokenizer] Enabling streaming optimizations...
+  use_compile=True, compile_mode=reduce-overhead
+  use_cuda_graphs=True (manual)
+[Decoder] Compiling forward with mode=reduce-overhead, backend=inductor...
+[Decoder] Note: mode='reduce-overhead' includes CUDA graphs automatically
+[Decoder] Compilation complete
+[Tokenizer] Note: compile_mode='reduce-overhead' already includes CUDA graphs
+[Tokenizer] Manual CUDA graph capture skipped (not needed)
+[CodePredictor] Compiling model with mode=reduce-overhead...
+  startup priming: ok in 8903ms; consumer chunks seen during priming = 0
+  warmup: TTFA(post)=1136ms [s1=78 s2=1031 s3=27 s4=0 res=0] bracket=1137 path=threshold ratio=n/a chunks=1 gen=1142ms
+  run 1: TTFA(post)=1140ms [s1=75 s2=1016 s3=49 s4=0 res=0] bracket=1140 path=threshold ratio=n/a chunks=2 gen=1271ms
+  run 2: TTFA(post)=1159ms [s1=76 s2=1037 s3=45 s4=1 res=0] bracket=1159 path=threshold ratio=n/a chunks=2 gen=1432ms
+  run 3: TTFA(post)=1155ms [s1=80 s2=1028 s3=47 s4=1 res=0] bracket=1156 path=threshold ratio=n/a chunks=2 gen=1250ms
+  run 4: TTFA(post)=1189ms [s1=78 s2=1055 s3=56 s4=1 res=0] bracket=1190 path=threshold ratio=n/a chunks=2 gen=1277ms
+  run 5: TTFA(post)=1185ms [s1=82 s2=1048 s3=54 s4=1 res=0] bracket=1185 path=threshold ratio=n/a chunks=2 gen=1406ms
+  run 6: TTFA(post)=1164ms [s1=78 s2=1036 s3=49 s4=0 res=0] bracket=1163 path=threshold ratio=n/a chunks=2 gen=1300ms
+  run 7: TTFA(post)=1177ms [s1=79 s2=1033 s3=65 s4=1 res=0] bracket=1178 path=threshold ratio=n/a chunks=2 gen=1481ms
+  run 8: TTFA(post)=1174ms [s1=77 s2=1030 s3=67 s4=1 res=0] bracket=1175 path=threshold ratio=n/a chunks=2 gen=1296ms
+  run 9: TTFA(post)=1194ms [s1=88 s2=1045 s3=62 s4=1 res=0] bracket=1194 path=threshold ratio=n/a chunks=2 gen=1365ms
+  run 10: TTFA(post)=1180ms [s1=77 s2=1042 s3=60 s4=0 res=0] bracket=1180 path=threshold ratio=n/a chunks=2 gen=1349ms
+
+Wrote 11 rows -> I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-A-short-cs25.csv
+{
+  "seg1_prefill_ms": {
+    "n": 10,
+    "median": 78.2822265625,
+    "p95_interpolated": 85.29359130859375,
+    "min": 74.895751953125,
+    "max": 87.6689453125
+  },
+  "seg1a_dispatch_overhead_ms": {
+    "n": 10,
+    "median": 0.5052490234375,
+    "p95_interpolated": 1.00928955078125,
+    "min": 0.5029296875,
+    "max": 1.010498046875
+  },
+  "seg1b_prompt_encode_ms": {
+    "n": 10,
+    "median": 77.275634765625,
+    "p95_interpolated": 84.78977050781249,
+    "min": 74.389892578125,
+    "max": 87.164794921875
+  },
+  "seg2_talker_to_first_chunk_ms": {
+    "n": 10,
+    "median": 1036.510498046875,
+    "p95_interpolated": 1051.86904296875,
+    "min": 1015.544677734375,
+    "max": 1054.8564453125
+  },
+  "seg3_first_decode_ms": {
+    "n": 10,
+    "median": 55.2552490234375,
+    "p95_interpolated": 66.5217529296875,
+    "min": 45.394775390625,
+    "max": 67.403076171875
+  },
+  "seg4_consumer_cushion_ms": {
+    "n": 10,
+    "median": 0.753173828125,
+    "p95_interpolated": 1.01182861328125,
+    "min": 0.0,
+    "max": 1.018310546875
+  },
+  "residual_post_ms": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 0.0,
+    "min": 0.0,
+    "max": 0.0
+  },
+  "measured_t0_to_post_ms": {
+    "n": 10,
+    "median": 1175.90380859375,
+    "p95_interpolated": 1191.7527709960937,
+    "min": 1139.734130859375,
+    "max": 1193.7255859375
+  },
+  "first_chunk_latency_ms": {
+    "n": 10,
+    "median": 1175.9037971496582,
+    "p95_interpolated": 1191.7527675628662,
+    "min": 1139.7340297698975,
+    "max": 1193.7255859375
+  },
+  "reconcile_error_pct": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 0.0,
+    "min": 0.0,
+    "max": 0.0
+  },
+  "independent_ttfa_bracket_ms": {
+    "n": 10,
+    "median": 1176.6052499879152,
+    "p95_interpolated": 1192.486884968821,
+    "min": 1139.8310998920351,
+    "max": 1194.4086999865249
+  },
+  "bracket_slack_ms": {
+    "n": 10,
+    "median": 0.3302210606634617,
+    "p95_interpolated": 0.8109195725060999,
+    "min": -0.07280388753861189,
+    "max": 0.8227605940774083
+  },
+  "producer_ratio": null,
+  "producer_rate_P": null,
+  "median_decode_chunk_ms": {
+    "n": 10,
+    "median": 40.98067502491176,
+    "p95_interpolated": 47.09522750927135,
+    "min": 36.703650024719536,
+    "max": 47.793650010135025
+  },
+  "median_chunk_audio_ms": null,
+  "total_audio_ms": {
+    "n": 10,
+    "median": 2256.875,
+    "p95_interpolated": 2500.875,
+    "min": 2136.875,
+    "max": 2536.875
+  },
+  "generation_wall_ms": {
+    "n": 10,
+    "median": 1324.278473854065,
+    "p95_interpolated": 1458.881175518036,
+    "min": 1250.157356262207,
+    "max": 1480.8166027069092
+  }
+}
+
+<<< 20-8-sweep-A-short-cs25  rc=0  wall=30.1s  new_cache_keys=none
+
+>>> 20-8-sweep-P-long-cs15  (--utterance long --chunk-size 15 --runs 10 --warmup 1 --prime --out I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-P-long-cs15.csv)
+TTFA harness: utterance=long chunk_size=15 lookahead=0 (retired) precision=auto compile=auto runs=10 (+1 warmup)
+  device=NVIDIA GeForce RTX 5090 vram=31.8GiB cap=12.0 torch=2.10.0+cu128
+
+********
+Warning: flash-attn is not installed. Will only run the manual PyTorch version. Please install flash-attn for faster inference.
+********
+ 
+[Tokenizer] Enabling streaming optimizations...
+  use_compile=True, compile_mode=reduce-overhead
+  use_cuda_graphs=True (manual)
+[Decoder] Compiling forward with mode=reduce-overhead, backend=inductor...
+[Decoder] Note: mode='reduce-overhead' includes CUDA graphs automatically
+[Decoder] Compilation complete
+[Tokenizer] Note: compile_mode='reduce-overhead' already includes CUDA graphs
+[Tokenizer] Manual CUDA graph capture skipped (not needed)
+[CodePredictor] Compiling model with mode=reduce-overhead...
+  startup priming: ok in 9382ms; consumer chunks seen during priming = 0
+  warmup: TTFA(post)=742ms [s1=79 s2=609 s3=54 s4=1 res=0] bracket=743 path=threshold ratio=0.558 chunks=17 gen=11009ms
+  run 1: TTFA(post)=734ms [s1=77 s2=590 s3=67 s4=0 res=0] bracket=734 path=threshold ratio=0.55 chunks=16 gen=10426ms
+  run 2: TTFA(post)=739ms [s1=79 s2=613 s3=47 s4=1 res=0] bracket=740 path=threshold ratio=0.544 chunks=17 gen=10865ms
+  run 3: TTFA(post)=726ms [s1=78 s2=601 s3=47 s4=0 res=0] bracket=726 path=threshold ratio=0.544 chunks=17 gen=10862ms
+  run 4: TTFA(post)=742ms [s1=78 s2=617 s3=46 s4=1 res=0] bracket=743 path=threshold ratio=0.552 chunks=17 gen=11246ms
+  run 5: TTFA(post)=743ms [s1=78 s2=603 s3=62 s4=1 res=0] bracket=744 path=threshold ratio=0.545 chunks=18 gen=11571ms
+  run 6: TTFA(post)=758ms [s1=78 s2=613 s3=67 s4=1 res=0] bracket=758 path=threshold ratio=0.55 chunks=16 gen=10476ms
+  run 7: TTFA(post)=742ms [s1=83 s2=608 s3=50 s4=0 res=0] bracket=742 path=threshold ratio=0.549 chunks=16 gen=10625ms
+  run 8: TTFA(post)=740ms [s1=78 s2=600 s3=62 s4=0 res=0] bracket=741 path=threshold ratio=0.544 chunks=16 gen=10563ms
+  run 9: TTFA(post)=725ms [s1=80 s2=601 s3=45 s4=0 res=0] bracket=726 path=threshold ratio=0.545 chunks=17 gen=10968ms
+  run 10: TTFA(post)=742ms [s1=81 s2=612 s3=49 s4=0 res=0] bracket=742 path=threshold ratio=0.555 chunks=17 gen=11107ms
+
+Wrote 11 rows -> I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-P-long-cs15.csv
+{
+  "seg1_prefill_ms": {
+    "n": 10,
+    "median": 78.3304443359375,
+    "p95_interpolated": 82.1003662109375,
+    "min": 77.22265625,
+    "max": 83.368408203125
+  },
+  "seg1a_dispatch_overhead_ms": {
+    "n": 10,
+    "median": 0.5059814453125,
+    "p95_interpolated": 1.50660400390625,
+    "min": 0.5029296875,
+    "max": 1.5078125
+  },
+  "seg1b_prompt_encode_ms": {
+    "n": 10,
+    "median": 77.5966796875,
+    "p95_interpolated": 81.37216796874999,
+    "min": 76.211669921875,
+    "max": 82.864990234375
+  },
+  "seg2_talker_to_first_chunk_ms": {
+    "n": 10,
+    "median": 605.5872802734375,
+    "p95_interpolated": 615.4884521484375,
+    "min": 590.466796875,
+    "max": 617.151123046875
+  },
+  "seg3_first_decode_ms": {
+    "n": 10,
+    "median": 49.6092529296875,
+    "p95_interpolated": 66.64129638671875,
+    "min": 44.73876953125,
+    "max": 66.74072265625
+  },
+  "seg4_consumer_cushion_ms": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 1.00411376953125,
+    "min": 0.0,
+    "max": 1.0048828125
+  },
+  "residual_post_ms": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 0.0,
+    "min": 0.0,
+    "max": 0.0
+  },
+  "measured_t0_to_post_ms": {
+    "n": 10,
+    "median": 740.822998046875,
+    "p95_interpolated": 751.218359375,
+    "min": 725.471923828125,
+    "max": 757.79345703125
+  },
+  "first_chunk_latency_ms": {
+    "n": 10,
+    "median": 740.8229112625122,
+    "p95_interpolated": 751.2183666229248,
+    "min": 725.4719734191895,
+    "max": 757.7934265136719
+  },
+  "reconcile_error_pct": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 0.0,
+    "min": 0.0,
+    "max": 0.0
+  },
+  "independent_ttfa_bracket_ms": {
+    "n": 10,
+    "median": 741.0606000339612,
+    "p95_interpolated": 751.853865024168,
+    "min": 725.7399000227451,
+    "max": 758.3906999789178
+  },
+  "bracket_slack_ms": {
+    "n": 10,
+    "median": 0.360020135063678,
+    "p95_interpolated": 0.7980917065404355,
+    "min": -0.06092775706201792,
+    "max": 0.8134468728676438
+  },
+  "producer_ratio": {
+    "n": 10,
+    "median": 0.547066396077474,
+    "p95_interpolated": 0.5537336730957031,
+    "min": 0.5438174438476563,
+    "max": 0.5552291870117188
+  },
+  "producer_rate_P": {
+    "n": 10,
+    "median": 1.8279544130631502,
+    "p95_interpolated": 1.838768027909238,
+    "min": 1.801058055650979,
+    "max": 1.8388523783362447
+  },
+  "median_decode_chunk_ms": {
+    "n": 10,
+    "median": 33.95402504247613,
+    "p95_interpolated": 38.569122485932894,
+    "min": 30.91049997601658,
+    "max": 39.23689998919144
+  },
+  "median_chunk_audio_ms": {
+    "n": 10,
+    "median": 1200.0,
+    "p95_interpolated": 1200.0,
+    "min": 1200.0,
+    "max": 1200.0
+  },
+  "total_audio_ms": {
+    "n": 10,
+    "median": 19736.875,
+    "p95_interpolated": 20444.875,
+    "min": 18616.875,
+    "max": 20696.875
+  },
+  "generation_wall_ms": {
+    "n": 10,
+    "median": 10863.685131072998,
+    "p95_interpolated": 11424.321007728577,
+    "min": 10426.053762435913,
+    "max": 11570.504188537598
+  }
+}
+
+<<< 20-8-sweep-P-long-cs15  rc=0  wall=135.7s  new_cache_keys=none
+
+>>> 20-8-sweep-P-short-cs15  (--utterance short --chunk-size 15 --runs 10 --warmup 1 --prime --out I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-P-short-cs15.csv)
+TTFA harness: utterance=short chunk_size=15 lookahead=0 (retired) precision=auto compile=auto runs=10 (+1 warmup)
+  device=NVIDIA GeForce RTX 5090 vram=31.8GiB cap=12.0 torch=2.10.0+cu128
+
+********
+Warning: flash-attn is not installed. Will only run the manual PyTorch version. Please install flash-attn for faster inference.
+********
+ 
+[Tokenizer] Enabling streaming optimizations...
+  use_compile=True, compile_mode=reduce-overhead
+  use_cuda_graphs=True (manual)
+[Decoder] Compiling forward with mode=reduce-overhead, backend=inductor...
+[Decoder] Note: mode='reduce-overhead' includes CUDA graphs automatically
+[Decoder] Compilation complete
+[Tokenizer] Note: compile_mode='reduce-overhead' already includes CUDA graphs
+[Tokenizer] Manual CUDA graph capture skipped (not needed)
+[CodePredictor] Compiling model with mode=reduce-overhead...
+  startup priming: ok in 8844ms; consumer chunks seen during priming = 0
+  warmup: TTFA(post)=723ms [s1=79 s2=592 s3=52 s4=1 res=0] bracket=723 path=threshold ratio=n/a chunks=2 gen=1320ms
+  run 1: TTFA(post)=729ms [s1=76 s2=605 s3=47 s4=1 res=0] bracket=729 path=threshold ratio=n/a chunks=2 gen=1321ms
+  run 2: TTFA(post)=727ms [s1=79 s2=599 s3=49 s4=1 res=0] bracket=727 path=threshold ratio=0.298 chunks=3 gen=1441ms
+  run 3: TTFA(post)=746ms [s1=82 s2=618 s3=46 s4=1 res=0] bracket=747 path=threshold ratio=n/a chunks=2 gen=1320ms
+  run 4: TTFA(post)=716ms [s1=77 s2=591 s3=47 s4=0 res=0] bracket=716 path=threshold ratio=n/a chunks=2 gen=1275ms
+  run 5: TTFA(post)=752ms [s1=80 s2=618 s3=55 s4=0 res=0] bracket=752 path=threshold ratio=n/a chunks=2 gen=1364ms
+  run 6: TTFA(post)=767ms [s1=81 s2=627 s3=60 s4=1 res=0] bracket=767 path=threshold ratio=n/a chunks=2 gen=1328ms
+  run 7: TTFA(post)=738ms [s1=76 s2=602 s3=60 s4=1 res=0] bracket=738 path=threshold ratio=0.329 chunks=3 gen=1526ms
+  run 8: TTFA(post)=739ms [s1=78 s2=601 s3=59 s4=1 res=0] bracket=739 path=threshold ratio=n/a chunks=2 gen=1381ms
+  run 9: TTFA(post)=738ms [s1=76 s2=609 s3=53 s4=0 res=0] bracket=738 path=threshold ratio=n/a chunks=2 gen=1307ms
+  run 10: TTFA(post)=729ms [s1=79 s2=602 s3=49 s4=0 res=0] bracket=729 path=threshold ratio=0.316 chunks=3 gen=1485ms
+
+Wrote 11 rows -> I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-P-short-cs15.csv
+{
+  "seg1_prefill_ms": {
+    "n": 10,
+    "median": 78.316162109375,
+    "p95_interpolated": 81.66280517578124,
+    "min": 75.947509765625,
+    "max": 82.29638671875
+  },
+  "seg1a_dispatch_overhead_ms": {
+    "n": 10,
+    "median": 1.0029296875,
+    "p95_interpolated": 1.4017211914062497,
+    "min": 0.503173828125,
+    "max": 1.507080078125
+  },
+  "seg1b_prompt_encode_ms": {
+    "n": 10,
+    "median": 77.0606689453125,
+    "p95_interpolated": 80.51180419921874,
+    "min": 74.942626953125,
+    "max": 81.0234375
+  },
+  "seg2_talker_to_first_chunk_ms": {
+    "n": 10,
+    "median": 603.514404296875,
+    "p95_interpolated": 622.7446533203125,
+    "min": 591.309814453125,
+    "max": 626.51318359375
+  },
+  "seg3_first_decode_ms": {
+    "n": 10,
+    "median": 51.052490234375,
+    "p95_interpolated": 59.9513427734375,
+    "min": 45.818603515625,
+    "max": 60.08251953125
+  },
+  "seg4_consumer_cushion_ms": {
+    "n": 10,
+    "median": 0.503662109375,
+    "p95_interpolated": 1.00286865234375,
+    "min": 0.0,
+    "max": 1.00341796875
+  },
+  "residual_post_ms": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 0.0,
+    "min": 0.0,
+    "max": 0.0
+  },
+  "measured_t0_to_post_ms": {
+    "n": 10,
+    "median": 737.63916015625,
+    "p95_interpolated": 760.412744140625,
+    "min": 715.671142578125,
+    "max": 767.192626953125
+  },
+  "first_chunk_latency_ms": {
+    "n": 10,
+    "median": 737.6391887664795,
+    "p95_interpolated": 760.412859916687,
+    "min": 715.6710624694824,
+    "max": 767.1928405761719
+  },
+  "reconcile_error_pct": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 0.0,
+    "min": 0.0,
+    "max": 0.0
+  },
+  "independent_ttfa_bracket_ms": {
+    "n": 10,
+    "median": 737.7595499856398,
+    "p95_interpolated": 760.6308999820612,
+    "min": 715.8789000241086,
+    "max": 767.3025999683887
+  },
+  "bracket_slack_ms": {
+    "n": 10,
+    "median": 0.2138025793246925,
+    "p95_interpolated": 0.5807937948498875,
+    "min": 0.025491359643638134,
+    "max": 0.600237799808383
+  },
+  "producer_ratio": {
+    "n": 3,
+    "median": 0.3161454567118065,
+    "p95_interpolated": 0.3278410342164081,
+    "min": 0.2975048481462004,
+    "max": 0.3291405428280305
+  },
+  "producer_rate_P": {
+    "n": 3,
+    "median": 3.1631009675131443,
+    "p95_interpolated": 3.3414708818882355,
+    "min": 3.038215807168066,
+    "max": 3.3612897612632455
+  },
+  "median_decode_chunk_ms": {
+    "n": 10,
+    "median": 41.57907498301938,
+    "p95_interpolated": 50.96508002607151,
+    "min": 36.23710002284497,
+    "max": 52.519200020469725
+  },
+  "median_chunk_audio_ms": {
+    "n": 3,
+    "median": 1188.4375,
+    "p95_interpolated": 1188.4375,
+    "min": 1188.4375,
+    "max": 1188.4375
+  },
+  "total_audio_ms": {
+    "n": 10,
+    "median": 2296.875,
+    "p95_interpolated": 2580.875,
+    "min": 2216.875,
+    "max": 2616.875
+  },
+  "generation_wall_ms": {
+    "n": 10,
+    "median": 1345.9827899932861,
+    "p95_interpolated": 1507.7902913093567,
+    "min": 1275.050401687622,
+    "max": 1526.4291763305664
+  }
+}
+
+<<< 20-8-sweep-P-short-cs15  rc=0  wall=30.5s  new_cache_keys=none
+
+>>> 20-8-sweep-P-long-cs10  (--utterance long --chunk-size 10 --runs 10 --warmup 1 --prime --out I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-P-long-cs10.csv)
+TTFA harness: utterance=long chunk_size=10 lookahead=0 (retired) precision=auto compile=auto runs=10 (+1 warmup)
+  device=NVIDIA GeForce RTX 5090 vram=31.8GiB cap=12.0 torch=2.10.0+cu128
+
+********
+Warning: flash-attn is not installed. Will only run the manual PyTorch version. Please install flash-attn for faster inference.
+********
+ 
+[Tokenizer] Enabling streaming optimizations...
+  use_compile=True, compile_mode=reduce-overhead
+  use_cuda_graphs=True (manual)
+[Decoder] Compiling forward with mode=reduce-overhead, backend=inductor...
+[Decoder] Note: mode='reduce-overhead' includes CUDA graphs automatically
+[Decoder] Compilation complete
+[Tokenizer] Note: compile_mode='reduce-overhead' already includes CUDA graphs
+[Tokenizer] Manual CUDA graph capture skipped (not needed)
+[CodePredictor] Compiling model with mode=reduce-overhead...
+  startup priming: ok in 28108ms; consumer chunks seen during priming = 0
+  warmup: TTFA(post)=542ms [s1=81 s2=400 s3=61 s4=0 res=0] bracket=542 path=threshold ratio=0.559 chunks=24 gen=10707ms
+  run 1: TTFA(post)=531ms [s1=80 s2=388 s3=62 s4=0 res=0] bracket=531 path=threshold ratio=0.565 chunks=25 gen=11229ms
+  run 2: TTFA(post)=538ms [s1=82 s2=398 s3=58 s4=0 res=0] bracket=539 path=threshold ratio=0.563 chunks=25 gen=10986ms
+  run 3: TTFA(post)=514ms [s1=78 s2=385 s3=51 s4=1 res=0] bracket=514 path=threshold ratio=0.55 chunks=25 gen=10852ms
+  run 4: TTFA(post)=510ms [s1=76 s2=391 s3=44 s4=0 res=0] bracket=510 path=threshold ratio=0.552 chunks=26 gen=11539ms
+  run 5: TTFA(post)=516ms [s1=79 s2=391 s3=46 s4=1 res=0] bracket=517 path=threshold ratio=0.557 chunks=25 gen=11187ms
+  run 6: TTFA(post)=508ms [s1=79 s2=383 s3=45 s4=1 res=0] bracket=508 path=threshold ratio=0.555 chunks=24 gen=10675ms
+  run 7: TTFA(post)=539ms [s1=80 s2=400 s3=59 s4=0 res=0] bracket=539 path=threshold ratio=0.571 chunks=25 gen=11396ms
+  run 8: TTFA(post)=539ms [s1=79 s2=401 s3=59 s4=0 res=0] bracket=539 path=threshold ratio=0.563 chunks=24 gen=10851ms
+  run 9: TTFA(post)=538ms [s1=78 s2=389 s3=71 s4=0 res=0] bracket=538 path=threshold ratio=0.559 chunks=25 gen=11130ms
+  run 10: TTFA(post)=525ms [s1=79 s2=394 s3=52 s4=1 res=0] bracket=526 path=threshold ratio=0.551 chunks=25 gen=10950ms
+
+Wrote 11 rows -> I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-P-long-cs10.csv
+{
+  "seg1_prefill_ms": {
+    "n": 10,
+    "median": 79.0943603515625,
+    "p95_interpolated": 81.09388427734375,
+    "min": 75.8642578125,
+    "max": 81.581787109375
+  },
+  "seg1a_dispatch_overhead_ms": {
+    "n": 10,
+    "median": 0.505126953125,
+    "p95_interpolated": 1.50782470703125,
+    "min": 0.503173828125,
+    "max": 1.509033203125
+  },
+  "seg1b_prompt_encode_ms": {
+    "n": 10,
+    "median": 78.5130615234375,
+    "p95_interpolated": 80.59049072265626,
+    "min": 75.358642578125,
+    "max": 81.07861328125
+  },
+  "seg2_talker_to_first_chunk_ms": {
+    "n": 10,
+    "median": 390.656494140625,
+    "p95_interpolated": 400.4548095703125,
+    "min": 383.230712890625,
+    "max": 400.777587890625
+  },
+  "seg3_first_decode_ms": {
+    "n": 10,
+    "median": 55.386474609375,
+    "p95_interpolated": 67.04783935546874,
+    "min": 43.859619140625,
+    "max": 71.186279296875
+  },
+  "seg4_consumer_cushion_ms": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 1.0031982421875,
+    "min": 0.0,
+    "max": 1.00341796875
+  },
+  "residual_post_ms": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 0.0,
+    "min": 0.0,
+    "max": 0.0
+  },
+  "measured_t0_to_post_ms": {
+    "n": 10,
+    "median": 528.1395263671875,
+    "p95_interpolated": 538.9437377929687,
+    "min": 507.609375,
+    "max": 539.20751953125
+  },
+  "first_chunk_latency_ms": {
+    "n": 10,
+    "median": 528.1393527984619,
+    "p95_interpolated": 538.943874835968,
+    "min": 507.60936737060547,
+    "max": 539.2076969146729
+  },
+  "reconcile_error_pct": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 0.0,
+    "min": 0.0,
+    "max": 0.0
+  },
+  "independent_ttfa_bracket_ms": {
+    "n": 10,
+    "median": 528.4348999848589,
+    "p95_interpolated": 539.1758650133852,
+    "min": 508.33099998999387,
+    "max": 539.4964000442997
+  },
+  "bracket_slack_ms": {
+    "n": 10,
+    "median": 0.35644978610798717,
+    "p95_interpolated": 0.6757863618899136,
+    "min": 0.05893783550709486,
+    "max": 0.7216249899938703
+  },
+  "producer_ratio": {
+    "n": 10,
+    "median": 0.5581294250488281,
+    "p95_interpolated": 0.5681118316650391,
+    "min": 0.5496247863769531,
+    "max": 0.5710639953613281
+  },
+  "producer_rate_P": {
+    "n": 10,
+    "median": 1.7917041790261758,
+    "p95_interpolated": 1.816686882488878,
+    "min": 1.7511172270058317,
+    "max": 1.8194230405652827
+  },
+  "median_decode_chunk_ms": {
+    "n": 10,
+    "median": 33.616250031627715,
+    "p95_interpolated": 38.85062250192277,
+    "min": 30.411450017709285,
+    "max": 39.589949999935925
+  },
+  "median_chunk_audio_ms": {
+    "n": 10,
+    "median": 800.0,
+    "p95_interpolated": 800.0,
+    "min": 800.0,
+    "max": 800.0
+  },
+  "total_audio_ms": {
+    "n": 10,
+    "median": 19616.875,
+    "p95_interpolated": 20380.875,
+    "min": 18936.875,
+    "max": 20776.875
+  },
+  "generation_wall_ms": {
+    "n": 10,
+    "median": 11058.237671852112,
+    "p95_interpolated": 11474.425137043,
+    "min": 10674.66688156128,
+    "max": 11538.88988494873
+  }
+}
+
+<<< 20-8-sweep-P-long-cs10  rc=0  wall=156.6s  new_cache_keys=['ef8efd9237ad2a9f']
+
+>>> 20-8-sweep-P-short-cs10  (--utterance short --chunk-size 10 --runs 10 --warmup 1 --prime --out I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-P-short-cs10.csv)
+TTFA harness: utterance=short chunk_size=10 lookahead=0 (retired) precision=auto compile=auto runs=10 (+1 warmup)
+  device=NVIDIA GeForce RTX 5090 vram=31.8GiB cap=12.0 torch=2.10.0+cu128
+
+********
+Warning: flash-attn is not installed. Will only run the manual PyTorch version. Please install flash-attn for faster inference.
+********
+ 
+[Tokenizer] Enabling streaming optimizations...
+  use_compile=True, compile_mode=reduce-overhead
+  use_cuda_graphs=True (manual)
+[Decoder] Compiling forward with mode=reduce-overhead, backend=inductor...
+[Decoder] Note: mode='reduce-overhead' includes CUDA graphs automatically
+[Decoder] Compilation complete
+[Tokenizer] Note: compile_mode='reduce-overhead' already includes CUDA graphs
+[Tokenizer] Manual CUDA graph capture skipped (not needed)
+[CodePredictor] Compiling model with mode=reduce-overhead...
+  startup priming: ok in 9037ms; consumer chunks seen during priming = 0
+  warmup: TTFA(post)=531ms [s1=79 s2=393 s3=58 s4=0 res=0] bracket=531 path=threshold ratio=0.544 chunks=4 gen=1500ms
+  run 1: TTFA(post)=512ms [s1=76 s2=391 s3=46 s4=1 res=0] bracket=513 path=threshold ratio=0.542 chunks=4 gen=1460ms
+  run 2: TTFA(post)=513ms [s1=76 s2=385 s3=51 s4=1 res=0] bracket=514 path=threshold ratio=0.465 chunks=3 gen=1253ms
+  run 3: TTFA(post)=531ms [s1=80 s2=404 s3=47 s4=0 res=0] bracket=531 path=threshold ratio=0.551 chunks=4 gen=1486ms
+  run 4: TTFA(post)=516ms [s1=78 s2=391 s3=48 s4=1 res=0] bracket=517 path=threshold ratio=0.538 chunks=4 gen=1557ms
+  run 5: TTFA(post)=507ms [s1=78 s2=383 s3=46 s4=1 res=0] bracket=507 path=threshold ratio=0.529 chunks=4 gen=1498ms
+  run 6: TTFA(post)=514ms [s1=75 s2=393 s3=46 s4=1 res=0] bracket=515 path=threshold ratio=0.537 chunks=4 gen=1451ms
+  run 7: TTFA(post)=509ms [s1=76 s2=387 s3=46 s4=0 res=0] bracket=509 path=threshold ratio=0.535 chunks=3 gen=1368ms
+  run 8: TTFA(post)=519ms [s1=83 s2=390 s3=46 s4=0 res=0] bracket=519 path=threshold ratio=0.548 chunks=3 gen=1390ms
+  run 9: TTFA(post)=522ms [s1=77 s2=388 s3=57 s4=1 res=0] bracket=522 path=threshold ratio=0.539 chunks=4 gen=1470ms
+  run 10: TTFA(post)=532ms [s1=76 s2=394 s3=62 s4=1 res=0] bracket=533 path=threshold ratio=0.363 chunks=3 gen=1113ms
+
+Wrote 11 rows -> I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-P-short-cs10.csv
+{
+  "seg1_prefill_ms": {
+    "n": 10,
+    "median": 76.4866943359375,
+    "p95_interpolated": 81.61397705078124,
+    "min": 75.33740234375,
+    "max": 82.913330078125
+  },
+  "seg1a_dispatch_overhead_ms": {
+    "n": 10,
+    "median": 0.5032958984375,
+    "p95_interpolated": 1.00977783203125,
+    "min": 0.502685546875,
+    "max": 1.015380859375
+  },
+  "seg1b_prompt_encode_ms": {
+    "n": 10,
+    "median": 75.983642578125,
+    "p95_interpolated": 81.11080322265624,
+    "min": 74.827880859375,
+    "max": 82.41015625
+  },
+  "seg2_talker_to_first_chunk_ms": {
+    "n": 10,
+    "median": 390.42138671875,
+    "p95_interpolated": 399.5372802734375,
+    "min": 383.063720703125,
+    "max": 404.20361328125
+  },
+  "seg3_first_decode_ms": {
+    "n": 10,
+    "median": 46.8050537109375,
+    "p95_interpolated": 60.183557128906244,
+    "min": 45.752197265625,
+    "max": 62.39697265625
+  },
+  "seg4_consumer_cushion_ms": {
+    "n": 10,
+    "median": 0.7530517578125,
+    "p95_interpolated": 1.0031982421875,
+    "min": 0.0,
+    "max": 1.00341796875
+  },
+  "residual_post_ms": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 0.0,
+    "min": 0.0,
+    "max": 0.0
+  },
+  "measured_t0_to_post_ms": {
+    "n": 10,
+    "median": 515.4044189453125,
+    "p95_interpolated": 531.6744995117188,
+    "min": 506.717529296875,
+    "max": 531.9365234375
+  },
+  "first_chunk_latency_ms": {
+    "n": 10,
+    "median": 515.4043436050415,
+    "p95_interpolated": 531.6745162010193,
+    "min": 506.7174434661865,
+    "max": 531.9364070892334
+  },
+  "reconcile_error_pct": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 0.0,
+    "min": 0.0,
+    "max": 0.0
+  },
+  "independent_ttfa_bracket_ms": {
+    "n": 10,
+    "median": 516.1498000379652,
+    "p95_interpolated": 531.9991849712096,
+    "min": 507.39789998624474,
+    "max": 532.5206000125036
+  },
+  "bracket_slack_ms": {
+    "n": 10,
+    "median": 0.419442783575505,
+    "p95_interpolated": 0.8192707228008658,
+    "min": -0.02443363144993782,
+    "max": 0.834885829128325
+  },
+  "producer_ratio": {
+    "n": 10,
+    "median": 0.5375299072265625,
+    "p95_interpolated": 0.5499349017965383,
+    "min": 0.36340758769322234,
+    "max": 0.5512335205078125
+  },
+  "producer_rate_P": {
+    "n": 10,
+    "median": 1.8603654688591846,
+    "p95_interpolated": 2.480797676373037,
+    "min": 1.8141131894133917,
+    "max": 2.7517312072310656
+  },
+  "median_decode_chunk_ms": {
+    "n": 10,
+    "median": 41.0233500006143,
+    "p95_interpolated": 56.10228502191602,
+    "min": 36.657749966252595,
+    "max": 61.86620006337762
+  },
+  "median_chunk_audio_ms": {
+    "n": 10,
+    "median": 800.0,
+    "p95_interpolated": 800.0,
+    "min": 788.4375,
+    "max": 800.0
+  },
+  "total_audio_ms": {
+    "n": 10,
+    "median": 2456.875,
+    "p95_interpolated": 2544.875,
+    "min": 1816.875,
+    "max": 2616.875
+  },
+  "generation_wall_ms": {
+    "n": 10,
+    "median": 1455.5413722991943,
+    "p95_interpolated": 1530.1325917243958,
+    "min": 1113.0149364471436,
+    "max": 1556.5314292907715
+  }
+}
+
+<<< 20-8-sweep-P-short-cs10  rc=0  wall=31.1s  new_cache_keys=none
+
+>>> 20-8-sweep-P-long-cs7  (--utterance long --chunk-size 7 --runs 10 --warmup 1 --prime --out I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-P-long-cs7.csv)
+TTFA harness: utterance=long chunk_size=7 lookahead=0 (retired) precision=auto compile=auto runs=10 (+1 warmup)
+  device=NVIDIA GeForce RTX 5090 vram=31.8GiB cap=12.0 torch=2.10.0+cu128
+
+********
+Warning: flash-attn is not installed. Will only run the manual PyTorch version. Please install flash-attn for faster inference.
+********
+ 
+[Tokenizer] Enabling streaming optimizations...
+  use_compile=True, compile_mode=reduce-overhead
+  use_cuda_graphs=True (manual)
+[Decoder] Compiling forward with mode=reduce-overhead, backend=inductor...
+[Decoder] Note: mode='reduce-overhead' includes CUDA graphs automatically
+[Decoder] Compilation complete
+[Tokenizer] Note: compile_mode='reduce-overhead' already includes CUDA graphs
+[Tokenizer] Manual CUDA graph capture skipped (not needed)
+[CodePredictor] Compiling model with mode=reduce-overhead...
+  startup priming: ok in 27113ms; consumer chunks seen during priming = 0
+  warmup: TTFA(post)=404ms [s1=78 s2=257 s3=69 s4=0 res=0] bracket=404 path=threshold ratio=0.569 chunks=34 gen=10711ms
+  run 1: TTFA(post)=387ms [s1=78 s2=262 s3=46 s4=0 res=0] bracket=387 path=threshold ratio=0.571 chunks=36 gen=11296ms
+  run 2: TTFA(post)=384ms [s1=78 s2=258 s3=48 s4=0 res=0] bracket=385 path=threshold ratio=0.569 chunks=33 gen=10471ms
+  run 3: TTFA(post)=381ms [s1=80 s2=253 s3=48 s4=0 res=1] bracket=381 path=threshold ratio=0.561 chunks=35 gen=10945ms
+  run 4: TTFA(post)=403ms [s1=79 s2=261 s3=63 s4=1 res=0] bracket=404 path=threshold ratio=0.577 chunks=38 gen=12375ms
+  run 5: TTFA(post)=400ms [s1=81 s2=261 s3=58 s4=0 res=0] bracket=400 path=threshold ratio=0.567 chunks=37 gen=11626ms
+  run 6: TTFA(post)=393ms [s1=80 s2=258 s3=55 s4=1 res=0] bracket=394 path=threshold ratio=0.565 chunks=36 gen=11492ms
+  run 7: TTFA(post)=402ms [s1=76 s2=263 s3=63 s4=1 res=0] bracket=403 path=threshold ratio=0.568 chunks=33 gen=10470ms
+  run 8: TTFA(post)=386ms [s1=79 s2=261 s3=45 s4=1 res=0] bracket=386 path=threshold ratio=0.56 chunks=34 gen=10587ms
+  run 9: TTFA(post)=395ms [s1=81 s2=266 s3=49 s4=0 res=0] bracket=396 path=threshold ratio=0.568 chunks=35 gen=11209ms
+  run 10: TTFA(post)=389ms [s1=79 s2=261 s3=49 s4=0 res=0] bracket=389 path=threshold ratio=0.567 chunks=36 gen=11262ms
+
+Wrote 11 rows -> I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-P-long-cs7.csv
+{
+  "seg1_prefill_ms": {
+    "n": 10,
+    "median": 79.333251953125,
+    "p95_interpolated": 80.77806396484375,
+    "min": 75.928466796875,
+    "max": 80.9306640625
+  },
+  "seg1a_dispatch_overhead_ms": {
+    "n": 10,
+    "median": 0.505615234375,
+    "p95_interpolated": 1.2801635742187494,
+    "min": 0.503662109375,
+    "max": 1.506591796875
+  },
+  "seg1b_prompt_encode_ms": {
+    "n": 10,
+    "median": 78.33935546875,
+    "p95_interpolated": 80.01593017578125,
+    "min": 74.92626953125,
+    "max": 80.087890625
+  },
+  "seg2_talker_to_first_chunk_ms": {
+    "n": 10,
+    "median": 261.155517578125,
+    "p95_interpolated": 264.5157104492188,
+    "min": 253.03759765625,
+    "max": 265.7041015625
+  },
+  "seg3_first_decode_ms": {
+    "n": 10,
+    "median": 49.02734375,
+    "p95_interpolated": 63.21778564453125,
+    "min": 45.1806640625,
+    "max": 63.48046875
+  },
+  "seg4_consumer_cushion_ms": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 1.0130859375,
+    "min": 0.0,
+    "max": 1.02099609375
+  },
+  "residual_post_ms": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 0.5513427734374989,
+    "min": 0.0,
+    "max": 1.00244140625
+  },
+  "measured_t0_to_post_ms": {
+    "n": 10,
+    "median": 391.1055908203125,
+    "p95_interpolated": 402.8002075195312,
+    "min": 381.476318359375,
+    "max": 403.068603515625
+  },
+  "first_chunk_latency_ms": {
+    "n": 10,
+    "median": 391.1055326461792,
+    "p95_interpolated": 402.8002142906189,
+    "min": 381.47616386413574,
+    "max": 403.06854248046875
+  },
+  "reconcile_error_pct": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 0.0,
+    "min": 0.0,
+    "max": 0.0
+  },
+  "independent_ttfa_bracket_ms": {
+    "n": 10,
+    "median": 391.4617499685846,
+    "p95_interpolated": 403.27622503391467,
+    "min": 381.24840008094907,
+    "max": 403.8511000107974
+  },
+  "bracket_slack_ms": {
+    "n": 10,
+    "median": 0.21748893102630973,
+    "p95_interpolated": 0.7787482954096049,
+    "min": -0.22791827842593193,
+    "max": 0.7824964951723814
+  },
+  "producer_ratio": {
+    "n": 10,
+    "median": 0.5673263549804688,
+    "p95_interpolated": 0.574052974155971,
+    "min": 0.5599700927734375,
+    "max": 0.5765337262834821
+  },
+  "producer_rate_P": {
+    "n": 10,
+    "median": 1.762654197422156,
+    "p95_interpolated": 1.7847181236977907,
+    "min": 1.73450390568877,
+    "max": 1.7858096582393688
+  },
+  "median_decode_chunk_ms": {
+    "n": 10,
+    "median": 31.981275009457022,
+    "p95_interpolated": 38.503267502528615,
+    "min": 30.7710999622941,
+    "max": 38.69670000858605
+  },
+  "median_chunk_audio_ms": {
+    "n": 10,
+    "median": 560.0,
+    "p95_interpolated": 560.0,
+    "min": 560.0,
+    "max": 560.0
+  },
+  "total_audio_ms": {
+    "n": 10,
+    "median": 19616.875,
+    "p95_interpolated": 20824.875,
+    "min": 18296.875,
+    "max": 21256.875
+  },
+  "generation_wall_ms": {
+    "n": 10,
+    "median": 11235.59033870697,
+    "p95_interpolated": 12038.047397136688,
+    "min": 10469.667673110962,
+    "max": 12374.92823600769
+  }
+}
+
+<<< 20-8-sweep-P-long-cs7  rc=0  wall=156.5s  new_cache_keys=['5afc7362ef27323b']
+
+>>> 20-8-sweep-P-short-cs7  (--utterance short --chunk-size 7 --runs 10 --warmup 1 --prime --out I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-P-short-cs7.csv)
+TTFA harness: utterance=short chunk_size=7 lookahead=0 (retired) precision=auto compile=auto runs=10 (+1 warmup)
+  device=NVIDIA GeForce RTX 5090 vram=31.8GiB cap=12.0 torch=2.10.0+cu128
+
+********
+Warning: flash-attn is not installed. Will only run the manual PyTorch version. Please install flash-attn for faster inference.
+********
+ 
+
+!! rc=3221225477  see I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-P-short-cs7.log
+   operable program or batch file.
+   WARNING:sox:SoX could not be found!
+   
+       If you do not have SoX, proceed here:
+        - - - http://sox.sourceforge.net/ - - -
+   
+       If you do (or think that you should) have SoX, double-check your
+       path variables.
+       
+   `torch_dtype` is deprecated! Use `dtype` instead!
+   
+   Fetching 4 files:   0%|          | 0/4 [00:00<?, ?it/s]
+   Fetching 4 files: 100%|##########| 4/4 [00:00<?, ?it/s]
+   Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+   CUDAGraph supports dynamic shapes by recording a new graph for each distinct input size. Recording too many CUDAGraphs may lead to extra overhead. We have observed 9 distinct sizes. Please consider the following options for better performance: a) padding inputs to a few fixed number of shapes; or b) set torch._inductor.config.triton.cudagraph_skip_dynamic_graphs=True. Set torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit=None to silence this warning.
+<<< 20-8-sweep-P-short-cs7  rc=3221225477  wall=12.5s  new_cache_keys=none
+
+>>> 20-8-sweep-B-long-cs25  (--utterance long --chunk-size 25 --runs 10 --warmup 1 --prime --out I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-B-long-cs25.csv)
+TTFA harness: utterance=long chunk_size=25 lookahead=0 (retired) precision=auto compile=auto runs=10 (+1 warmup)
+  device=NVIDIA GeForce RTX 5090 vram=31.8GiB cap=12.0 torch=2.10.0+cu128
+
+********
+Warning: flash-attn is not installed. Will only run the manual PyTorch version. Please install flash-attn for faster inference.
+********
+ 
+[Tokenizer] Enabling streaming optimizations...
+  use_compile=True, compile_mode=reduce-overhead
+  use_cuda_graphs=True (manual)
+[Decoder] Compiling forward with mode=reduce-overhead, backend=inductor...
+[Decoder] Note: mode='reduce-overhead' includes CUDA graphs automatically
+[Decoder] Compilation complete
+[Tokenizer] Note: compile_mode='reduce-overhead' already includes CUDA graphs
+[Tokenizer] Manual CUDA graph capture skipped (not needed)
+[CodePredictor] Compiling model with mode=reduce-overhead...
+  startup priming: ok in 8714ms; consumer chunks seen during priming = 0
+  warmup: TTFA(post)=1197ms [s1=78 s2=1064 s3=56 s4=1 res=0] bracket=1198 path=threshold ratio=0.551 chunks=10 gen=10466ms
+  run 1: TTFA(post)=1186ms [s1=81 s2=1054 s3=51 s4=0 res=0] bracket=1186 path=threshold ratio=0.551 chunks=10 gen=10693ms
+  run 2: TTFA(post)=1153ms [s1=78 s2=1029 s3=46 s4=0 res=0] bracket=1153 path=threshold ratio=0.543 chunks=10 gen=10597ms
+  run 3: TTFA(post)=1191ms [s1=81 s2=1063 s3=48 s4=1 res=0] bracket=1191 path=threshold ratio=0.549 chunks=10 gen=11074ms
+  run 4: TTFA(post)=1183ms [s1=79 s2=1052 s3=53 s4=1 res=0] bracket=1184 path=threshold ratio=0.549 chunks=10 gen=10944ms
+  run 5: TTFA(post)=1178ms [s1=77 s2=1044 s3=57 s4=1 res=0] bracket=1179 path=threshold ratio=0.545 chunks=11 gen=11237ms
+  run 6: TTFA(post)=1202ms [s1=80 s2=1064 s3=58 s4=0 res=0] bracket=1202 path=threshold ratio=0.553 chunks=10 gen=11169ms
+  run 7: TTFA(post)=1175ms [s1=78 s2=1047 s3=50 s4=0 res=0] bracket=1175 path=threshold ratio=0.557 chunks=10 gen=10984ms
+  run 8: TTFA(post)=1183ms [s1=82 s2=1055 s3=45 s4=1 res=0] bracket=1184 path=threshold ratio=0.539 chunks=10 gen=10741ms
+  run 9: TTFA(post)=1156ms [s1=79 s2=1031 s3=46 s4=0 res=0] bracket=1156 path=threshold ratio=0.542 chunks=10 gen=10904ms
+  run 10: TTFA(post)=1172ms [s1=80 s2=1043 s3=49 s4=0 res=0] bracket=1172 path=threshold ratio=0.54 chunks=10 gen=10733ms
+
+Wrote 11 rows -> I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-B-long-cs25.csv
+{
+  "seg1_prefill_ms": {
+    "n": 10,
+    "median": 79.28564453125,
+    "p95_interpolated": 81.87503662109376,
+    "min": 77.064208984375,
+    "max": 82.4521484375
+  },
+  "seg1a_dispatch_overhead_ms": {
+    "n": 10,
+    "median": 1.0028076171875,
+    "p95_interpolated": 1.015966796875,
+    "min": 0.502685546875,
+    "max": 1.016845703125
+  },
+  "seg1b_prompt_encode_ms": {
+    "n": 10,
+    "median": 78.4195556640625,
+    "p95_interpolated": 81.28994140625,
+    "min": 76.061279296875,
+    "max": 81.946044921875
+  },
+  "seg2_talker_to_first_chunk_ms": {
+    "n": 10,
+    "median": 1049.304931640625,
+    "p95_interpolated": 1063.3629150390625,
+    "min": 1029.027099609375,
+    "max": 1064.058349609375
+  },
+  "seg3_first_decode_ms": {
+    "n": 10,
+    "median": 49.8426513671875,
+    "p95_interpolated": 57.713818359375,
+    "min": 45.426513671875,
+    "max": 57.92431640625
+  },
+  "seg4_consumer_cushion_ms": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 1.00286865234375,
+    "min": 0.0,
+    "max": 1.00341796875
+  },
+  "residual_post_ms": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 0.0,
+    "min": 0.0,
+    "max": 0.0
+  },
+  "measured_t0_to_post_ms": {
+    "n": 10,
+    "median": 1180.685302734375,
+    "p95_interpolated": 1197.1904663085938,
+    "min": 1153.13916015625,
+    "max": 1201.9951171875
+  },
+  "first_chunk_latency_ms": {
+    "n": 10,
+    "median": 1180.6854009628296,
+    "p95_interpolated": 1197.1903085708618,
+    "min": 1153.139352798462,
+    "max": 1201.9948959350586
+  },
+  "reconcile_error_pct": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 0.0,
+    "min": 0.0,
+    "max": 0.0
+  },
+  "independent_ttfa_bracket_ms": {
+    "n": 10,
+    "median": 1181.2966499710456,
+    "p95_interpolated": 1197.1919149975292,
+    "min": 1153.076299931854,
+    "max": 1201.928299968131
+  },
+  "bracket_slack_ms": {
+    "n": 10,
+    "median": -0.04379514558240771,
+    "p95_interpolated": 0.7862503929063678,
+    "min": -0.11610273271799088,
+    "max": 0.789428886026144
+  },
+  "producer_ratio": {
+    "n": 10,
+    "median": 0.5469253540039063,
+    "p95_interpolated": 0.5554678955078125,
+    "min": 0.539410888671875,
+    "max": 0.5573740234375
+  },
+  "producer_rate_P": {
+    "n": 10,
+    "median": 1.8284223819027363,
+    "p95_interpolated": 1.8536504833045997,
+    "min": 1.7941273865486,
+    "max": 1.8538743303127914
+  },
+  "median_decode_chunk_ms": {
+    "n": 10,
+    "median": 32.165324984816834,
+    "p95_interpolated": 39.03460999135859,
+    "min": 29.85934994649142,
+    "max": 39.3447499955073
+  },
+  "median_chunk_audio_ms": {
+    "n": 10,
+    "median": 2000.0,
+    "p95_interpolated": 2000.0,
+    "min": 2000.0,
+    "max": 2000.0
+  },
+  "total_audio_ms": {
+    "n": 10,
+    "median": 19656.875,
+    "p95_interpolated": 20020.875,
+    "min": 19176.875,
+    "max": 20056.875
+  },
+  "generation_wall_ms": {
+    "n": 10,
+    "median": 10923.84660243988,
+    "p95_interpolated": 11206.253552436829,
+    "min": 10596.97413444519,
+    "max": 11237.066984176636
+  }
+}
+
+<<< 20-8-sweep-B-long-cs25  rc=0  wall=134.8s  new_cache_keys=none
+
+>>> 20-8-sweep-B-short-cs25  (--utterance short --chunk-size 25 --runs 10 --warmup 1 --prime --out I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-B-short-cs25.csv)
+TTFA harness: utterance=short chunk_size=25 lookahead=0 (retired) precision=auto compile=auto runs=10 (+1 warmup)
+  device=NVIDIA GeForce RTX 5090 vram=31.8GiB cap=12.0 torch=2.10.0+cu128
+
+********
+Warning: flash-attn is not installed. Will only run the manual PyTorch version. Please install flash-attn for faster inference.
+********
+ 
+[Tokenizer] Enabling streaming optimizations...
+  use_compile=True, compile_mode=reduce-overhead
+  use_cuda_graphs=True (manual)
+[Decoder] Compiling forward with mode=reduce-overhead, backend=inductor...
+[Decoder] Note: mode='reduce-overhead' includes CUDA graphs automatically
+[Decoder] Compilation complete
+[Tokenizer] Note: compile_mode='reduce-overhead' already includes CUDA graphs
+[Tokenizer] Manual CUDA graph capture skipped (not needed)
+[CodePredictor] Compiling model with mode=reduce-overhead...
+  startup priming: ok in 8966ms; consumer chunks seen during priming = 0
+
+!! rc=1  see I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-B-short-cs25.log
+     File "I:\MyVoiceV2\python310\Lib\site-packages\torch\_dynamo\convert_frame.py", line 2202, in __call__
+       result = self._torchdynamo_orig_backend(
+     File "I:\MyVoiceV2\python310\Lib\site-packages\torch\_dynamo\convert_frame.py", line 1945, in __call__
+       result = self._inner_convert(
+     File "I:\MyVoiceV2\python310\Lib\site-packages\torch\_dynamo\convert_frame.py", line 707, in __call__
+       result = _compile(
+     File "I:\MyVoiceV2\python310\Lib\site-packages\torch\_dynamo\convert_frame.py", line 1627, in _compile
+       reasons = get_and_maybe_log_recompilation_reasons(
+     File "I:\MyVoiceV2\python310\Lib\site-packages\torch\_dynamo\guards.py", line 4476, in get_and_maybe_log_recompilation_reasons
+       reason = get_guard_fail_reason(
+     File "I:\MyVoiceV2\python310\Lib\site-packages\torch\_dynamo\guards.py", line 4448, in get_guard_fail_reason
+       guard_failures[orig_code_map[code]].append(reason_str)
+     File "I:\MyVoiceV2\python310\Lib\site-packages\torch\_dynamo\utils.py", line 1014, in __getitem__
+       return self.values[id(key)]
+   KeyError: 140734344898552
+<<< 20-8-sweep-B-short-cs25  rc=1  wall=77.2s  new_cache_keys=none
+
+SITTING COMPLETE in 15.2 min. cache keys after: ['205b94cf67d78d0a', '391c2f2be3340b07', '5afc7362ef27323b', 'a514f2c991e58200', 'a58fe999b1fca2f3', 'ef8efd9237ad2a9f']

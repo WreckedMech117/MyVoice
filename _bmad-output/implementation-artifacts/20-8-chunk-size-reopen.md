@@ -1,6 +1,6 @@
 # Story 20.8: Re-baseline and Reopen the Chunk-Size Question (Phase ⊥-Polish-3)
 
-Status: in-progress — Phase 1 (headless re-baseline) running; Phase 2 gated on Commander's approval
+Status: **Phase 1 COMPLETE — at the gate. Verdict GO on latency. Phase 2 awaiting Commander's approval; not started.**
 
 <!-- Phase tag: Phase ⊥-Polish-3. Eighth story of Epic 20. Follow-up F2 from Story 20.5. -->
 <!-- Story class: PHASE-GATED. Phase 1 is a headless re-baseline with a hard go/no-go. Phase 2 does not start until Commander approves it. -->
@@ -122,12 +122,12 @@ pre-existing failure set unchanged in count and identity
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Watermark floor** (AC: #1) — derive the minimum viable `chunk_size`; report it before sweeping.
-- [ ] **Task 2 — Sweep** (AC: #1) — one sitting, one machine, `cs25` control included, warm measurements, cold-compile cost stated.
-- [ ] **Task 3 — Audition cost estimate** (AC: #2).
-- [ ] **Task 4 — GATE.** Report to Commander. Stop.
-- [ ] **Task 5 — Phase 2** (AC: #3), gated.
-- [ ] **Task 6 — Regression** (AC: #4).
+- [x] **Task 1 — Watermark floor** (AC: #1) — derive the minimum viable `chunk_size`; report it before sweeping. → **floor = 7** (not Story 20.1's 6); evidence §1.
+- [x] **Task 2 — Sweep** (AC: #1) — one sitting, one machine, `cs25` control included, warm measurements, cold-compile cost stated. → evidence §2–§3.
+- [x] **Task 3 — Audition cost estimate** (AC: #2). → evidence §5.
+- [x] **Task 4 — GATE.** Report to Commander. Stop. → **verdict GO on latency**; evidence §0 / §4. STOPPED HERE.
+- [ ] **Task 5 — Phase 2** (AC: #3), gated. **NOT STARTED — awaiting Commander.**
+- [ ] **Task 6 — Regression** (AC: #4). Belongs to Phase 2.
 
 ## Dev Notes
 
@@ -155,8 +155,58 @@ pre-existing failure set unchanged in count and identity
 
 ## Dev Agent Record
 
-_(to be filled by dev agent)_
+**Phase 1 complete, 2026-09-02. Stopped at the Task 4 gate. Zero operator
+listening time spent. Phase 2 NOT started and NOT self-authorised.**
+
+Evidence: `20-8-chunk-size-reopen-evidence.md`.
+
+**Verdict: GO on latency, at every viable point, by 5.2×–9.4× the stated bar.**
+
+| point | long TTFA(release) | Δ vs same-sitting `cs25` | producer ratio |
+|---:|---:|---:|---:|
+| cs25 (control, pooled A+B, n=20) | 1,173.7 ms | — | 0.54 |
+| cs15 | 740.9 ms | −432.8 ms | 0.547 |
+| cs10 | 528.4 ms | −645.3 ms | 0.558 |
+| cs7 (the floor) | 391.6 ms | −782.1 ms | 0.567 |
+
+Short class agrees: −441.1 / −662.6 / −786.0 ms.
+
+Findings that change what the story assumed:
+
+- **The watermark floor is 7, not Story 20.1 §5.4's 6.** `N·1920 − 555 ≥ 12000
+  → N ≥ 6.54`. The old 6 came from a pre-20.5 measured 83.3 ms/frame; current
+  code measures **exactly `N × 80 ms` per chunk at every point**. `cs5` and
+  `cs6` are not viable; `cs7` was added and is.
+- **The cushion is a no-op at every measured point** (`seg4` 0.0–1.0 ms,
+  1 chunk held), so no point's TTFA is a cushion artefact.
+- **Cold compile is real but `cs15` was free by coincidence** — its
+  `decode_window_frames = 15` key collides with the one Story 20.4 warmed when
+  it briefly shipped `cs10` + lookahead 5. `cs10` and `cs7` each created a new
+  key and paid **+19.2 s / +18.2 s**, all inside priming, all measurements warm.
+- **Per-chunk decode in situ is 32–37 ms and FLAT in chunk size**, not the
+  11.8 ms in Dev Notes (which is a decoder-only synchronised bench with no
+  talker running). Throughput cost `cs25 → cs7` is ~5 % of generation wall.
+- **`cs25` short degenerates to `residual_flush` on 2 of 20 control runs**;
+  every point at 15 and below is `threshold` 10/10. Story 20.1 §5.3's B1
+  finding, reproducing on current code.
+
+AC #2 — what is still UNKNOWN: everything perceptual. Seam count still rises as
+chunk size falls; "the cause of the old harm is removed" is a mechanism
+argument, not an audition result; Story 20.4's four rounds and 28 judgements
+stand. Story 20.5's one-talker-run-per-pair trick is not available as-is, so a
+take-different audition is sized at **~50–170 trials / 1.5–3.5 h of listening
+across 3–5 rounds** (evidence §5.3). Evidence §5.4 records a lead that could
+collapse that to one ~20-minute round via offline re-chunking of one captured
+token stream, together with the single bit-exactness check that would confirm
+or kill it — that check should be Phase 2's first task.
 
 ## Change Log
 
+- 2026-09-02 — Phase 1 executed (Tasks 1–4). Headless re-baseline on one
+  machine in one sitting with `cs25` measured as the control twice, first and
+  last. Verdict **GO on latency**; stopped at the gate for Commander. Evidence
+  in `20-8-chunk-size-reopen-evidence.md`. Two cells failed on first attempt
+  (one native access violation, one torch-dynamo `KeyError`) and were retried
+  clean inside the sitting; both are recorded in evidence §4.4 rather than
+  dropped.
 - 2026-09-02 — Drafted by Winston at Commander's direction to re-baseline before reopening. Phase-gated because every number justifying F2 predates three stories that changed the system underneath it, and because Story 20.6 §12 showed cross-session comparison has already produced one false conclusion in this epic.

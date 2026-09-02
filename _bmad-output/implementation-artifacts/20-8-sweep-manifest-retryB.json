@@ -1,0 +1,23 @@
+{
+  "cells": [
+    {
+      "cell": "20-8-sweep-A-short-cs25",
+      "chunk_size": 25,
+      "utterance": "short",
+      "tag": "A",
+      "rc": 0,
+      "process_wall_s": 29.5,
+      "new_cache_keys": [],
+      "csv": "20-8-sweep-A-short-cs25.csv",
+      "started": "2026-09-02T12:05:21"
+    }
+  ],
+  "cache_keys_now": [
+    "205b94cf67d78d0a",
+    "391c2f2be3340b07",
+    "5afc7362ef27323b",
+    "a514f2c991e58200",
+    "a58fe999b1fca2f3",
+    "ef8efd9237ad2a9f"
+  ]
+}
