@@ -103,6 +103,40 @@ whether Story 20.5's one-talker-run-per-pair trick is available here (it is
 **not**: chunk size perturbs the talker, so the arms are necessarily different
 takes, and Story 20.4 §17's take-to-take variance warning is live again)
 
+### AC #3a — Phase 2 fixture design, fixed by the §7 viability findings
+
+**Given** claim (d) failed — `decode_window_frames` is a `compile_cache` key
+dimension, so a shipped `cs7` build reads a different inductor cache directory and
+draws a *different but equally valid* token stream (cs25 → 244 frames,
+cs7 → 256, each reproducible across processes)
+**When** the fixture is generated
+**Then** the talker run is captured in a process running **at the candidate
+geometry**, and that one stream is re-chunked for **both** arms
+**And** the candidate arm is therefore bit-for-bit what a shipped build produces —
+it is the arm that has to be real — while the reference arm is `cs25` geometry
+over the same content, which is the correct content-constant control
+**And** the generator **starts the decoder worker before filling the streamer
+queue**. The queue is bounded at `4 × chunk_size`, so at `cs7` that is 28 against
+~35 chunks and the naive order deadlocks. `20-5-regen-audition-fixture.py` has
+this exact shape and escaped only because `cs25` gives 100 against 10
+**And** no arm is allowed to end on a **2-frame terminal residual**, which is the
+one configuration where the decoder is not bit-reproducible against itself
+(−66 dBFS on 0.1 % of samples). Choosing utterance lengths around it makes the
+§7 (a) caveat moot rather than argued away
+
+### AC #3b — Narrow the field before spending trials
+
+**Given** three viable points (`cs7` −782 ms, `cs10` −645 ms, `cs15` −433 ms, all
+with producer ratio ~0.55)
+**When** Phase 2 begins
+**Then** **one** primary candidate is chosen and the choice justified on
+**non-perceptual** grounds — seam count, headroom above the watermark floor,
+marginal gain per added seam, and robustness if the floor moves again (`cs7` sits
+*exactly* on it)
+**And** what would make a second candidate worth testing is stated up front, so
+the decision to spend more of Commander's time is made deliberately rather than
+by drift
+
 ### AC #3 — Phase 2 (gated): implement and audition
 
 **Given** a GO verdict and Commander's approval
