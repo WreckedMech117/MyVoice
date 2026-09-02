@@ -1,0 +1,254 @@
+{
+  "l-020-t1": {
+    "cs25fix": {
+      "filename": "l-020-t1-cs25fix.wav",
+      "samples": 469845,
+      "seconds": 19.577,
+      "posted_chunks": 10,
+      "active_rms_db": -21.058
+    },
+    "cs25fixstate": {
+      "filename": "l-020-t1-cs25fixstate.wav",
+      "samples": 469845,
+      "seconds": 19.577,
+      "posted_chunks": 10,
+      "active_rms_db": -21.031
+    },
+    "level_delta_db": 0.027,
+    "length_delta_samples": 0
+  },
+  "l-020-t2": {
+    "cs25fix": {
+      "filename": "l-020-t2-cs25fix.wav",
+      "samples": 441045,
+      "seconds": 18.377,
+      "posted_chunks": 10,
+      "active_rms_db": -20.532
+    },
+    "cs25fixstate": {
+      "filename": "l-020-t2-cs25fixstate.wav",
+      "samples": 441045,
+      "seconds": 18.377,
+      "posted_chunks": 10,
+      "active_rms_db": -20.581
+    },
+    "level_delta_db": -0.049,
+    "length_delta_samples": 0
+  },
+  "l-021-t1": {
+    "cs25fix": {
+      "filename": "l-021-t1-cs25fix.wav",
+      "samples": 329685,
+      "seconds": 13.737,
+      "posted_chunks": 7,
+      "active_rms_db": -20.701
+    },
+    "cs25fixstate": {
+      "filename": "l-021-t1-cs25fixstate.wav",
+      "samples": 329685,
+      "seconds": 13.737,
+      "posted_chunks": 7,
+      "active_rms_db": -20.632
+    },
+    "level_delta_db": 0.069,
+    "length_delta_samples": 0
+  },
+  "l-021-t2": {
+    "cs25fix": {
+      "filename": "l-021-t2-cs25fix.wav",
+      "samples": 331605,
+      "seconds": 13.817,
+      "posted_chunks": 7,
+      "active_rms_db": -21.367
+    },
+    "cs25fixstate": {
+      "filename": "l-021-t2-cs25fixstate.wav",
+      "samples": 331605,
+      "seconds": 13.817,
+      "posted_chunks": 7,
+      "active_rms_db": -21.503
+    },
+    "level_delta_db": -0.136,
+    "length_delta_samples": 0
+  },
+  "m-020-t1": {
+    "cs25fix": {
+      "filename": "m-020-t1-cs25fix.wav",
+      "samples": 83925,
+      "seconds": 3.497,
+      "posted_chunks": 2,
+      "active_rms_db": -19.836
+    },
+    "cs25fixstate": {
+      "filename": "m-020-t1-cs25fixstate.wav",
+      "samples": 83925,
+      "seconds": 3.497,
+      "posted_chunks": 2,
+      "active_rms_db": -19.681
+    },
+    "level_delta_db": 0.155,
+    "length_delta_samples": 0
+  },
+  "m-020-t2": {
+    "cs25fix": {
+      "filename": "m-020-t2-cs25fix.wav",
+      "samples": 87765,
+      "seconds": 3.657,
+      "posted_chunks": 2,
+      "active_rms_db": -21.403
+    },
+    "cs25fixstate": {
+      "filename": "m-020-t2-cs25fixstate.wav",
+      "samples": 87765,
+      "seconds": 3.657,
+      "posted_chunks": 2,
+      "active_rms_db": -21.232
+    },
+    "level_delta_db": 0.171,
+    "length_delta_samples": 0
+  },
+  "m-021-t1": {
+    "cs25fix": {
+      "filename": "m-021-t1-cs25fix.wav",
+      "samples": 87765,
+      "seconds": 3.657,
+      "posted_chunks": 2,
+      "active_rms_db": -18.948
+    },
+    "cs25fixstate": {
+      "filename": "m-021-t1-cs25fixstate.wav",
+      "samples": 87765,
+      "seconds": 3.657,
+      "posted_chunks": 2,
+      "active_rms_db": -18.859
+    },
+    "level_delta_db": 0.089,
+    "length_delta_samples": 0
+  },
+  "m-021-t2": {
+    "cs25fix": {
+      "filename": "m-021-t2-cs25fix.wav",
+      "samples": 91605,
+      "seconds": 3.817,
+      "posted_chunks": 2,
+      "active_rms_db": -18.893
+    },
+    "cs25fixstate": {
+      "filename": "m-021-t2-cs25fixstate.wav",
+      "samples": 91605,
+      "seconds": 3.817,
+      "posted_chunks": 2,
+      "active_rms_db": -18.576
+    },
+    "level_delta_db": 0.317,
+    "length_delta_samples": 0
+  },
+  "s-020-t1": {
+    "cs25fix": {
+      "filename": "s-020-t1-cs25fix.wav",
+      "samples": 55125,
+      "seconds": 2.297,
+      "posted_chunks": 1,
+      "active_rms_db": -18.609
+    },
+    "cs25fixstate": {
+      "filename": "s-020-t1-cs25fixstate.wav",
+      "samples": 55125,
+      "seconds": 2.297,
+      "posted_chunks": 1,
+      "active_rms_db": -18.609
+    },
+    "level_delta_db": 0.0,
+    "length_delta_samples": 0
+  },
+  "s-020-t2": {
+    "cs25fix": {
+      "filename": "s-020-t2-cs25fix.wav",
+      "samples": 57045,
+      "seconds": 2.377,
+      "posted_chunks": 2,
+      "active_rms_db": -18.872
+    },
+    "cs25fixstate": {
+      "filename": "s-020-t2-cs25fixstate.wav",
+      "samples": 57045,
+      "seconds": 2.377,
+      "posted_chunks": 2,
+      "active_rms_db": -18.729
+    },
+    "level_delta_db": 0.143,
+    "length_delta_samples": 0
+  },
+  "s-021-t1": {
+    "cs25fix": {
+      "filename": "s-021-t1-cs25fix.wav",
+      "samples": 64725,
+      "seconds": 2.697,
+      "posted_chunks": 2,
+      "active_rms_db": -19.559
+    },
+    "cs25fixstate": {
+      "filename": "s-021-t1-cs25fixstate.wav",
+      "samples": 64725,
+      "seconds": 2.697,
+      "posted_chunks": 2,
+      "active_rms_db": -19.719
+    },
+    "level_delta_db": -0.16,
+    "length_delta_samples": 0
+  },
+  "s-021-t2": {
+    "cs25fix": {
+      "filename": "s-021-t2-cs25fix.wav",
+      "samples": 64725,
+      "seconds": 2.697,
+      "posted_chunks": 2,
+      "active_rms_db": -20.418
+    },
+    "cs25fixstate": {
+      "filename": "s-021-t2-cs25fixstate.wav",
+      "samples": 64725,
+      "seconds": 2.697,
+      "posted_chunks": 2,
+      "active_rms_db": -20.411
+    },
+    "level_delta_db": 0.007,
+    "length_delta_samples": 0
+  },
+  "s-022-t1": {
+    "cs25fix": {
+      "filename": "s-022-t1-cs25fix.wav",
+      "samples": 103125,
+      "seconds": 4.297,
+      "posted_chunks": 2,
+      "active_rms_db": -20.237
+    },
+    "cs25fixstate": {
+      "filename": "s-022-t1-cs25fixstate.wav",
+      "samples": 103125,
+      "seconds": 4.297,
+      "posted_chunks": 2,
+      "active_rms_db": -20.37
+    },
+    "level_delta_db": -0.133,
+    "length_delta_samples": 0
+  },
+  "s-022-t2": {
+    "cs25fix": {
+      "filename": "s-022-t2-cs25fix.wav",
+      "samples": 66645,
+      "seconds": 2.777,
+      "posted_chunks": 2,
+      "active_rms_db": -20.564
+    },
+    "cs25fixstate": {
+      "filename": "s-022-t2-cs25fixstate.wav",
+      "samples": 66645,
+      "seconds": 2.777,
+      "posted_chunks": 2,
+      "active_rms_db": -20.712
+    },
+    "level_delta_db": -0.148,
+    "length_delta_samples": 0
+  }
+}

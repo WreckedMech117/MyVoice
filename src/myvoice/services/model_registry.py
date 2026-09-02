@@ -558,6 +558,18 @@ class ModelRegistry:
         # observability breadcrumb; the result dict is captured here so the
         # post-load model_registry log line summarises the final state.
         from myvoice.services.tts_streaming import engage_compile_optimizations
+        # Story 20.4 AC #1 — thread the streamer's REAL geometry into the
+        # compile path. Read from ``codec_token_streamer`` (the single
+        # source of truth) rather than restating the numbers here, so a
+        # future retune of the streamer constants cannot leave the compile
+        # path describing a window the streamer no longer emits. Before
+        # Story 20.4 this call site passed neither value and the function
+        # carried hard-coded 25/5 defaults, so ``decode_window_frames``
+        # resolved to 30 no matter what the streamer did (Story 20.1 §5.4).
+        # ``engage_compile_optimizations`` resolves ``None`` from the same
+        # module, so this pass-through is belt-and-braces: it makes the
+        # dependency visible at the call site the trap was found at.
+        from myvoice.services.tts_streaming import codec_token_streamer
         # Read the canonical pin-hash constant here (the
         # ``services.qwen_tts_service`` boundary is allowed at this caller
         # site; the architecture's module-boundary rule scopes
@@ -591,6 +603,8 @@ class ModelRegistry:
             self._compile_engage_result = engage_compile_optimizations(
                 model,
                 app_settings=self._app_settings,
+                streamer_chunk_size=codec_token_streamer.DEFAULT_CHUNK_SIZE,
+                streamer_lookahead=codec_token_streamer.DEFAULT_LOOKAHEAD,
                 qwen_tts_pin_hash=qwen_tts_pin_hash,
                 reload_cycle_idx=self._reload_cycle_counter,
             )

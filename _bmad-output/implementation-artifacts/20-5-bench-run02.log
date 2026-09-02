@@ -1,0 +1,387 @@
+'sox' is not recognized as an internal or external command,
+operable program or batch file.
+SoX could not be found!
+
+    If you do not have SoX, proceed here:
+     - - - http://sox.sourceforge.net/ - - -
+
+    If you do (or think that you should) have SoX, double-check your
+    path variables.
+    
+`torch_dtype` is deprecated! Use `dtype` instead!
+
+********
+Warning: flash-attn is not installed. Will only run the manual PyTorch version. Please install flash-attn for faster inference.
+********
+ 
+==============================================================================
+Story 20.5 Phase 1 - codec state-caching bench
+==============================================================================
+Fetching 4 files:   0%|          | 0/4 [00:00<?, ?it/s]Fetching 4 files: 100%|##########| 4/4 [00:00<?, ?it/s]
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+CUDAGraph supports dynamic shapes by recording a new graph for each distinct input size. Recording too many CUDAGraphs may lead to extra overhead. We have observed 9 distinct sizes. Please consider the following options for better performance: a) padding inputs to a few fixed number of shapes; or b) set torch._inductor.config.triton.cudagraph_skip_dynamic_graphs=True. Set torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit=None to silence this warning.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+[Tokenizer] Enabling streaming optimizations...
+  use_compile=True, compile_mode=reduce-overhead
+  use_cuda_graphs=True (manual)
+[Decoder] Compiling forward with mode=reduce-overhead, backend=inductor...
+[Decoder] Note: mode='reduce-overhead' includes CUDA graphs automatically
+[Decoder] Compilation complete
+[Tokenizer] Note: compile_mode='reduce-overhead' already includes CUDA graphs
+[Tokenizer] Manual CUDA graph capture skipped (not needed)
+[CodePredictor] Compiling model with mode=reduce-overhead...
+  captured m-020  frames=44 quantizers=16 (2 streamer chunks)
+  captured l-020  frames=231 quantizers=16 (10 streamer chunks)
+  captured l-021  frames=176 quantizers=16 (7 streamer chunks)
+
+##############################################################################
+# PASS: bf16 -- SHIPPING PRECISION
+##############################################################################
+
+decoder: device=cuda:0 dtype=torch.bfloat16 upsample_rates=(8, 5, 4, 3) upsampling_ratios=(2, 2) total_upsample=1920
+transformer: layers=8 hidden=512 heads=16 kv_heads=16 sliding_window=72 layer_types={'sliding_attention'}
+
+CausalConvNet (stride, padding, k_eff) set: [(1, 0, 1), (1, 2, 3), (1, 6, 7), (1, 18, 19), (1, 54, 55)]
+CausalTransConvNet (k, stride, left_pad, right_pad): [(2, 2, 0, 0), (2, 2, 0, 0), (16, 8, 8, 8), (10, 5, 5, 5), (8, 4, 4, 4), (6, 3, 3, 3)]
+
+edge-loss decomposition (transposed-conv left/right trim):
+   stride  8  x downstream upsample   60  =  480 samples
+   stride  5  x downstream upsample   12  =   60 samples
+   stride  4  x downstream upsample    3  =   12 samples
+   stride  3  x downstream upsample    1  =    3 samples
+   TOTAL = 555 samples   (measured constant: 555)
+
+compile / CUDA-graph state on the LOADED decoder:
+   _compiled_forward set : True
+   _compile_mode         : reduce-overhead
+   _cuda_graph captured  : False
+   _graph_window_size    : None
+
+==============================================================================
+l-020  frames=231  (18.48 s of audio)
+==============================================================================
+  WHOLE decode length = 442965  (1920*231 - 555 = 442965)
+  determinism floor (whole vs whole, same input) NRMSE = 0.000e+00
+  control: stream_forward as a single chunk vs WHOLE -> len 442965 vs 442965, NRMSE 0.000e+00
+  INDEP per-chunk lengths (first 5): [47445, 47445, 47445, 47445, 47445] (1920*25-555 = 47445)
+  ALL-state per-chunk lengths (first 5): [47445, 48000, 48000, 48000, 48000]  (1920*25 = 48000)
+
+  arm                    seams  headNRMSE   maxNRMSE  corr med  corr min  aligNRMSE    lag delta
+  INDEP (ships today)        9     1.4398    93.2207    0.3639    0.1161     0.9411 -1200..1110 
+  state: none                9     1.4398    93.2207    0.3639    0.1161     0.9411 -1200..1110 
+  state: conv                9     1.5665    85.4333    0.3581    0.1587     0.9396 -1200..1174 
+  state: tconv               9     1.0187     1.6833    0.5388    0.3569     0.8428  -605..642  
+  state: xformer             9     1.4195    79.5289    0.3814    0.1315     0.9375 -1200..1192 
+  state: conv+tconv          9     0.3393     0.6399    0.9699    0.7920     0.3393    -2..0    
+  state: conv+xformer        9     1.5419    79.0556    0.3880    0.1665     0.9328 -1200..1173 
+  state: tconv+xformer       9     0.8736     1.2702    0.6402    0.4091     0.8257     0..729  
+  state: ALL                 9     0.2227     0.4772    0.9882    0.9182     0.1557    -1..2    
+  INDEP (ships today)    concat len   437970  vs GT   442965  delta -4995
+  state: none            concat len   437970  vs GT   442965  delta -4995
+  state: conv            concat len   437970  vs GT   442965  delta -4995
+  state: tconv           concat len   442965  vs GT   442965  delta +0
+  state: xformer         concat len   437970  vs GT   442965  delta -4995
+  state: conv+tconv      concat len   442965  vs GT   442965  delta +0
+  state: conv+xformer    concat len   437970  vs GT   442965  delta -4995
+  state: tconv+xformer   concat len   442965  vs GT   442965  delta +0
+  state: ALL             concat len   442965  vs GT   442965  delta +0
+
+  ALL-state FULL-SIGNAL NRMSE vs WHOLE = 2.8767e-02  (determinism floor 0.000e+00)
+
+  error by position into the chunk (RMS error / GT RMS, median over seams):
+    INDEP                  0-256: 1.101  256-512: 1.170  512-1024: 1.679  1024-2048: 1.545  2048-4096: 1.292  4096-8192: 1.324
+    conv+tconv             0-256: 0.244  256-512: 0.318  512-1024: 0.368  1024-2048: 0.327  2048-4096: 0.303  4096-8192: 0.365
+    ALL                    0-256: 0.233  256-512: 0.242  512-1024: 0.199  1024-2048: 0.053  2048-4096: 0.015  4096-8192: 0.012
+  transformer latents, chunked vs whole:  KV-cached NRMSE 5.7690e-03   |   no-cache NRMSE 0.3003
+
+  COST (AC #2)
+    conv + tconv state : 21 tensors, 282,944 bytes (276.3 KiB)
+    KV cache observed  : 16 tensors, 2,326,528 bytes (2.22 MiB) [DynamicCache, unbounded growth]
+    KV cache BOUNDED   : 2,359,296 bytes (2.25 MiB) if a sliding window-72 cache is used (8 layers x K,V x 16 heads x 64 dim)
+    TOTAL per session  : 2.49 MiB observed / 2.52 MiB bounded
+    decode time, 10 chunks: INDEP 155.6 ms  STREAM 117.7 ms  delta -37.9 ms (-24.3 %)  |  per chunk -3.79 ms
+
+==============================================================================
+l-021  frames=176  (14.08 s of audio)
+==============================================================================
+  WHOLE decode length = 337365  (1920*176 - 555 = 337365)
+  determinism floor (whole vs whole, same input) NRMSE = 0.000e+00
+  control: stream_forward as a single chunk vs WHOLE -> len 337365 vs 337365, NRMSE 0.000e+00
+  INDEP per-chunk lengths (first 5): [47445, 47445, 47445, 47445, 47445] (1920*25-555 = 47445)
+  ALL-state per-chunk lengths (first 5): [47445, 48000, 48000, 48000, 48000]  (1920*25 = 48000)
+
+  arm                    seams  headNRMSE   maxNRMSE  corr med  corr min  aligNRMSE    lag delta
+  INDEP (ships today)        7     1.1521     1.4722    0.1653    0.0093     0.9992  -901..1165 
+  state: none                7     1.1521     1.4722    0.1653    0.0093     0.9992  -901..1165 
+  state: conv                7     1.1678     1.6038    0.3483    0.0159     0.9648  -798..1188 
+  state: tconv               7     0.9819     1.3485    0.5809    0.1354     0.8316  -583..849  
+  state: xformer             7     1.1145     1.4857    0.2515    0.0174     0.9988  -901..1182 
+  state: conv+tconv          7     0.3683     0.5574    0.9775    0.8866     0.2153  -119..2    
+  state: conv+xformer        7     1.1431     1.5615    0.3315    0.0334     0.9679  -800..1190 
+  state: tconv+xformer       7     0.9265     1.2116    0.6687    0.2106     0.7863  -462..815  
+  state: ALL                 7     0.1197     0.2603    0.9930    0.9856     0.1197  -118..1    
+  INDEP (ships today)    concat len   333480  vs GT   337365  delta -3885
+  state: none            concat len   333480  vs GT   337365  delta -3885
+  state: conv            concat len   333480  vs GT   337365  delta -3885
+  state: tconv           concat len   337365  vs GT   337365  delta +0
+  state: xformer         concat len   333480  vs GT   337365  delta -3885
+  state: conv+tconv      concat len   337365  vs GT   337365  delta +0
+  state: conv+xformer    concat len   333480  vs GT   337365  delta -3885
+  state: tconv+xformer   concat len   337365  vs GT   337365  delta +0
+  state: ALL             concat len   337365  vs GT   337365  delta +0
+
+  ALL-state FULL-SIGNAL NRMSE vs WHOLE = 1.9549e-02  (determinism floor 0.000e+00)
+
+  error by position into the chunk (RMS error / GT RMS, median over seams):
+    INDEP                  0-256: 1.015  256-512: 1.074  512-1024: 1.142  1024-2048: 1.074  2048-4096: 1.451  4096-8192: 1.347
+    conv+tconv             0-256: 0.129  256-512: 0.172  512-1024: 0.285  1024-2048: 0.718  2048-4096: 0.516  4096-8192: 0.359
+    ALL                    0-256: 0.119  256-512: 0.139  512-1024: 0.092  1024-2048: 0.048  2048-4096: 0.020  4096-8192: 0.016
+  transformer latents, chunked vs whole:  KV-cached NRMSE 5.4851e-03   |   no-cache NRMSE 0.3229
+
+  COST (AC #2)
+    conv + tconv state : 21 tensors, 282,944 bytes (276.3 KiB)
+    KV cache observed  : 16 tensors, 2,326,528 bytes (2.22 MiB) [DynamicCache, unbounded growth]
+    KV cache BOUNDED   : 2,359,296 bytes (2.25 MiB) if a sliding window-72 cache is used (8 layers x K,V x 16 heads x 64 dim)
+    TOTAL per session  : 2.49 MiB observed / 2.52 MiB bounded
+    decode time, 8 chunks: INDEP 132.4 ms  STREAM 89.4 ms  delta -43.0 ms (-32.5 %)  |  per chunk -5.37 ms
+
+==============================================================================
+m-020  frames=44  (3.52 s of audio)
+==============================================================================
+  WHOLE decode length = 83925  (1920*44 - 555 = 83925)
+  determinism floor (whole vs whole, same input) NRMSE = 0.000e+00
+  control: stream_forward as a single chunk vs WHOLE -> len 83925 vs 83925, NRMSE 0.000e+00
+  INDEP per-chunk lengths (first 5): [47445, 35925] (1920*25-555 = 47445)
+  ALL-state per-chunk lengths (first 5): [47445, 36480]  (1920*25 = 48000)
+
+  arm                    seams  headNRMSE   maxNRMSE  corr med  corr min  aligNRMSE    lag delta
+  INDEP (ships today)        1     1.2870     1.2870    0.9585    0.9585     0.2856   891..891  
+  state: none                1     1.2870     1.2870    0.9585    0.9585     0.2856   891..891  
+  state: conv                1     1.1804     1.1804    0.9761    0.9761     0.2204   445..445  
+  state: tconv               1     0.7259     0.7259    0.9383    0.9383     0.3466   115..115  
+  state: xformer             1     1.1290     1.1290    0.9640    0.9640     0.2735   890..890  
+  state: conv+tconv          1     0.2076     0.2076    0.9782    0.9782     0.2076     0..0    
+  state: conv+xformer        1     1.0751     1.0751    0.9851    0.9851     0.1723   443..443  
+  state: tconv+xformer       1     0.5600     0.5600    0.9494    0.9494     0.3226   113..113  
+  state: ALL                 1     0.1692     0.1692    0.9857    0.9857     0.1692     0..0    
+  INDEP (ships today)    concat len    83370  vs GT    83925  delta -555
+  state: none            concat len    83370  vs GT    83925  delta -555
+  state: conv            concat len    83370  vs GT    83925  delta -555
+  state: tconv           concat len    83925  vs GT    83925  delta +0
+  state: xformer         concat len    83370  vs GT    83925  delta -555
+  state: conv+tconv      concat len    83925  vs GT    83925  delta +0
+  state: conv+xformer    concat len    83370  vs GT    83925  delta -555
+  state: tconv+xformer   concat len    83925  vs GT    83925  delta +0
+  state: ALL             concat len    83925  vs GT    83925  delta +0
+
+  ALL-state FULL-SIGNAL NRMSE vs WHOLE = 8.2099e-02  (determinism floor 0.000e+00)
+
+  error by position into the chunk (RMS error / GT RMS, median over seams):
+    INDEP                  0-256: 3.618  256-512: 4.814  512-1024: 0.846  1024-2048: 0.473  2048-4096: 0.811  4096-8192: 1.562
+    conv+tconv             0-256: 0.384  256-512: 0.627  512-1024: 0.174  1024-2048: 0.244  2048-4096: 0.302  4096-8192: 0.212
+    ALL                    0-256: 0.368  256-512: 0.575  512-1024: 0.131  1024-2048: 0.080  2048-4096: 0.010  4096-8192: 0.013
+  transformer latents, chunked vs whole:  KV-cached NRMSE 6.2675e-03   |   no-cache NRMSE 0.2187
+
+  COST (AC #2)
+    conv + tconv state : 21 tensors, 282,944 bytes (276.3 KiB)
+    KV cache observed  : 16 tensors, 1,441,792 bytes (1.38 MiB) [DynamicCache, unbounded growth]
+    KV cache BOUNDED   : 2,359,296 bytes (2.25 MiB) if a sliding window-72 cache is used (8 layers x K,V x 16 heads x 64 dim)
+    TOTAL per session  : 1.64 MiB observed / 2.52 MiB bounded
+    decode time, 2 chunks: INDEP 33.1 ms  STREAM 23.6 ms  delta -9.5 ms (-28.8 %)  |  per chunk -4.77 ms
+
+==============================================================================
+GO / NO-GO (thresholds fixed before the work, AC #1)
+==============================================================================
+  GO     : edge loss reaches zero AND head NRMSE < ~5 %
+  NO-GO  : edge loss persists OR head NRMSE stays above ~15 %
+
+  l-020:
+    INDEP     head NRMSE 144.0%  corr 0.364/0.116  lag -1200..+1110  len delta -4995
+    ALL-state head NRMSE 22.27%  corr 0.9882/0.9182  lag -1..+2  len delta +0
+
+  l-021:
+    INDEP     head NRMSE 115.2%  corr 0.165/0.009  lag -901..+1165  len delta -3885
+    ALL-state head NRMSE 11.97%  corr 0.9930/0.9856  lag -118..+1  len delta +0
+
+  m-020:
+    INDEP     head NRMSE 128.7%  corr 0.959/0.959  lag +891..+891  len delta -555
+    ALL-state head NRMSE 16.92%  corr 0.9857/0.9857  lag +0..+0  len delta +0
+
+wrote 20-5-state-cache-bench.json
+
+##############################################################################
+# PASS: fp32 -- NUMERICAL CONTROL
+##############################################################################
+
+decoder: device=cuda:0 dtype=torch.float32 upsample_rates=(8, 5, 4, 3) upsampling_ratios=(2, 2) total_upsample=1920
+transformer: layers=8 hidden=512 heads=16 kv_heads=16 sliding_window=72 layer_types={'sliding_attention'}
+
+CausalConvNet (stride, padding, k_eff) set: [(1, 0, 1), (1, 2, 3), (1, 6, 7), (1, 18, 19), (1, 54, 55)]
+CausalTransConvNet (k, stride, left_pad, right_pad): [(2, 2, 0, 0), (2, 2, 0, 0), (16, 8, 8, 8), (10, 5, 5, 5), (8, 4, 4, 4), (6, 3, 3, 3)]
+
+edge-loss decomposition (transposed-conv left/right trim):
+   stride  8  x downstream upsample   60  =  480 samples
+   stride  5  x downstream upsample   12  =   60 samples
+   stride  4  x downstream upsample    3  =   12 samples
+   stride  3  x downstream upsample    1  =    3 samples
+   TOTAL = 555 samples   (measured constant: 555)
+
+compile / CUDA-graph state on the LOADED decoder:
+   _compiled_forward set : True
+   _compile_mode         : reduce-overhead
+   _cuda_graph captured  : False
+   _graph_window_size    : None
+
+==============================================================================
+l-020  frames=231  (18.48 s of audio)
+==============================================================================
+  WHOLE decode length = 442965  (1920*231 - 555 = 442965)
+  determinism floor (whole vs whole, same input) NRMSE = 0.000e+00
+  control: stream_forward as a single chunk vs WHOLE -> len 442965 vs 442965, NRMSE 0.000e+00
+  INDEP per-chunk lengths (first 5): [47445, 47445, 47445, 47445, 47445] (1920*25-555 = 47445)
+  ALL-state per-chunk lengths (first 5): [47445, 48000, 48000, 48000, 48000]  (1920*25 = 48000)
+
+  arm                    seams  headNRMSE   maxNRMSE  corr med  corr min  aligNRMSE    lag delta
+  INDEP (ships today)        9     1.4375    90.0531    0.3658    0.1172     0.9407 -1200..1110 
+  state: none                9     1.4375    90.0531    0.3658    0.1172     0.9407 -1200..1110 
+  state: conv                9     1.5662    82.5044    0.3563    0.1422     0.9402 -1200..1174 
+  state: tconv               9     1.0144     1.6602    0.5335    0.3604     0.8460  -604..642  
+  state: xformer             9     1.4156    77.3268    0.3841    0.1304     0.9368 -1200..1192 
+  state: conv+tconv          9     0.3351     0.6161    0.9714    0.8052     0.3351    -2..0    
+  state: conv+xformer        9     1.5422    76.7695    0.3856    0.1663     0.9334 -1200..1173 
+  state: tconv+xformer       9     0.8754     1.2301    0.6303    0.4130     0.8256     0..728  
+  state: ALL                 9     0.2094     0.4016    0.9876    0.9367     0.1596    -1..2    
+  INDEP (ships today)    concat len   437970  vs GT   442965  delta -4995
+  state: none            concat len   437970  vs GT   442965  delta -4995
+  state: conv            concat len   437970  vs GT   442965  delta -4995
+  state: tconv           concat len   442965  vs GT   442965  delta +0
+  state: xformer         concat len   437970  vs GT   442965  delta -4995
+  state: conv+tconv      concat len   442965  vs GT   442965  delta +0
+  state: conv+xformer    concat len   437970  vs GT   442965  delta -4995
+  state: tconv+xformer   concat len   442965  vs GT   442965  delta +0
+  state: ALL             concat len   442965  vs GT   442965  delta +0
+
+  ALL-state FULL-SIGNAL NRMSE vs WHOLE = 2.6976e-02  (determinism floor 0.000e+00)
+
+  error by position into the chunk (RMS error / GT RMS, median over seams):
+    INDEP                  0-256: 1.101  256-512: 1.166  512-1024: 1.679  1024-2048: 1.548  2048-4096: 1.291  4096-8192: 1.323
+    conv+tconv             0-256: 0.240  256-512: 0.317  512-1024: 0.335  1024-2048: 0.326  2048-4096: 0.312  4096-8192: 0.358
+    ALL                    0-256: 0.231  256-512: 0.233  512-1024: 0.174  1024-2048: 0.048  2048-4096: 0.008  4096-8192: 0.001
+  transformer latents, chunked vs whole:  KV-cached NRMSE 1.7807e-04   |   no-cache NRMSE 0.3002
+
+  COST (AC #2)
+    conv + tconv state : 21 tensors, 565,888 bytes (552.6 KiB)
+    KV cache observed  : 16 tensors, 4,653,056 bytes (4.44 MiB) [DynamicCache, unbounded growth]
+    KV cache BOUNDED   : 4,718,592 bytes (4.50 MiB) if a sliding window-72 cache is used (8 layers x K,V x 16 heads x 64 dim)
+    TOTAL per session  : 4.98 MiB observed / 5.04 MiB bounded
+    decode time, 10 chunks: INDEP 162.6 ms  STREAM 117.0 ms  delta -45.6 ms (-28.1 %)  |  per chunk -4.56 ms
+
+==============================================================================
+l-021  frames=176  (14.08 s of audio)
+==============================================================================
+  WHOLE decode length = 337365  (1920*176 - 555 = 337365)
+  determinism floor (whole vs whole, same input) NRMSE = 0.000e+00
+  control: stream_forward as a single chunk vs WHOLE -> len 337365 vs 337365, NRMSE 0.000e+00
+  INDEP per-chunk lengths (first 5): [47445, 47445, 47445, 47445, 47445] (1920*25-555 = 47445)
+  ALL-state per-chunk lengths (first 5): [47445, 48000, 48000, 48000, 48000]  (1920*25 = 48000)
+
+  arm                    seams  headNRMSE   maxNRMSE  corr med  corr min  aligNRMSE    lag delta
+  INDEP (ships today)        7     1.1521     1.4726    0.1619    0.0093     0.9993  -901..1165 
+  state: none                7     1.1521     1.4726    0.1619    0.0093     0.9993  -901..1165 
+  state: conv                7     1.1708     1.6082    0.3495    0.0156     0.9645  -798..1188 
+  state: tconv               7     0.9725     1.3361    0.5824    0.1304     0.8304  -582..843  
+  state: xformer             7     1.1126     1.4852    0.2536    0.0162     0.9989  -901..1182 
+  state: conv+tconv          7     0.3636     0.5403    0.9777    0.8925     0.2141  -119..2    
+  state: conv+xformer        7     1.1453     1.5629    0.3333    0.0339     0.9681  -800..1190 
+  state: tconv+xformer       7     0.9246     1.2127    0.6728    0.2068     0.7882  -462..815  
+  state: ALL                 7     0.1214     0.2544    0.9931    0.9866     0.1214  -118..1    
+  INDEP (ships today)    concat len   333480  vs GT   337365  delta -3885
+  state: none            concat len   333480  vs GT   337365  delta -3885
+  state: conv            concat len   333480  vs GT   337365  delta -3885
+  state: tconv           concat len   337365  vs GT   337365  delta +0
+  state: xformer         concat len   333480  vs GT   337365  delta -3885
+  state: conv+tconv      concat len   337365  vs GT   337365  delta +0
+  state: conv+xformer    concat len   333480  vs GT   337365  delta -3885
+  state: tconv+xformer   concat len   337365  vs GT   337365  delta +0
+  state: ALL             concat len   337365  vs GT   337365  delta +0
+
+  ALL-state FULL-SIGNAL NRMSE vs WHOLE = 1.6692e-02  (determinism floor 0.000e+00)
+
+  error by position into the chunk (RMS error / GT RMS, median over seams):
+    INDEP                  0-256: 1.015  256-512: 1.075  512-1024: 1.141  1024-2048: 1.075  2048-4096: 1.449  4096-8192: 1.347
+    conv+tconv             0-256: 0.131  256-512: 0.172  512-1024: 0.282  1024-2048: 0.536  2048-4096: 0.518  4096-8192: 0.353
+    ALL                    0-256: 0.120  256-512: 0.140  512-1024: 0.093  1024-2048: 0.043  2048-4096: 0.012  4096-8192: 0.002
+  transformer latents, chunked vs whole:  KV-cached NRMSE 1.7726e-04   |   no-cache NRMSE 0.3228
+
+  COST (AC #2)
+    conv + tconv state : 21 tensors, 565,888 bytes (552.6 KiB)
+    KV cache observed  : 16 tensors, 4,653,056 bytes (4.44 MiB) [DynamicCache, unbounded growth]
+    KV cache BOUNDED   : 4,718,592 bytes (4.50 MiB) if a sliding window-72 cache is used (8 layers x K,V x 16 heads x 64 dim)
+    TOTAL per session  : 4.98 MiB observed / 5.04 MiB bounded
+    decode time, 8 chunks: INDEP 121.1 ms  STREAM 88.6 ms  delta -32.5 ms (-26.8 %)  |  per chunk -4.06 ms
+
+==============================================================================
+m-020  frames=44  (3.52 s of audio)
+==============================================================================
+  WHOLE decode length = 83925  (1920*44 - 555 = 83925)
+  determinism floor (whole vs whole, same input) NRMSE = 0.000e+00
+  control: stream_forward as a single chunk vs WHOLE -> len 83925 vs 83925, NRMSE 0.000e+00
+  INDEP per-chunk lengths (first 5): [47445, 35925] (1920*25-555 = 47445)
+  ALL-state per-chunk lengths (first 5): [47445, 36480]  (1920*25 = 48000)
+
+  arm                    seams  headNRMSE   maxNRMSE  corr med  corr min  aligNRMSE    lag delta
+  INDEP (ships today)        1     1.3024     1.3024    0.9585    0.9585     0.2861   891..891  
+  state: none                1     1.3024     1.3024    0.9585    0.9585     0.2861   891..891  
+  state: conv                1     1.1832     1.1832    0.9769    0.9769     0.2167   445..445  
+  state: tconv               1     0.7334     0.7334    0.9402    0.9402     0.3416   115..115  
+  state: xformer             1     1.1333     1.1333    0.9637    0.9637     0.2742   890..890  
+  state: conv+tconv          1     0.2053     0.2053    0.9787    0.9787     0.2053     0..0    
+  state: conv+xformer        1     1.0763     1.0763    0.9853    0.9853     0.1712   443..443  
+  state: tconv+xformer       1     0.5644     0.5644    0.9504    0.9504     0.3195   113..113  
+  state: ALL                 1     0.1688     0.1688    0.9857    0.9857     0.1688     0..0    
+  INDEP (ships today)    concat len    83370  vs GT    83925  delta -555
+  state: none            concat len    83370  vs GT    83925  delta -555
+  state: conv            concat len    83370  vs GT    83925  delta -555
+  state: tconv           concat len    83925  vs GT    83925  delta +0
+  state: xformer         concat len    83370  vs GT    83925  delta -555
+  state: conv+tconv      concat len    83925  vs GT    83925  delta +0
+  state: conv+xformer    concat len    83370  vs GT    83925  delta -555
+  state: tconv+xformer   concat len    83925  vs GT    83925  delta +0
+  state: ALL             concat len    83925  vs GT    83925  delta +0
+
+  ALL-state FULL-SIGNAL NRMSE vs WHOLE = 2.2527e-02  (determinism floor 0.000e+00)
+
+  error by position into the chunk (RMS error / GT RMS, median over seams):
+    INDEP                  0-256: 3.658  256-512: 4.825  512-1024: 0.864  1024-2048: 0.470  2048-4096: 0.807  4096-8192: 1.559
+    conv+tconv             0-256: 0.388  256-512: 0.627  512-1024: 0.171  1024-2048: 0.247  2048-4096: 0.298  4096-8192: 0.212
+    ALL                    0-256: 0.368  256-512: 0.572  512-1024: 0.130  1024-2048: 0.082  2048-4096: 0.007  4096-8192: 0.001
+  transformer latents, chunked vs whole:  KV-cached NRMSE 1.8732e-04   |   no-cache NRMSE 0.2186
+
+  COST (AC #2)
+    conv + tconv state : 21 tensors, 565,888 bytes (552.6 KiB)
+    KV cache observed  : 16 tensors, 2,883,584 bytes (2.75 MiB) [DynamicCache, unbounded growth]
+    KV cache BOUNDED   : 4,718,592 bytes (4.50 MiB) if a sliding window-72 cache is used (8 layers x K,V x 16 heads x 64 dim)
+    TOTAL per session  : 3.29 MiB observed / 5.04 MiB bounded
+    decode time, 2 chunks: INDEP 34.7 ms  STREAM 25.9 ms  delta -8.8 ms (-25.4 %)  |  per chunk -4.41 ms
+
+==============================================================================
+GO / NO-GO (thresholds fixed before the work, AC #1)
+==============================================================================
+  GO     : edge loss reaches zero AND head NRMSE < ~5 %
+  NO-GO  : edge loss persists OR head NRMSE stays above ~15 %
+
+  l-020:
+    INDEP     head NRMSE 143.7%  corr 0.366/0.117  lag -1200..+1110  len delta -4995
+    ALL-state head NRMSE 20.94%  corr 0.9876/0.9367  lag -1..+2  len delta +0
+
+  l-021:
+    INDEP     head NRMSE 115.2%  corr 0.162/0.009  lag -901..+1165  len delta -3885
+    ALL-state head NRMSE 12.14%  corr 0.9931/0.9866  lag -118..+1  len delta +0
+
+  m-020:
+    INDEP     head NRMSE 130.2%  corr 0.958/0.958  lag +891..+891  len delta -555
+    ALL-state head NRMSE 16.88%  corr 0.9857/0.9857  lag +0..+0  len delta +0
+
+wrote 20-5-state-cache-bench.json

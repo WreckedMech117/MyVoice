@@ -1,0 +1,143 @@
+'sox' is not recognized as an internal or external command,
+operable program or batch file.
+WARNING:sox:SoX could not be found!
+
+    If you do not have SoX, proceed here:
+     - - - http://sox.sourceforge.net/ - - -
+
+    If you do (or think that you should) have SoX, double-check your
+    path variables.
+    
+`torch_dtype` is deprecated! Use `dtype` instead!
+TTFA harness: utterance=long chunk_size=5 lookahead=5 precision=auto compile=auto runs=5 (+1 warmup)
+  device=NVIDIA GeForce RTX 5090 vram=31.8GiB cap=12.0 torch=2.10.0+cu128
+
+********
+Warning: flash-attn is not installed. Will only run the manual PyTorch version. Please install flash-attn for faster inference.
+********
+ 
+Fetching 4 files:   0%|          | 0/4 [00:00<?, ?it/s]Fetching 4 files: 100%|##########| 4/4 [00:00<?, ?it/s]
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+CUDAGraph supports dynamic shapes by recording a new graph for each distinct input size. Recording too many CUDAGraphs may lead to extra overhead. We have observed 9 distinct sizes. Please consider the following options for better performance: a) padding inputs to a few fixed number of shapes; or b) set torch._inductor.config.triton.cudagraph_skip_dynamic_graphs=True. Set torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit=None to silence this warning.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+[Tokenizer] Enabling streaming optimizations...
+  use_compile=True, compile_mode=reduce-overhead
+  use_cuda_graphs=True (manual)
+[Decoder] Compiling forward with mode=reduce-overhead, backend=inductor...
+[Decoder] Note: mode='reduce-overhead' includes CUDA graphs automatically
+[Decoder] Compilation complete
+[Tokenizer] Note: compile_mode='reduce-overhead' already includes CUDA graphs
+[Tokenizer] Manual CUDA graph capture skipped (not needed)
+[CodePredictor] Compiling model with mode=reduce-overhead...
+  warmup: TTFA(post)=10282ms [s1=9058 s2=1050 s3=173 s4=205 res=1] ratio=1.019 chunks=50 gen=31699ms
+  run 1: TTFA(post)=1327ms [s1=179 s2=1034 s3=114 s4=534 res=0] ratio=1.376 chunks=48 gen=24797ms
+  run 2: TTFA(post)=896ms [s1=149 s2=669 s3=79 s4=341 res=0] ratio=0.922 chunks=49 gen=22334ms
+  run 3: TTFA(post)=1250ms [s1=178 s2=980 s3=92 s4=522 res=0] ratio=1.321 chunks=48 gen=22071ms
+  run 4: TTFA(post)=799ms [s1=106 s2=538 s3=155 s4=273 res=0] ratio=0.853 chunks=47 gen=15762ms
+  run 5: TTFA(post)=739ms [s1=105 s2=537 s3=97 s4=278 res=0] ratio=0.993 chunks=49 gen=21423ms
+
+Wrote 6 rows -> _bmad-output\implementation-artifacts\20-1-sweep-long-cs5.csv
+{
+  "seg1_prefill_ms": {
+    "n": 5,
+    "median": 148.664306640625,
+    "p95": 179.169189453125,
+    "min": 105.0,
+    "max": 179.169189453125
+  },
+  "seg1a_dispatch_overhead_ms": {
+    "n": 5,
+    "median": 1.0029296875,
+    "p95": 2.01171875,
+    "min": 0.50244140625,
+    "max": 2.01171875
+  },
+  "seg1b_prompt_encode_ms": {
+    "n": 5,
+    "median": 147.66162109375,
+    "p95": 178.166259765625,
+    "min": 102.98828125,
+    "max": 178.166259765625
+  },
+  "seg2_talker_to_first_chunk_ms": {
+    "n": 5,
+    "median": 668.767578125,
+    "p95": 1033.803955078125,
+    "min": 536.844482421875,
+    "max": 1033.803955078125
+  },
+  "seg3_first_decode_ms": {
+    "n": 5,
+    "median": 96.842529296875,
+    "p95": 154.547607421875,
+    "min": 78.801025390625,
+    "max": 154.547607421875
+  },
+  "seg4_consumer_cushion_ms": {
+    "n": 5,
+    "median": 341.297119140625,
+    "p95": 534.415771484375,
+    "min": 272.539306640625,
+    "max": 534.415771484375
+  },
+  "residual_post_ms": {
+    "n": 5,
+    "median": 0.0,
+    "p95": 0.0,
+    "min": 0.0,
+    "max": 0.0
+  },
+  "measured_t0_to_post_ms": {
+    "n": 5,
+    "median": 896.23291015625,
+    "p95": 1326.664306640625,
+    "min": 738.68701171875,
+    "max": 1326.664306640625
+  },
+  "first_chunk_latency_ms": {
+    "n": 5,
+    "median": 896.2328433990479,
+    "p95": 1326.6642093658447,
+    "min": 738.6870384216309,
+    "max": 1326.6642093658447
+  },
+  "reconcile_error_pct": {
+    "n": 5,
+    "median": 0.0,
+    "p95": 0.0,
+    "min": 0.0,
+    "max": 0.0
+  },
+  "producer_ratio": {
+    "n": 5,
+    "median": 0.9930877014507132,
+    "p95": 1.3757351191274267,
+    "min": 0.8534252277633272,
+    "max": 1.3757351191274267
+  },
+  "producer_rate_P": {
+    "n": 5,
+    "median": 1.0069604109880619,
+    "p95": 1.1717488157935274,
+    "min": 0.7268841116989582,
+    "max": 1.1717488157935274
+  },
+  "total_audio_ms": {
+    "n": 5,
+    "median": 18714.41666666667,
+    "p95": 19342.875000000004,
+    "min": 18245.95833333334,
+    "max": 19342.875000000004
+  },
+  "generation_wall_ms": {
+    "n": 5,
+    "median": 22071.18248939514,
+    "p95": 24796.802282333374,
+    "min": 15761.555433273315,
+    "max": 24796.802282333374
+  }
+}

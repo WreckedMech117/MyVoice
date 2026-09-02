@@ -142,6 +142,13 @@ class MyVoiceApp(QObject):
         # session ids so the callback can resolve session id from task id
         # without changing the audio-service callback signature.
         self._task_to_session: dict[str, str] = {}
+        # Story 20.3 AC #1 — handle for Story 17.2's fire-and-forget
+        # voice_clone_prompt hydration task. The compile-priming worker,
+        # scheduled after the model preload, waits on this so a resident BASE
+        # model is primed with the active profile's cached prompt rather than
+        # skipped for want of one. None until _initialize_services_async
+        # wires it.
+        self._voice_clone_prompt_hydration_task = None
         # Story 13.2 follow-up: bounded dedup set (FIFO-evicting at 256
         # entries) prevents unbounded growth across long-running sessions.
         # The dual-fire callback window is milliseconds; 256 entries is
@@ -214,6 +221,17 @@ class MyVoiceApp(QObject):
         # cancel sees a stale captured value under the handler lock and
         # drops itself instead of opening a fresh session post-cancel.
         self._progressive_playback_epoch: int = 0
+
+        # Local TTS API (tech-spec local-tts-api Tasks 7/9). The StreamHub
+        # fans progressive chunks out to HTTP subscribers; _api_origin_sessions
+        # holds session ids that originated from an API request so
+        # _handle_progressive_chunk_async gates them away from the desktop
+        # device. The controller (uvicorn-on-qasync) is built in
+        # initialize_async iff enable_http_api. Initialized here so the chunk
+        # handler's gate guard is always safe to evaluate.
+        self._stream_hub = None  # type: Optional[object]
+        self._api_origin_sessions: set[str] = set()
+        self._api_server = None  # type: Optional[object]
 
         # Story 18.1 Task 1.4: env-var-gated CSV capture for the three new
         # progressive-playback metrics. Disabled by default (None) — engages
@@ -309,6 +327,10 @@ class MyVoiceApp(QObject):
 
             # Initialize mic mixing if enabled in settings
             await self._setup_mic_mixing_from_settings()
+
+            # Local TTS API (tech-spec local-tts-api Task 9): construct the
+            # StreamHub + ApiServerController and start the server iff enabled.
+            await self._setup_api_server_from_settings()
 
             self.logger.info("MyVoice application initialization completed successfully")
             return True
@@ -548,9 +570,15 @@ class MyVoiceApp(QObject):
             # for transcription-status updates). Hydration runs as a
             # fire-and-forget background task because (i) it scans disk
             # for .pt files and (ii) it must not block the rest of startup.
+            #
+            # Story 20.3 AC #1 — the returned future is retained so the
+            # compile-priming worker scheduled *after* the model preload can
+            # wait for hydration to finish. Priming a resident BASE model
+            # needs the active profile's cached voice_clone_prompt, and that
+            # cache is exactly what this task fills.
             try:
                 self._tts_service.set_voice_profile_manager(self._voice_manager)
-                self._run_async_task(
+                self._voice_clone_prompt_hydration_task = self._run_async_task(
                     self._tts_service.hydrate_voice_clone_prompt_cache(),
                     on_success=lambda result: self.logger.info(
                         f"Voice clone prompt cache hydration: {result}"
@@ -560,33 +588,9 @@ class MyVoiceApp(QObject):
                     ),
                 )
             except Exception as exc:
+                self._voice_clone_prompt_hydration_task = None
                 self.logger.warning(
                     f"Voice clone prompt cache wiring failed: {exc}"
-                )
-
-            # Story 18.4 / D-23 — fire-and-forget torch.compile warmup
-            # worker. Skips entirely when MYVOICE_DISABLE_COMPILE_WARMUP=1,
-            # on CPU / pre-Ampere hosts, or before the model is loaded
-            # (in which case the first user-facing generation triggers
-            # compile inline — the lazy fallback path per architecture D-23).
-            # On Ampere+ CUDA with cache cold, runs one short synthetic
-            # priming generation with a "Preparing TTS engine…" indicator
-            # visible; on cache warm, logs a steady-state breadcrumb and
-            # returns. Mirrors Story 17.2's hydrate_voice_clone_prompt_cache
-            # fire-and-forget hook discipline.
-            try:
-                self._run_async_task(
-                    self._tts_service.warmup_compile_async(),
-                    on_success=lambda result: self.logger.debug(
-                        "torch.compile warmup task completed"
-                    ),
-                    on_error=lambda error: self.logger.warning(
-                        f"torch.compile warmup task failed: {error}"
-                    ),
-                )
-            except Exception as exc:
-                self.logger.warning(
-                    f"torch.compile warmup wiring failed: {exc}"
                 )
 
             # Preload the appropriate model based on cached active voice profile
@@ -613,6 +617,59 @@ class MyVoiceApp(QObject):
                         self.logger.warning(f"Failed to preload CustomVoice model: {error}")
                 except Exception as e:
                     self.logger.warning(f"Error preloading default model: {e}")
+
+            # Story 18.4 / D-23 + Story 20.3 AC #1 — torch.compile warmup
+            # worker, handed off HERE, *after* the model preload has been
+            # awaited, and deferred until the qasync loop is idle.
+            #
+            # Two defects had to be closed to get this to run at all:
+            #
+            # 1. ORDERING (Story 20.2 §6). The warmup used to be scheduled
+            #    *above* the preload, and ``_run_async_task`` only schedules.
+            #    The coroutine therefore first ran at the enclosing coroutine's
+            #    next suspension point — the ``await preload_model(...)``
+            #    itself — with no model loaded, so every launch exited at
+            #    ``reason="no_model_loaded"``.
+            #
+            # 2. QASYNC RE-ENTRANCY (the AC #4 capture, 2026-09-01). Moving the
+            #    schedule below the preload was necessary but NOT sufficient:
+            #    the task was created and then destroyed before its body ran,
+            #    with ``RuntimeError: Cannot enter into task <Task-6> while
+            #    another task <Task-1 running at main.py:397> is being
+            #    executed``. Under qasync, ``call_soon`` is implemented as
+            #    ``QObject.startTimer(0)`` (``qasync/__init__.py``:
+            #    ``call_soon`` -> ``call_later(0, ...)`` -> ``_SimpleTimer.
+            #    add_callback``), so a queued task step is delivered by
+            #    ``timerEvent`` during **any** Qt event processing — including
+            #    the synchronous ``splash.showMessage(...)`` /
+            #    ``processEvents()`` stretch that ``main.py`` runs *inside*
+            #    Task-1 straight after startup returns. ``asyncio._enter_task``
+            #    refuses to step a second task while Task-1 is mid-step, the
+            #    RuntimeError is swallowed by the loop's exception handler, and
+            #    the task dies pending.
+            #
+            #    This is NOT specific to ``shield``/``wait_for``: a plain
+            #    ``ensure_future(warmup_compile_async())`` scheduled at this
+            #    same point is destroyed identically. Reproduced and verified
+            #    under a real qasync loop in
+            #    ``tests/unit/test_app_compile_warmup_qasync.py``.
+            #
+            # ``_run_async_task_when_loop_is_idle`` closes (2) by creating the
+            # task only on a loop pass where no other task is mid-step, which
+            # is exactly the condition ``_enter_task`` enforces. It is still
+            # fire-and-forget — startup continues into UI construction
+            # immediately and the Qt main thread is never blocked.
+            try:
+                self._run_async_task_when_loop_is_idle(
+                    self._tts_service.warmup_compile_async,
+                    on_error=lambda error: self.logger.warning(
+                        f"torch.compile warmup task failed: {error}"
+                    ),
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    f"torch.compile warmup wiring failed: {exc}"
+                )
 
             # Note: Whisper Service will be initialized on-demand due to DLL conflicts with PyQt6
             # See _initialize_whisper_service_on_demand method
@@ -780,6 +837,18 @@ class MyVoiceApp(QObject):
         self.logger.info("Starting async cleanup - stopping services...")
 
         try:
+            # Local TTS API (tech-spec Task 9 / H2): stop the API server FIRST,
+            # ahead of the TTS teardown below, so any in-flight streaming
+            # gen_task is cancelled before _tts_service.stop() runs. The
+            # controller's stop() is bounded (<=2s) so it fits inside the 8s
+            # cleanup_async budget (main.py) and never trips the hard exit.
+            if getattr(self, '_api_server', None) is not None:
+                try:
+                    await self._api_server.stop()
+                    self.logger.info("Local TTS API server stopped")
+                except Exception as e:
+                    self.logger.error(f"Error stopping local TTS API server: {e}")
+
             # Story 18.1 Task 1.4: flush + close the progressive-playback CSV
             # capture FIRST (before service cleanup) so the last metric records
             # land on disk even if a downstream cleanup step raises. Moved
@@ -930,6 +999,128 @@ class MyVoiceApp(QObject):
         self._services[service_name] = service
         self.logger.debug(f"Registered service: {service_name}")
 
+    # Story 20.3 AC #1 — qasync-safe startup hand-off for the compile warmup.
+    #
+    # ``_MAX_IDLE_DEFERRALS`` bounds the re-arm so a pathological loop (some
+    # task permanently mid-step) cannot leave the warmup silently unscheduled
+    # forever. It is a safety valve, not a timing assumption: the normal case
+    # clears in the tens of passes it takes Qt to finish the splash/UI stretch,
+    # and exhausting it logs a WARNING and schedules anyway.
+    _MAX_IDLE_DEFERRALS = 10000
+
+    def _run_async_task_when_loop_is_idle(self, coro_factory, on_error=None):
+        """Schedule ``coro_factory()`` on the first loop pass with no task
+        mid-step.
+
+        **Why this exists.** Under qasync every ``call_soon`` is a Qt
+        zero-timer, so a queued task step is delivered from ``timerEvent``
+        during any Qt event processing — including a ``processEvents()`` call
+        made *inside* another running task. ``asyncio._enter_task`` then raises
+        ``RuntimeError: Cannot enter into task ... while another task ... is
+        being executed``, the loop's exception handler swallows it, and the
+        task is destroyed pending, having never run a line of its body. That is
+        exactly how Story 20.3's first AC #1 fix failed in the shipped app: the
+        warmup task was created after the preload and then killed during
+        ``main.py``'s splash/UI stretch, so ``tts_compile_warmup_priming`` was
+        never recorded on any launch.
+
+        ``asyncio.current_task()`` reads the same ``_current_tasks`` slot that
+        ``_enter_task`` checks, so testing it here is testing the precise
+        precondition — not a proxy for it, and not a timing guess.
+
+        Takes a **factory** rather than a coroutine object: a coroutine created
+        eagerly and then deferred would emit a "never awaited" warning if the
+        deferral is abandoned, and would be un-restartable.
+
+        Deliberately separate from ``_run_async_task``. Every other caller of
+        that method schedules from a Qt signal handler with no task on the
+        stack, where the plain path is correct and has shipped for many
+        releases; narrowing this change to the one startup hand-off that
+        actually hits the hazard keeps the blast radius at one call site.
+        """
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError as exc:
+            self.logger.warning(
+                f"torch.compile warmup could not resolve an event loop: {exc}"
+            )
+            return None
+
+        state = {"deferrals": 0}
+
+        def _schedule_when_idle():
+            current = asyncio.current_task()
+            if current is not None and state["deferrals"] < self._MAX_IDLE_DEFERRALS:
+                if state["deferrals"] == 0:
+                    self.logger.debug(
+                        "Deferring torch.compile warmup: task %r is mid-step "
+                        "(qasync delivers task steps from Qt timerEvent, and "
+                        "asyncio refuses to enter a second task re-entrantly)",
+                        getattr(current, "get_name", lambda: current)(),
+                    )
+                state["deferrals"] += 1
+                loop.call_soon(_schedule_when_idle)
+                return
+
+            if current is not None:
+                self.logger.warning(
+                    "torch.compile warmup: the event loop never went idle "
+                    "after %d passes; scheduling anyway. If the task is "
+                    "destroyed pending, compile priming will not run this "
+                    "launch and the first generation pays the inductor "
+                    "reload.",
+                    state["deferrals"],
+                )
+
+            self.logger.info(
+                "torch.compile warmup handed off to the event loop "
+                "(deferred %d loop pass(es) for qasync re-entrancy safety)",
+                state["deferrals"],
+            )
+            self._run_async_task(
+                self._compile_warmup_entrypoint(coro_factory),
+                on_success=lambda result: self.logger.debug(
+                    "torch.compile warmup task completed"
+                ),
+                on_error=on_error,
+            )
+
+        loop.call_soon(_schedule_when_idle)
+        return None
+
+    async def _compile_warmup_entrypoint(self, coro_factory):
+        """The warmup task body: one hydration check, then the warmup.
+
+        Story 20.3 AC #1 asks that priming run after Story 17.2's
+        ``voice_clone_prompt`` hydration when the resident model needs a
+        prompt. That ordering is **structural** here rather than enforced by a
+        wait:
+
+        * hydration is scheduled before ``await preload_model(...)``, and its
+          body is fully synchronous (no ``await`` inside the scan), so it runs
+          to completion in a single step at that first suspension — measured
+          in the AC #4 capture as finishing ~4.5 s before the preload returns;
+        * this task is created later still, on the first idle loop pass after
+          the whole startup window.
+
+        So the check below is an observability assertion, not a barrier. It
+        deliberately does **not** await the hydration handle: awaiting another
+        task from inside this one is what the first fix attempt did (via
+        ``wait_for``/``shield``) and the resulting extra task machinery is
+        needless exposure to the qasync hazard above. If hydration somehow has
+        not finished, the BASE priming path skips itself with
+        ``no_priming_prompt`` — the designed, safe fallback — rather than
+        priming the wrong model.
+        """
+        task = self._voice_clone_prompt_hydration_task
+        if task is not None and not task.done():
+            self.logger.warning(
+                "voice_clone_prompt hydration has not finished at compile "
+                "warmup time; a BASE prime will skip with no_priming_prompt "
+                "rather than switch models"
+            )
+        await coro_factory()
+
     def _run_async_task(self, coro, on_success=None, on_error=None):
         """
         Helper to run async tasks from sync Qt signal handlers.
@@ -944,6 +1135,15 @@ class MyVoiceApp(QObject):
             coro: Coroutine to execute
             on_success: Optional callback for successful completion
             on_error: Optional callback for errors
+
+        Returns:
+            The scheduled ``asyncio.Future`` for the wrapper coroutine. Story
+            20.3 AC #1: callers that must sequence work *after* a
+            fire-and-forget task (the compile-priming worker waiting on the
+            voice_clone_prompt hydration) await this handle. The wrapper
+            swallows exceptions, so awaiting it means "the task finished",
+            never "the task succeeded" — the ``on_error`` callback is the
+            failure channel. Existing callers ignore the return value.
         """
         async def _handle_task():
             try:
@@ -957,7 +1157,7 @@ class MyVoiceApp(QObject):
 
         # Create task in shared qasync loop
         # Use ensure_future which works both from sync and async contexts
-        asyncio.ensure_future(_handle_task())
+        return asyncio.ensure_future(_handle_task())
 
     def _on_text_generate_requested(self, text: str):
         """
@@ -2831,6 +3031,37 @@ class MyVoiceApp(QObject):
         cancel. ``epoch=None`` (legacy direct-test callers) skips the
         check.
         """
+        # Local TTS API (tech-spec Task 7 / H1): API-origin sessions are fanned
+        # out to the HTTP StreamHub and MUST NOT touch the desktop audio device
+        # or the progressive-playback singleton state. Gate the WHOLE handler
+        # for these sessions: convert float32->int16, publish, and RETURN —
+        # bypassing start/stop_streaming_session, play_audio_chunk, and the
+        # _progressive_playback_* state machine. GUI/None sessions fall through
+        # to the unchanged device path below.
+        if (
+            getattr(self, "_stream_hub", None) is not None
+            and chunk.session_id in self._api_origin_sessions
+        ):
+            _probe_start = time.perf_counter()
+            if chunk.audio_data is not None and chunk.audio_data.size > 0:
+                audio_bytes = (
+                    np.clip(chunk.audio_data, -1.0, 1.0) * 32767
+                ).astype(np.int16).tobytes()
+            else:
+                audio_bytes = b""
+            self._stream_hub.publish(chunk.session_id, audio_bytes, chunk.is_final)
+            # AC16 tripwire probe — the on-loop gate+publish path must stay
+            # cheap (<10ms/chunk). The mp3 encode is offloaded in the route via
+            # run_in_executor, NOT here, so this measures only the gate+fan-out.
+            metrics.record(
+                "api_stream_gate_publish_ms",
+                (time.perf_counter() - _probe_start) * 1000.0,
+                session_id=chunk.session_id,
+                chunk_index=chunk.chunk_index,
+                is_final=chunk.is_final,
+            )
+            return
+
         if self._progressive_playback_lock is None:
             self._progressive_playback_lock = asyncio.Lock()
 
@@ -2936,6 +3167,33 @@ class MyVoiceApp(QObject):
                             sample_width=2,
                             text_length=getattr(
                                 self, "_pending_progressive_text_length", None
+                            ),
+                            # Story 20.1 (TTFA spike) — observational only.
+                            # Lets the coordinator tag its segment-4 boundary
+                            # metric with the same session id the producer-
+                            # side TTFA boundaries carry, so the Story 18.1
+                            # CSV joins without a positional heuristic.
+                            session_id=chunk.session_id,
+                            # Story 20.5 Phase 4 — the consumer's 64-sample
+                            # chunk-boundary cross-fade exists to hide the
+                            # step between two independently rendered
+                            # chunks. With codec state caching engaged on
+                            # TRUE_STREAM there is no step: the chunks
+                            # concatenate into the codec's true output
+                            # sample for sample, and a cross-dissolve
+                            # between consecutive chunks combs it instead
+                            # (2.6-3.3x further from ground truth, and
+                            # flagged as a blocking defect on two trials of
+                            # the Story 20.5 Phase 3 audition). Ask the
+                            # producer rather than assuming: SENTENCE_STREAM
+                            # and the stateless TRUE_STREAM fallback both
+                            # answer False and keep the 64-sample default.
+                            crossfade_samples=(
+                                0 if getattr(
+                                    getattr(self, "_tts_service", None),
+                                    "progressive_stream_is_continuous",
+                                    False,
+                                ) else None
                             ),
                         )
                     )
@@ -4001,6 +4259,67 @@ class MyVoiceApp(QObject):
         except Exception as e:
             self.logger.error(f"Error setting up mic mixing: {e}")
 
+    async def _setup_api_server_from_settings(self):
+        """Construct the StreamHub + ApiServerController and start iff enabled.
+
+        Called once at the end of initialize_async. The collaborators are
+        always constructed (so the chunk-handler gate + later toggles work);
+        the uvicorn server only starts when ``enable_http_api`` is True.
+        """
+        try:
+            from myvoice.services.api_server.server import ApiServerController
+            from myvoice.services.api_server.stream_hub import StreamHub
+        except Exception:
+            self.logger.exception(
+                "Local TTS API dependencies unavailable; API disabled"
+            )
+            return
+
+        if self._stream_hub is None:
+            self._stream_hub = StreamHub()
+        if self._api_server is None:
+            self._api_server = ApiServerController(
+                tts_service=self._tts_service,
+                voice_manager=self._voice_manager,
+                app_ref=self,
+                settings_provider=lambda: self._app_settings,
+            )
+
+        if getattr(self._app_settings, "enable_http_api", False):
+            try:
+                await self._api_server.start(
+                    host="127.0.0.1",
+                    port=getattr(self._app_settings, "http_api_port", 7778),
+                )
+            except Exception:
+                self.logger.exception("Failed to start local TTS API server")
+
+    async def _reconcile_api_server(self, old_enabled: bool, old_port: int, new_settings):
+        """Start/stop/restart the API server on a settings change.
+
+        A key change needs no restart (the auth dependency reads the key live
+        via ``settings_provider``); only enable-toggle and port changes act.
+        """
+        # Lazy safety net if the controller wasn't built at startup.
+        if self._api_server is None or self._stream_hub is None:
+            await self._setup_api_server_from_settings()
+            return
+
+        new_enabled = getattr(new_settings, "enable_http_api", False)
+        new_port = getattr(new_settings, "http_api_port", 7778)
+        try:
+            if not new_enabled:
+                if self._api_server.is_running:
+                    await self._api_server.stop()
+            elif not old_enabled:
+                await self._api_server.start(host="127.0.0.1", port=new_port)
+            elif old_port != new_port:
+                await self._api_server.stop()
+                await self._api_server.start(host="127.0.0.1", port=new_port)
+            # else: enabled with same port -> nothing to do (key picked up live)
+        except Exception:
+            self.logger.exception("Failed to reconcile local TTS API server")
+
     def _on_settings_changed(self, new_settings):
         """
         Handle settings changes from the UI.
@@ -4014,6 +4333,11 @@ class MyVoiceApp(QObject):
             # Check if model quality tier changed (before updating stored settings)
             old_tier = getattr(self._app_settings, 'model_quality_tier', 'quality') if self._app_settings else 'quality'
             new_tier = getattr(new_settings, 'model_quality_tier', 'quality')
+
+            # Local TTS API: capture pre-change toggle/port (before the swap)
+            # so _reconcile_api_server can detect enable/port transitions.
+            old_api_enabled = getattr(self._app_settings, 'enable_http_api', False) if self._app_settings else False
+            old_api_port = getattr(self._app_settings, 'http_api_port', 7778) if self._app_settings else 7778
 
             # Update stored settings
             self._app_settings = new_settings
@@ -4075,6 +4399,13 @@ class MyVoiceApp(QObject):
                     on_success=lambda _: self.logger.debug("Mic mixing settings applied"),
                     on_error=lambda error: self.logger.error(f"Failed to apply mic mixing settings: {error}")
                 )
+
+            # Local TTS API: start/stop/restart the server on toggle/port change.
+            self._run_async_task(
+                self._reconcile_api_server(old_api_enabled, old_api_port, new_settings),
+                on_success=lambda _: self.logger.debug("Local TTS API settings applied"),
+                on_error=lambda error: self.logger.error(f"Failed to apply local TTS API settings: {error}")
+            )
 
         except Exception as e:
             self.logger.error(f"Error handling settings changes: {e}")

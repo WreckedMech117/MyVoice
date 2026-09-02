@@ -1,0 +1,99 @@
+{
+  "_meta": {
+    "story": "20.5",
+    "round": 1,
+    "candidate": "cs25fixstate",
+    "reference": "cs25fix",
+    "candidate_desc": "cs25 + Story 20.4 seam fix + codec state caching across chunk boundaries",
+    "reference_desc": "cs25 + Story 20.4 seam fix \u2014 what ships today",
+    "isolates": "codec state caching only. Both arms carry the same geometry (25, 5), the same 1024-sample decoder seam blend and the same 64-sample consumer crossfade, and BOTH ARMS OF EACH PAIR ARE DECODED FROM THE SAME TALKER RUN \u2014 identical wording, prosody and duration.",
+    "takes_per_utterance": 2,
+    "variance_note": "Within a pair there is no take-to-take variance to average over: the two files are the same take decoded two ways. The second take exists to sample the CONTENT lottery (whether a held vowel or plosive lands on a boundary), not to average arm variance."
+  },
+  "L1": {
+    "l-020-t1": {
+      "trial_A_filename": "l-020-t1-cs25fixstate.wav",
+      "trial_A_arm": "cs25fixstate",
+      "trial_B_filename": "l-020-t1-cs25fix.wav",
+      "trial_B_arm": "cs25fix"
+    },
+    "l-020-t2": {
+      "trial_A_filename": "l-020-t2-cs25fix.wav",
+      "trial_A_arm": "cs25fix",
+      "trial_B_filename": "l-020-t2-cs25fixstate.wav",
+      "trial_B_arm": "cs25fixstate"
+    },
+    "l-021-t1": {
+      "trial_A_filename": "l-021-t1-cs25fixstate.wav",
+      "trial_A_arm": "cs25fixstate",
+      "trial_B_filename": "l-021-t1-cs25fix.wav",
+      "trial_B_arm": "cs25fix"
+    },
+    "l-021-t2": {
+      "trial_A_filename": "l-021-t2-cs25fixstate.wav",
+      "trial_A_arm": "cs25fixstate",
+      "trial_B_filename": "l-021-t2-cs25fix.wav",
+      "trial_B_arm": "cs25fix"
+    },
+    "m-020-t1": {
+      "trial_A_filename": "m-020-t1-cs25fix.wav",
+      "trial_A_arm": "cs25fix",
+      "trial_B_filename": "m-020-t1-cs25fixstate.wav",
+      "trial_B_arm": "cs25fixstate"
+    },
+    "m-020-t2": {
+      "trial_A_filename": "m-020-t2-cs25fixstate.wav",
+      "trial_A_arm": "cs25fixstate",
+      "trial_B_filename": "m-020-t2-cs25fix.wav",
+      "trial_B_arm": "cs25fix"
+    },
+    "m-021-t1": {
+      "trial_A_filename": "m-021-t1-cs25fix.wav",
+      "trial_A_arm": "cs25fix",
+      "trial_B_filename": "m-021-t1-cs25fixstate.wav",
+      "trial_B_arm": "cs25fixstate"
+    },
+    "m-021-t2": {
+      "trial_A_filename": "m-021-t2-cs25fixstate.wav",
+      "trial_A_arm": "cs25fixstate",
+      "trial_B_filename": "m-021-t2-cs25fix.wav",
+      "trial_B_arm": "cs25fix"
+    },
+    "s-020-t1": {
+      "trial_A_filename": "s-020-t1-cs25fixstate.wav",
+      "trial_A_arm": "cs25fixstate",
+      "trial_B_filename": "s-020-t1-cs25fix.wav",
+      "trial_B_arm": "cs25fix"
+    },
+    "s-020-t2": {
+      "trial_A_filename": "s-020-t2-cs25fix.wav",
+      "trial_A_arm": "cs25fix",
+      "trial_B_filename": "s-020-t2-cs25fixstate.wav",
+      "trial_B_arm": "cs25fixstate"
+    },
+    "s-021-t1": {
+      "trial_A_filename": "s-021-t1-cs25fixstate.wav",
+      "trial_A_arm": "cs25fixstate",
+      "trial_B_filename": "s-021-t1-cs25fix.wav",
+      "trial_B_arm": "cs25fix"
+    },
+    "s-021-t2": {
+      "trial_A_filename": "s-021-t2-cs25fix.wav",
+      "trial_A_arm": "cs25fix",
+      "trial_B_filename": "s-021-t2-cs25fixstate.wav",
+      "trial_B_arm": "cs25fixstate"
+    },
+    "s-022-t1": {
+      "trial_A_filename": "s-022-t1-cs25fix.wav",
+      "trial_A_arm": "cs25fix",
+      "trial_B_filename": "s-022-t1-cs25fixstate.wav",
+      "trial_B_arm": "cs25fixstate"
+    },
+    "s-022-t2": {
+      "trial_A_filename": "s-022-t2-cs25fix.wav",
+      "trial_A_arm": "cs25fix",
+      "trial_B_filename": "s-022-t2-cs25fixstate.wav",
+      "trial_B_arm": "cs25fixstate"
+    }
+  }
+}

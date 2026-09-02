@@ -14,6 +14,7 @@ from .clear_comms_settings_panel import (
     load_preloaded_audio_source,
 )
 from .streaming_settings_panel import StreamingSettingsPanel
+from .api_access_settings_panel import APIAccessSettingsPanel
 
 __all__ = [
     "ClearCommsSettingsPanel",
@@ -23,4 +24,5 @@ __all__ = [
     "WAV_FILE_DIALOG_FILTER",
     "load_preloaded_audio_source",
     "StreamingSettingsPanel",
+    "APIAccessSettingsPanel",
 ]

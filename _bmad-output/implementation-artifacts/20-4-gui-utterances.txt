@@ -1,0 +1,21 @@
+Story 20.4 AC #6 - GUI capture utterances
+=========================================
+
+Use these EXACT texts. They are the canonical Story 20.1 / Epic 18 fixtures
+(tools/ttfa_spike_harness.py UTTERANCE_LONG / UTTERANCE_SHORT), so the
+numbers this capture produces join directly onto Story 20.1 SS5.2 / SS5.3 and
+the Story 20.3 SS4.1 baseline. Substituting different text breaks the
+comparison, because segment 2 scales with utterance length.
+
+In each launch: generate LONG first, let it finish playing, then SHORT, let
+it finish playing, then close with the X.
+
+
+LONG (349 chars - the Epic 18 canonical paragraph)
+--------------------------------------------------
+This is a longer-form test designed to expose the difference between metric-side first-chunk emission and user-perceived first-audio latency. On the pre-Story-17.3 build, the user would wait approximately forty seconds for this utterance to start playing, even though the streaming pipeline emitted the first chunk internally at around five seconds.
+
+
+SHORT (33 chars - the Clear Comms interjection class)
+-----------------------------------------------------
+Hold on a second, say that again.

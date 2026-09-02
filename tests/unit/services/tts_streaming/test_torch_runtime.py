@@ -34,12 +34,21 @@ import torch  # noqa: F401  — conftest already enforced DLL ordering
 from myvoice.observability import metrics
 from myvoice.services.tts_streaming import (
     apply_reload_compile_fix,
+    codec_token_streamer,
     collect_compile_gate_diagnostic,
     compile_cache,
     enable_tf32_and_cudnn_benchmark,
     engage_compile_optimizations,
     is_ampere_or_newer,
     resolve_tts_precision,
+)
+
+# Story 20.4 AC #1 — the compile path's decode window is DERIVED from the
+# streamer's committed geometry, never restated as a literal in this file.
+# Restating it is exactly the drift Story 20.1 SS5.4 found in production.
+_STREAMER_WINDOW = (
+    codec_token_streamer.DEFAULT_CHUNK_SIZE
+    + codec_token_streamer.DEFAULT_LOOKAHEAD
 )
 
 
@@ -790,7 +799,7 @@ def test_engage_compile_engaged_cold_compile_populates_cache(
     assert result["cache_warm"] is False
     model.enable_streaming_optimizations.assert_called_once()
     call_kwargs = model.enable_streaming_optimizations.call_args.kwargs
-    assert call_kwargs["decode_window_frames"] == 30
+    assert call_kwargs["decode_window_frames"] == _STREAMER_WINDOW
     assert call_kwargs["use_compile"] is True
     assert call_kwargs["compile_mode"] == "reduce-overhead"
     # Story 18.4 bundled-smoke regression fix: compile_talker MUST be False
@@ -822,7 +831,7 @@ def test_engage_compile_engaged_warm_cache_short_circuits_probe_label(
         model_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
         precision_str="bf16",
         torch_version=torch.__version__,
-        decode_window_frames=30,
+        decode_window_frames=_STREAMER_WINDOW,
         cuda_capability=(8, 9),
         compile_mode="reduce-overhead",
     )
@@ -883,9 +892,9 @@ def test_engage_compile_d25_invariant_raises_on_explicit_window_mismatch(
     monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (8, 9))
     model = _make_fake_model_with_compile_api(api_succeeds=True, probe_engages=True)
 
-    # Streamer expects 25+5=30; caller passes 80 (the fork's default).
-    # Architecture D-21 binds the value to MyVoice's streamer window;
-    # any caller passing a divergent value is a bug.
+    # Streamer explicitly declared as 25+5=30; caller passes 80 (the
+    # fork's default). Architecture D-21 binds the value to MyVoice's
+    # streamer window; any caller passing a divergent value is a bug.
     with pytest.raises(AssertionError, match="Decode-window drift"):
         engage_compile_optimizations(
             model,
@@ -895,7 +904,7 @@ def test_engage_compile_d25_invariant_raises_on_explicit_window_mismatch(
         )
 
     # Sanity: passing None (the canonical contract) does NOT raise —
-    # the function derives the window from streamer params.
+    # the function derives the window from the streamer params it was given.
     result = engage_compile_optimizations(
         model,
         streamer_chunk_size=25,
@@ -912,6 +921,63 @@ def test_engage_compile_d25_invariant_raises_on_explicit_window_mismatch(
         decode_window_frames=30,
     )
     assert result["decode_window_frames"] == 30
+
+
+def test_engage_compile_resolves_window_from_live_streamer_constants(
+    monkeypatch, _snapshot_and_restore_torch_backends, metric_records,
+    _isolated_inductor_env,
+):
+    """Story 20.4 AC #1 — the compile path reads the STREAMER's real geometry.
+
+    This is the regression row for the Story 20.1 SS5.4 trap, and it
+    mirrors that bug's exact class: the function used to declare
+    ``streamer_chunk_size: int = 25, streamer_lookahead: int = 5`` as
+    hard-coded defaults while the sole production call site passed
+    neither, so ``decode_window_frames`` resolved to 30 no matter what
+    the streamer emitted. Retuning ``DEFAULT_CHUNK_SIZE`` alone would
+    then have told the compile path 30 while the streamer emitted 15 —
+    silently violating the very D-25 invariant the assertion exists to
+    protect, and computing a compile-cache key for a window nothing uses.
+
+    Two arms:
+      1. With no geometry passed, the resolved window equals the LIVE
+         module constants (so the committed retune is reflected).
+      2. Monkeypatching the module constants moves the resolved window
+         with them — i.e. the value is read at call time, not frozen into
+         a default at import time. A regression to hard-coded defaults
+         fails this arm.
+    """
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.cuda.get_device_capability", lambda *a, **k: (8, 9))
+
+    model = _make_fake_model_with_compile_api(api_succeeds=True, probe_engages=True)
+    result = engage_compile_optimizations(model)
+    assert result["decode_window_frames"] == _STREAMER_WINDOW
+    assert (
+        model.enable_streaming_optimizations.call_args.kwargs[
+            "decode_window_frames"
+        ]
+        == _STREAMER_WINDOW
+    )
+
+    # Arm 2 — a retune of the streamer constants must move the compile
+    # geometry with it, with no edit anywhere else.
+    monkeypatch.setattr(codec_token_streamer, "DEFAULT_CHUNK_SIZE", 17)
+    monkeypatch.setattr(codec_token_streamer, "DEFAULT_LOOKAHEAD", 3)
+    model2 = _make_fake_model_with_compile_api(api_succeeds=True, probe_engages=True)
+    result2 = engage_compile_optimizations(model2)
+    assert result2["decode_window_frames"] == 20
+    assert (
+        model2.enable_streaming_optimizations.call_args.kwargs[
+            "decode_window_frames"
+        ]
+        == 20
+    )
+
+    # And the D-25 hard-fail still fires against the RETUNED geometry, so
+    # the invariant is live rather than decorative.
+    with pytest.raises(AssertionError, match="Decode-window drift"):
+        engage_compile_optimizations(model2, decode_window_frames=30)
 
 
 def test_engage_compile_probe_failed_returns_eager_fallback(

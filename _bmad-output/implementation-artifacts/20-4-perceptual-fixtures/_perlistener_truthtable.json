@@ -1,0 +1,46 @@
+{
+  "L1": {
+    "l-020": {
+      "trial_A_filename": "l-020-cs10.wav",
+      "trial_A_geometry": "cs10",
+      "trial_B_filename": "l-020-cs25.wav",
+      "trial_B_geometry": "cs25"
+    },
+    "l-021": {
+      "trial_A_filename": "l-021-cs25.wav",
+      "trial_A_geometry": "cs25",
+      "trial_B_filename": "l-021-cs10.wav",
+      "trial_B_geometry": "cs10"
+    },
+    "m-020": {
+      "trial_A_filename": "m-020-cs25.wav",
+      "trial_A_geometry": "cs25",
+      "trial_B_filename": "m-020-cs10.wav",
+      "trial_B_geometry": "cs10"
+    },
+    "m-021": {
+      "trial_A_filename": "m-021-cs10.wav",
+      "trial_A_geometry": "cs10",
+      "trial_B_filename": "m-021-cs25.wav",
+      "trial_B_geometry": "cs25"
+    },
+    "s-020": {
+      "trial_A_filename": "s-020-cs25.wav",
+      "trial_A_geometry": "cs25",
+      "trial_B_filename": "s-020-cs10.wav",
+      "trial_B_geometry": "cs10"
+    },
+    "s-021": {
+      "trial_A_filename": "s-021-cs10.wav",
+      "trial_A_geometry": "cs10",
+      "trial_B_filename": "s-021-cs25.wav",
+      "trial_B_geometry": "cs25"
+    },
+    "s-022": {
+      "trial_A_filename": "s-022-cs10.wav",
+      "trial_A_geometry": "cs10",
+      "trial_B_filename": "s-022-cs25.wav",
+      "trial_B_geometry": "cs25"
+    }
+  }
+}

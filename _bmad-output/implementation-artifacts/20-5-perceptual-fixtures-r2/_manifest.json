@@ -1,0 +1,394 @@
+{
+  "l-020-t1": {
+    "statexf64": {
+      "filename": "l-020-t1-statexf64.wav",
+      "samples": 456405,
+      "seconds": 19.017,
+      "posted_chunks": 10,
+      "crossfade_samples": 64,
+      "active_rms_db": -20.006
+    },
+    "statexf0": {
+      "filename": "l-020-t1-statexf0.wav",
+      "samples": 456405,
+      "seconds": 19.017,
+      "posted_chunks": 10,
+      "crossfade_samples": 0,
+      "active_rms_db": -20.003
+    },
+    "cs25fix": {
+      "filename": "l-020-t1-cs25fix.wav",
+      "samples": 456405,
+      "seconds": 19.017,
+      "posted_chunks": 10,
+      "crossfade_samples": 64,
+      "active_rms_db": -20.127
+    },
+    "level_delta_db": 0.003,
+    "length_delta_samples": 0
+  },
+  "l-020-t2": {
+    "statexf64": {
+      "filename": "l-020-t2-statexf64.wav",
+      "samples": 464085,
+      "seconds": 19.337,
+      "posted_chunks": 10,
+      "crossfade_samples": 64,
+      "active_rms_db": -20.584
+    },
+    "statexf0": {
+      "filename": "l-020-t2-statexf0.wav",
+      "samples": 464085,
+      "seconds": 19.337,
+      "posted_chunks": 10,
+      "crossfade_samples": 0,
+      "active_rms_db": -20.581
+    },
+    "cs25fix": {
+      "filename": "l-020-t2-cs25fix.wav",
+      "samples": 464085,
+      "seconds": 19.337,
+      "posted_chunks": 10,
+      "crossfade_samples": 64,
+      "active_rms_db": -20.756
+    },
+    "level_delta_db": 0.003,
+    "length_delta_samples": 0
+  },
+  "l-021-t1": {
+    "statexf64": {
+      "filename": "l-021-t1-statexf64.wav",
+      "samples": 335445,
+      "seconds": 13.977,
+      "posted_chunks": 7,
+      "crossfade_samples": 64,
+      "active_rms_db": -21.692
+    },
+    "statexf0": {
+      "filename": "l-021-t1-statexf0.wav",
+      "samples": 335445,
+      "seconds": 13.977,
+      "posted_chunks": 7,
+      "crossfade_samples": 0,
+      "active_rms_db": -21.691
+    },
+    "cs25fix": {
+      "filename": "l-021-t1-cs25fix.wav",
+      "samples": 335445,
+      "seconds": 13.977,
+      "posted_chunks": 7,
+      "crossfade_samples": 64,
+      "active_rms_db": -21.508
+    },
+    "level_delta_db": 0.001,
+    "length_delta_samples": 0
+  },
+  "l-021-t2": {
+    "statexf64": {
+      "filename": "l-021-t2-statexf64.wav",
+      "samples": 335445,
+      "seconds": 13.977,
+      "posted_chunks": 7,
+      "crossfade_samples": 64,
+      "active_rms_db": -20.805
+    },
+    "statexf0": {
+      "filename": "l-021-t2-statexf0.wav",
+      "samples": 335445,
+      "seconds": 13.977,
+      "posted_chunks": 7,
+      "crossfade_samples": 0,
+      "active_rms_db": -20.803
+    },
+    "cs25fix": {
+      "filename": "l-021-t2-cs25fix.wav",
+      "samples": 335445,
+      "seconds": 13.977,
+      "posted_chunks": 7,
+      "crossfade_samples": 64,
+      "active_rms_db": -20.752
+    },
+    "level_delta_db": 0.002,
+    "length_delta_samples": 0
+  },
+  "m-020-t1": {
+    "statexf64": {
+      "filename": "m-020-t1-statexf64.wav",
+      "samples": 82005,
+      "seconds": 3.417,
+      "posted_chunks": 2,
+      "crossfade_samples": 64,
+      "active_rms_db": -20.947
+    },
+    "statexf0": {
+      "filename": "m-020-t1-statexf0.wav",
+      "samples": 82005,
+      "seconds": 3.417,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -20.948
+    },
+    "cs25fix": {
+      "filename": "m-020-t1-cs25fix.wav",
+      "samples": 82005,
+      "seconds": 3.417,
+      "posted_chunks": 2,
+      "crossfade_samples": 64,
+      "active_rms_db": -20.999
+    },
+    "level_delta_db": -0.001,
+    "length_delta_samples": 0
+  },
+  "m-020-t2": {
+    "statexf64": {
+      "filename": "m-020-t2-statexf64.wav",
+      "samples": 91605,
+      "seconds": 3.817,
+      "posted_chunks": 2,
+      "crossfade_samples": 64,
+      "active_rms_db": -20.87
+    },
+    "statexf0": {
+      "filename": "m-020-t2-statexf0.wav",
+      "samples": 91605,
+      "seconds": 3.817,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -20.868
+    },
+    "cs25fix": {
+      "filename": "m-020-t2-cs25fix.wav",
+      "samples": 91605,
+      "seconds": 3.817,
+      "posted_chunks": 2,
+      "crossfade_samples": 64,
+      "active_rms_db": -21.033
+    },
+    "level_delta_db": 0.002,
+    "length_delta_samples": 0
+  },
+  "m-021-t1": {
+    "statexf64": {
+      "filename": "m-021-t1-statexf64.wav",
+      "samples": 95445,
+      "seconds": 3.977,
+      "posted_chunks": 2,
+      "crossfade_samples": 64,
+      "active_rms_db": -18.524
+    },
+    "statexf0": {
+      "filename": "m-021-t1-statexf0.wav",
+      "samples": 95445,
+      "seconds": 3.977,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -18.524
+    },
+    "cs25fix": {
+      "filename": "m-021-t1-cs25fix.wav",
+      "samples": 95445,
+      "seconds": 3.977,
+      "posted_chunks": 2,
+      "crossfade_samples": 64,
+      "active_rms_db": -18.804
+    },
+    "level_delta_db": 0.0,
+    "length_delta_samples": 0
+  },
+  "m-021-t2": {
+    "statexf64": {
+      "filename": "m-021-t2-statexf64.wav",
+      "samples": 95445,
+      "seconds": 3.977,
+      "posted_chunks": 2,
+      "crossfade_samples": 64,
+      "active_rms_db": -18.514
+    },
+    "statexf0": {
+      "filename": "m-021-t2-statexf0.wav",
+      "samples": 95445,
+      "seconds": 3.977,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -18.51
+    },
+    "cs25fix": {
+      "filename": "m-021-t2-cs25fix.wav",
+      "samples": 95445,
+      "seconds": 3.977,
+      "posted_chunks": 2,
+      "crossfade_samples": 64,
+      "active_rms_db": -18.764
+    },
+    "level_delta_db": 0.004,
+    "length_delta_samples": 0
+  },
+  "s-020-t1": {
+    "statexf64": {
+      "filename": "s-020-t1-statexf64.wav",
+      "samples": 58965,
+      "seconds": 2.457,
+      "posted_chunks": 2,
+      "crossfade_samples": 64,
+      "active_rms_db": -19.662
+    },
+    "statexf0": {
+      "filename": "s-020-t1-statexf0.wav",
+      "samples": 58965,
+      "seconds": 2.457,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -19.661
+    },
+    "cs25fix": {
+      "filename": "s-020-t1-cs25fix.wav",
+      "samples": 58965,
+      "seconds": 2.457,
+      "posted_chunks": 2,
+      "crossfade_samples": 64,
+      "active_rms_db": -19.545
+    },
+    "level_delta_db": 0.001,
+    "length_delta_samples": 0
+  },
+  "s-020-t2": {
+    "statexf64": {
+      "filename": "s-020-t2-statexf64.wav",
+      "samples": 53205,
+      "seconds": 2.217,
+      "posted_chunks": 1,
+      "crossfade_samples": 64,
+      "active_rms_db": -19.835
+    },
+    "statexf0": {
+      "filename": "s-020-t2-statexf0.wav",
+      "samples": 53205,
+      "seconds": 2.217,
+      "posted_chunks": 1,
+      "crossfade_samples": 0,
+      "active_rms_db": -19.835
+    },
+    "cs25fix": {
+      "filename": "s-020-t2-cs25fix.wav",
+      "samples": 53205,
+      "seconds": 2.217,
+      "posted_chunks": 1,
+      "crossfade_samples": 64,
+      "active_rms_db": -19.835
+    },
+    "level_delta_db": 0.0,
+    "length_delta_samples": 0
+  },
+  "s-021-t1": {
+    "statexf64": {
+      "filename": "s-021-t1-statexf64.wav",
+      "samples": 64725,
+      "seconds": 2.697,
+      "posted_chunks": 2,
+      "crossfade_samples": 64,
+      "active_rms_db": -20.687
+    },
+    "statexf0": {
+      "filename": "s-021-t1-statexf0.wav",
+      "samples": 64725,
+      "seconds": 2.697,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -20.687
+    },
+    "cs25fix": {
+      "filename": "s-021-t1-cs25fix.wav",
+      "samples": 64725,
+      "seconds": 2.697,
+      "posted_chunks": 2,
+      "crossfade_samples": 64,
+      "active_rms_db": -20.563
+    },
+    "level_delta_db": 0.0,
+    "length_delta_samples": 0
+  },
+  "s-021-t2": {
+    "statexf64": {
+      "filename": "s-021-t2-statexf64.wav",
+      "samples": 64725,
+      "seconds": 2.697,
+      "posted_chunks": 2,
+      "crossfade_samples": 64,
+      "active_rms_db": -22.616
+    },
+    "statexf0": {
+      "filename": "s-021-t2-statexf0.wav",
+      "samples": 64725,
+      "seconds": 2.697,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -22.616
+    },
+    "cs25fix": {
+      "filename": "s-021-t2-cs25fix.wav",
+      "samples": 64725,
+      "seconds": 2.697,
+      "posted_chunks": 2,
+      "crossfade_samples": 64,
+      "active_rms_db": -22.596
+    },
+    "level_delta_db": 0.0,
+    "length_delta_samples": 0
+  },
+  "s-022-t1": {
+    "statexf64": {
+      "filename": "s-022-t1-statexf64.wav",
+      "samples": 106965,
+      "seconds": 4.457,
+      "posted_chunks": 3,
+      "crossfade_samples": 64,
+      "active_rms_db": -19.481
+    },
+    "statexf0": {
+      "filename": "s-022-t1-statexf0.wav",
+      "samples": 106965,
+      "seconds": 4.457,
+      "posted_chunks": 3,
+      "crossfade_samples": 0,
+      "active_rms_db": -19.478
+    },
+    "cs25fix": {
+      "filename": "s-022-t1-cs25fix.wav",
+      "samples": 106965,
+      "seconds": 4.457,
+      "posted_chunks": 3,
+      "crossfade_samples": 64,
+      "active_rms_db": -19.375
+    },
+    "level_delta_db": 0.003,
+    "length_delta_samples": 0
+  },
+  "s-022-t2": {
+    "statexf64": {
+      "filename": "s-022-t2-statexf64.wav",
+      "samples": 95445,
+      "seconds": 3.977,
+      "posted_chunks": 2,
+      "crossfade_samples": 64,
+      "active_rms_db": -21.576
+    },
+    "statexf0": {
+      "filename": "s-022-t2-statexf0.wav",
+      "samples": 95445,
+      "seconds": 3.977,
+      "posted_chunks": 2,
+      "crossfade_samples": 0,
+      "active_rms_db": -21.576
+    },
+    "cs25fix": {
+      "filename": "s-022-t2-cs25fix.wav",
+      "samples": 95445,
+      "seconds": 3.977,
+      "posted_chunks": 2,
+      "crossfade_samples": 64,
+      "active_rms_db": -21.369
+    },
+    "level_delta_db": 0.0,
+    "length_delta_samples": 0
+  }
+}

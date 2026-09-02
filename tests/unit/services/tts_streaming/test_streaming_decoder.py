@@ -1051,3 +1051,758 @@ def test_existing_tests_discover_and_import_module():
     # Metrics helper imports cleanly via the bundled portable Python.
     from myvoice.observability import metrics as _metrics
     assert callable(_metrics.record)
+
+# ============================================================================
+# Story 20.1 Task 2.1 — ttfa_first_decode_complete_ms (segment-3 boundary).
+# ============================================================================
+
+
+def test_metrics_record_ttfa_first_decode_complete_only_for_first_chunk(
+    monkeypatch,
+):
+    """The segment-3 boundary closes when the FIRST token chunk has become
+    PCM. It must be one-shot per worker even though ``decode_chunk_latency_ms``
+    fires per chunk, and it must be instance state so two concurrent
+    sessions do not suppress each other's boundary.
+    """
+    streamer = _build_streamer(chunk_size=4, lookahead=2)
+    fake_post = _RecordingPostMutation()
+    fake_metrics = _RecordingMetrics()
+    monkeypatch.setattr(
+        "myvoice.observability.metrics.record", fake_metrics
+    )
+
+    streamer.queue.put([1, 2, 3, 4, 5, 6])
+    streamer.queue.put([5, 6, 7, 8, 9, 10])
+    streamer.queue.put([9, 10, 11, 12, 13, 14])
+    streamer.queue.put(END_OF_STREAM)
+
+    worker = StreamingDecoderWorker(
+        streamer=streamer,
+        decode_fn=_make_decoded_pcm,
+        post_mutation=fake_post,
+        session_id="abc-123",
+    )
+    worker.start()
+    worker.join(timeout=2.0)
+
+    boundary = [
+        c
+        for c in fake_metrics.calls
+        if c["metric_name"] == "ttfa_first_decode_complete_ms"
+    ]
+    latency = [
+        c
+        for c in fake_metrics.calls
+        if c["metric_name"] == "decode_chunk_latency_ms"
+    ]
+    assert len(latency) == 3, "per-chunk latency metric must be unchanged"
+    assert len(boundary) == 1, (
+        "ttfa_first_decode_complete_ms must fire exactly once per session, "
+        f"not once per chunk; got {len(boundary)}"
+    )
+    rec = boundary[0]
+    assert rec["session_id"] == "abc-123"
+    assert rec["tags"]["chunk_index"] == 0
+    assert rec["tags"]["pcm_samples"] > 0
+    # Absolute wall-clock ms (joins the other boundaries by subtraction),
+    # NOT the elapsed value decode_chunk_latency_ms carries.
+    assert rec["value"] > 1_600_000_000_000.0
+
+    # Instance state, not module state: a second worker re-arms.
+    streamer2 = _build_streamer(chunk_size=4, lookahead=2)
+    streamer2.queue.put([1, 2, 3, 4, 5, 6])
+    streamer2.queue.put(END_OF_STREAM)
+    worker2 = StreamingDecoderWorker(
+        streamer=streamer2,
+        decode_fn=_make_decoded_pcm,
+        post_mutation=_RecordingPostMutation(),
+        session_id="def-456",
+    )
+    worker2.start()
+    worker2.join(timeout=2.0)
+
+    boundary_all = [
+        c
+        for c in fake_metrics.calls
+        if c["metric_name"] == "ttfa_first_decode_complete_ms"
+    ]
+    assert len(boundary_all) == 2, (
+        "a second worker must emit its own segment-3 boundary; the one-shot "
+        "guard must be per-instance"
+    )
+    assert boundary_all[1]["session_id"] == "def-456"
+
+
+# ============================================================================
+# Story 20.4 — exact splice + decoder-side overlap-add.
+#
+# The pre-20.4 tests above all use ``_make_decoded_pcm``, which returns ONE
+# sample per token. That does not satisfy the codec's output-length identity
+# (``1920*frames - 555``), so those tests exercise the legacy proportional
+# trim — deliberately, and they still pin it, because it is the live
+# fallback for an unrecognised codec geometry.
+#
+# The rows below use a decode_fn that reproduces the REAL codec's geometry,
+# so they cover the path production actually takes.
+# ============================================================================
+
+
+SPF = _streaming_decoder._CODEC_SAMPLES_PER_FRAME
+EDGE = _streaming_decoder._CODEC_EDGE_LOSS_SAMPLES
+
+
+def _codec_like_decode(chunk):
+    """A decode_fn with the real codec's measured output geometry.
+
+    Returns ``1920*N - 555`` samples for N frames, and — importantly for
+    the alignment assertions — makes the sample VALUE a function of the
+    absolute audio position, so two chunks decoding the same moment produce
+    the same value. Token ``t`` stands in for codec frame index ``t``.
+
+    The fixed edge loss is taken off the TAIL here. Which end it actually
+    comes off does not matter to the splice arithmetic (the cross-
+    correlation lag is ``chunk_size*1920`` either way, because both decodes
+    lose the same amount), and this file cannot observe it.
+    """
+    n = len(chunk)
+    first_frame = int(chunk[0])
+    total = SPF * n - EDGE
+    start = first_frame * SPF
+    return np.arange(start, start + total, dtype=np.float32)
+
+
+def _frames(first, count):
+    return list(range(first, first + count))
+
+
+def test_exact_splice_advances_by_chunk_size_frames_of_audio():
+    """Story 20.4 defect 1 — the posted chunk must be cs*1920 samples.
+
+    The pre-20.4 arithmetic posted ``1920*(cs+la) - 555 - round(la*(...)/(cs+la))``
+    = ``cs*1920 - 555*cs/(cs+la)``, i.e. 370 samples short at chunk_size=10.
+    Those samples are real speech, and they were deleted at every seam.
+    """
+    cs, la = 10, 5
+    streamer = _build_streamer(chunk_size=cs, lookahead=la)
+    fake_post = _RecordingPostMutation()
+    streamer.queue.put(_frames(0, cs + la))
+    streamer.queue.put(_frames(cs, cs + la))
+    streamer.queue.put(END_OF_STREAM)
+
+    worker = StreamingDecoderWorker(
+        streamer=streamer, decode_fn=_codec_like_decode,
+        post_mutation=fake_post, session_id="abc-123",
+    )
+    worker.start()
+    worker.join(timeout=5.0)
+
+    posted = [c[2] for c in fake_post.calls if c[0] == "append_chunk"]
+    assert len(posted) == 2
+    assert posted[0].size == cs * SPF == 19200
+    # The pre-20.4 value, pinned so a revert is unmistakable.
+    legacy = (SPF * (cs + la) - EDGE) - round(
+        la * (SPF * (cs + la) - EDGE) / (cs + la)
+    )
+    assert legacy == 18830
+    assert posted[0].size - legacy == 370
+
+
+def test_stitched_stream_is_time_contiguous_across_the_seam():
+    """No audio is dropped or duplicated at a chunk boundary.
+
+    ``_codec_like_decode`` makes each sample's VALUE its absolute position,
+    so a contiguous stitch is an arithmetic sequence with step 1 straight
+    through the seam. A dropped span shows as a jump; a duplicated one as a
+    repeat. This is the property the cross-correlation established on real
+    audio, asserted directly here.
+    """
+    cs, la = 10, 5
+    streamer = _build_streamer(chunk_size=cs, lookahead=la)
+    fake_post = _RecordingPostMutation()
+    for k in range(3):
+        streamer.queue.put(_frames(k * cs, cs + la))
+    streamer.queue.put(END_OF_STREAM)
+
+    worker = StreamingDecoderWorker(
+        streamer=streamer, decode_fn=_codec_like_decode,
+        post_mutation=fake_post, session_id="abc-123",
+    )
+    worker.start()
+    worker.join(timeout=5.0)
+
+    posted = [c[2] for c in fake_post.calls if c[0] == "append_chunk"]
+    stitched = np.concatenate(posted)
+    # Both decodes agree on the shared audio, so the blend is an identity
+    # here and the whole stream must be exactly position-valued.
+    expected = np.arange(stitched.size, dtype=np.float32)
+    # atol is float32-ULP-aware, not slack: at these magnitudes (3e4) one
+    # ULP is ~2e-3 and the blend rounds once. A single dropped or
+    # duplicated sample would show as an error of 1.0 - twenty times this
+    # tolerance - so the assertion still has all its teeth.
+    np.testing.assert_allclose(stitched, expected, rtol=0, atol=0.05)
+
+
+def test_overlap_add_blends_the_previously_discarded_tail():
+    """Story 20.4 defect 2 — the retained tail is cross-faded, not dropped.
+
+    Alignment alone butts two independently-decoded renditions of the same
+    instant together and measurably makes the click WORSE (8.5x -> 18.0x
+    the non-seam baseline at chunk_size=25). The tail this module used to
+    discard is that same instant, decoded with future context, so it is
+    retained and ramped in.
+
+    Here the second chunk's decode is offset by a constant, so the blended
+    head must be a linear ramp between the two renditions rather than
+    either one of them.
+    """
+    cs, la = 10, 5
+    offset = 100.0
+
+    def _offset_decode(chunk):
+        pcm = _codec_like_decode(chunk)
+        # Only the SECOND chunk is offset, so the seam has something to
+        # reconcile.
+        return pcm + offset if int(chunk[0]) == cs else pcm
+
+    streamer = _build_streamer(chunk_size=cs, lookahead=la)
+    fake_post = _RecordingPostMutation()
+    streamer.queue.put(_frames(0, cs + la))
+    streamer.queue.put(_frames(cs, cs + la))
+    streamer.queue.put(END_OF_STREAM)
+
+    worker = StreamingDecoderWorker(
+        streamer=streamer, decode_fn=_offset_decode,
+        post_mutation=fake_post, session_id="abc-123",
+    )
+    worker.start()
+    worker.join(timeout=5.0)
+
+    posted = [c[2] for c in fake_post.calls if c[0] == "append_chunk"]
+    w = _streaming_decoder._OVERLAP_ADD_SAMPLES
+    head = posted[1][:w]
+    base = np.arange(cs * SPF, cs * SPF + w, dtype=np.float32)
+    ramp = np.linspace(0.0, 1.0, w, dtype=np.float32)
+    # previous chunk's rendition = base; this chunk's = base + offset.
+    np.testing.assert_allclose(head, base + offset * ramp, rtol=0, atol=1e-2)
+    # First sample takes the PREVIOUS chunk's value, last takes this one's:
+    # that is what makes the transition continuous with what was already
+    # posted rather than stepping to the new rendition instantly.
+    assert abs(float(head[0]) - float(base[0])) < 1e-2
+    assert abs(float(head[-1]) - float(base[-1] + offset)) < 1e-1
+    # Past the blend the segment is untouched.
+    np.testing.assert_allclose(
+        posted[1][w:w + 5],
+        np.arange(cs * SPF + w, cs * SPF + w + 5, dtype=np.float32) + offset,
+        rtol=0, atol=1e-2,
+    )
+
+
+def test_overlap_add_is_clamped_to_the_audio_the_chunks_actually_share():
+    """The blend can never read past the shared region.
+
+    The two chunks only both cover ``lookahead*1920 - 555`` samples. A
+    larger ``_OVERLAP_ADD_SAMPLES`` must clamp to that rather than reaching
+    into audio the previous chunk never decoded.
+    """
+    cs, la = 10, 5
+    shared = la * SPF - EDGE
+    assert shared == 9045
+    streamer = _build_streamer(chunk_size=cs, lookahead=la)
+    fake_post = _RecordingPostMutation()
+    streamer.queue.put(_frames(0, cs + la))
+    streamer.queue.put(_frames(cs, cs + la))
+    streamer.queue.put(END_OF_STREAM)
+
+    worker = StreamingDecoderWorker(
+        streamer=streamer, decode_fn=_codec_like_decode,
+        post_mutation=fake_post, session_id="abc-123",
+    )
+    # Far wider than the shared region.
+    worker._pending_overlap = None
+    original = _streaming_decoder._OVERLAP_ADD_SAMPLES
+    try:
+        _streaming_decoder._OVERLAP_ADD_SAMPLES = 1_000_000
+        worker.start()
+        worker.join(timeout=5.0)
+    finally:
+        _streaming_decoder._OVERLAP_ADD_SAMPLES = original
+
+    posted = [c[2] for c in fake_post.calls if c[0] == "append_chunk"]
+    assert len(posted) == 2
+    assert posted[0].size == cs * SPF
+    # Still contiguous — the clamp did not corrupt the splice.
+    stitched = np.concatenate(posted)
+    np.testing.assert_allclose(
+        stitched[:cs * SPF + 100],
+        np.arange(cs * SPF + 100, dtype=np.float32), rtol=0, atol=0.05,
+    )
+
+
+def test_residual_chunk_still_posted_whole_and_still_blended():
+    """The residual carries no trim, but it DOES start at a seam.
+
+    Its head covers the same audio the previous full chunk's retained tail
+    does, so it must be blended like any other chunk head. Missing this
+    would leave one un-treated seam per utterance — the last one, right
+    before the audio ends, which is a conspicuous place for a click.
+    """
+    cs, la = 10, 5
+    streamer = _build_streamer(chunk_size=cs, lookahead=la)
+    fake_post = _RecordingPostMutation()
+    streamer.queue.put(_frames(0, cs + la))
+    streamer.queue.put(_frames(cs, 6))          # residual: 6 < cs + la
+    streamer.queue.put(END_OF_STREAM)
+
+    worker = StreamingDecoderWorker(
+        streamer=streamer, decode_fn=_codec_like_decode,
+        post_mutation=fake_post, session_id="abc-123",
+    )
+    worker.start()
+    worker.join(timeout=5.0)
+
+    posted = [c[2] for c in fake_post.calls if c[0] == "append_chunk"]
+    assert len(posted) == 2
+    assert posted[0].size == cs * SPF
+    assert posted[1].size == SPF * 6 - EDGE      # posted whole, no trim
+    stitched = np.concatenate(posted)
+    np.testing.assert_allclose(
+        stitched, np.arange(stitched.size, dtype=np.float32),
+        rtol=0, atol=0.05,
+    )
+
+
+def test_unrecognised_codec_geometry_falls_back_and_says_so(monkeypatch):
+    """A codec/pin change must degrade to the old behaviour LOUDLY.
+
+    The exact splice is only correct while ``decode(N) == 1920*N - 555``.
+    If that identity ever stops holding, computing a splice from it would
+    mis-cut every chunk — silently, and worse than the bug this replaces.
+    So the identity is verified per chunk, and its failure drops the
+    session to the pre-20.4 proportional trim with a metric.
+    """
+    cs, la = 4, 2
+    streamer = _build_streamer(chunk_size=cs, lookahead=la)
+    fake_post = _RecordingPostMutation()
+    recorder = _RecordingMetrics()
+    monkeypatch.setattr("myvoice.observability.metrics.record", recorder)
+
+    streamer.queue.put([1, 2, 3, 4, 5, 6])
+    streamer.queue.put([5, 6, 7, 8, 9, 10])
+    streamer.queue.put(END_OF_STREAM)
+
+    worker = StreamingDecoderWorker(
+        streamer=streamer,
+        decode_fn=_make_decoded_pcm,   # one sample per token: identity fails
+        post_mutation=fake_post, session_id="abc-123",
+    )
+    worker.start()
+    worker.join(timeout=5.0)
+
+    posted = [c[2] for c in fake_post.calls if c[0] == "append_chunk"]
+    # Legacy proportional trim: 6 samples - round(2*6/6) = 4.
+    assert [p.size for p in posted] == [4, 4]
+
+    names = [c["metric_name"] for c in recorder.calls]
+    assert "decode_geometry_unverified" in names, (
+        "an unrecognised codec geometry must be visible in telemetry, not "
+        "silently absorbed"
+    )
+    # And exactly once per session, not once per chunk.
+    assert names.count("decode_geometry_unverified") == 1
+
+
+def test_codec_geometry_constants_match_the_measured_model():
+    """Pin the two measured numbers and the invariants that depend on them.
+
+    ``1920`` samples/frame is 12.5 Hz, not the 12 Hz this codebase's prose
+    assumed from Story 16.3 to Story 20.3. Both constants were solved from
+    posted chunk lengths and cross-checked against 14 residual lengths
+    (``20-4-seam-analysis.py``). A change to either without re-running that
+    measurement is a silent audio-quality regression.
+    """
+    assert SPF == 1920
+    assert EDGE == 555
+    assert 24000 / SPF == 12.5
+    # The overlap-add width must fit the audio two chunks actually share at
+    # the committed lookahead, or the blend would be clamped and the swept
+    # value would not be the value in effect.
+    from myvoice.services.tts_streaming import codec_token_streamer
+    shared = codec_token_streamer.DEFAULT_LOOKAHEAD * SPF - EDGE
+    assert _streaming_decoder._OVERLAP_ADD_SAMPLES <= shared
+
+
+# ============================================================================
+# Story 20.5 — the state-cached geometry
+#
+# The rows above cover the stateless path: every decode returns
+# ``1920*N - 555`` and every splice lands at ``chunk_size*1920``. That path is
+# still live (it is the fallback whenever ``codec_state_cache`` declines a
+# decoder), so none of it is deleted.
+#
+# The rows below cover the path production takes when the state-cached decoder
+# is in play. The difference the worker has to get right is small and entirely
+# invisible per-chunk: the 555-sample edge loss is paid ONCE, on the session's
+# first decode, so the first splice is short by that constant and every later
+# one is frame-exact. Getting it backwards duplicates or drops 23 ms at the
+# first seam of every utterance — which is the exact class of defect Story
+# 20.4 spent four audition rounds locating, and which no per-chunk assertion
+# can see.
+# ============================================================================
+
+
+class _StatefulCodecLikeDecode:
+    """A decode_fn with the state-cached geometry, and the same commit rule
+    as ``codec_state_cache.StatefulCodecDecoder``.
+
+    Sample VALUES are absolute positions in the codec's ideal output, so a
+    correctly-stitched stream is an arithmetic sequence with step 1 running
+    straight through every seam — a dropped span shows as a jump, a
+    duplicated one as a repeat, and a 555-sample first-seam error shows as
+    either. The whole-sequence decode starts at ``EDGE`` because that is the
+    left-pad the codec discards once, at the start of a stream.
+    """
+
+    carries_codec_state = True
+
+    def __init__(self, chunk_size, lookahead):
+        self.chunk_size = chunk_size
+        self.lookahead = lookahead
+        self.frames = 0
+        self.resets = 0
+        self.commits = []
+
+    def reset(self):
+        self.frames = 0
+        self.resets += 1
+
+    def __call__(self, chunk):
+        n = len(chunk)
+        first_frame = int(chunk[0])
+        first = self.frames == 0
+        start = first_frame * SPF + (EDGE if first else 0)
+        total = SPF * n - (EDGE if first else 0)
+        full_window = n >= self.chunk_size + self.lookahead and self.lookahead > 0
+        committed = self.chunk_size if full_window else n
+        self.frames += committed
+        self.commits.append(committed)
+        return np.arange(start, start + total, dtype=np.float64).astype(np.float32)
+
+
+def _run_stateful(cs, la, chunk_frames, session_id="abc-123"):
+    """Drive a worker over ``chunk_frames`` (a list of (first, count) pairs)
+    with a state-cached decode_fn. Returns (posted, decode_fn, post)."""
+    streamer = _build_streamer(chunk_size=cs, lookahead=la)
+    fake_post = _RecordingPostMutation()
+    decode_fn = _StatefulCodecLikeDecode(cs, la)
+    for first, count in chunk_frames:
+        streamer.queue.put(_frames(first, count))
+    streamer.queue.put(END_OF_STREAM)
+
+    worker = StreamingDecoderWorker(
+        streamer=streamer, decode_fn=decode_fn,
+        post_mutation=fake_post, session_id=session_id,
+    )
+    worker.start()
+    worker.join(timeout=5.0)
+    posted = [c[2] for c in fake_post.calls if c[0] == "append_chunk"]
+    return posted, decode_fn, fake_post
+
+
+def test_worker_reads_the_carries_codec_state_flag_off_the_decode_fn():
+    """The switch between the two geometry models. Read once at construction
+    — the decode_fn is built per dispatch and cannot change mid-session."""
+    stateless = StreamingDecoderWorker(
+        streamer=_build_streamer(), decode_fn=_codec_like_decode,
+        post_mutation=_RecordingPostMutation(), session_id="s",
+    )
+    assert stateless._carries_codec_state is False
+
+    stateful = StreamingDecoderWorker(
+        streamer=_build_streamer(), decode_fn=_StatefulCodecLikeDecode(4, 2),
+        post_mutation=_RecordingPostMutation(), session_id="s",
+    )
+    assert stateful._carries_codec_state is True
+
+
+def test_state_cached_first_chunk_splices_short_by_the_edge_loss():
+    """The one asymmetry in the whole change.
+
+    First posted chunk: ``chunk_size*1920 - 555``. Every later one: exactly
+    ``chunk_size*1920``. Under the STATELESS geometry all of them are
+    ``chunk_size*1920`` — so a worker that failed to switch models would post
+    a first chunk 555 samples too long, made of audio the codec never
+    produced.
+    """
+    cs, la = 10, 5
+    posted, _, _ = _run_stateful(
+        cs, la, [(0, cs + la), (cs, cs + la), (2 * cs, cs + la)]
+    )
+    assert [p.size for p in posted] == [cs * SPF - EDGE, cs * SPF, cs * SPF]
+
+
+def test_state_cached_stream_is_time_contiguous_through_every_seam():
+    """No audio dropped, none duplicated — including at the FIRST seam, the
+    only one where the two geometry models disagree."""
+    cs, la = 10, 5
+    posted, _, _ = _run_stateful(cs, la, [(k * cs, cs + la) for k in range(4)])
+    stitched = np.concatenate(posted)
+    expected = np.arange(EDGE, EDGE + stitched.size, dtype=np.float32)
+    # atol is float32-ULP-aware at these magnitudes (~5e4), not slack: a
+    # single dropped or duplicated sample shows as an error of 1.0.
+    np.testing.assert_allclose(stitched, expected, rtol=0, atol=0.05)
+
+
+def test_state_cached_total_equals_a_whole_sequence_decode_to_the_sample():
+    """``1920*N - 555`` for the whole utterance — the same length a
+    single-shot decode of all N frames returns. The pre-20.5 stateless splice
+    loses 555 per seam relative to that; carried state loses it exactly
+    once."""
+    cs, la = 10, 5
+    chunks = [(k * cs, cs + la) for k in range(4)]
+    residual_first = 4 * cs
+    residual_len = 7
+    chunks.append((residual_first, residual_len))
+    posted, _, _ = _run_stateful(cs, la, chunks)
+
+    total_frames = residual_first + residual_len
+    assert sum(p.size for p in posted) == SPF * total_frames - EDGE
+
+
+def test_state_cached_residual_chunk_is_posted_whole():
+    cs, la = 10, 5
+    posted, _, _ = _run_stateful(cs, la, [(0, cs + la), (cs, 6)])
+    assert posted[1].size == 6 * SPF
+
+
+def test_commit_predicate_matches_the_workers_full_window_predicate():
+    """The one duplication Story 20.5 introduces, pinned.
+
+    ``StatefulCodecDecoder.__call__`` decides how many frames to commit to
+    codec state; ``StreamingDecoderWorker._decode_and_post`` decides how many
+    frames the stream advanced. Both derive it from the same snapshotted
+    streamer geometry, and they MUST agree — a desync would put the worker's
+    ``first_decode`` flag out of step with the decoder's own state and
+    mis-splice a chunk somewhere in the middle of an utterance, where nothing
+    else would catch it.
+    """
+    cs, la = 10, 5
+    chunks = [(k * cs, cs + la) for k in range(3)] + [(3 * cs, 4)]
+    streamer = _build_streamer(chunk_size=cs, lookahead=la)
+    decode_fn = _StatefulCodecLikeDecode(cs, la)
+    for first, count in chunks:
+        streamer.queue.put(_frames(first, count))
+    streamer.queue.put(END_OF_STREAM)
+
+    seen = []
+    worker = StreamingDecoderWorker(
+        streamer=streamer, decode_fn=decode_fn,
+        post_mutation=lambda *a: seen.append(
+            (a[0], worker._codec_state_frames, decode_fn.frames)
+        ),
+        session_id="abc-123",
+    )
+    worker.start()
+    worker.join(timeout=5.0)
+
+    appends = [s for s in seen if s[0] == "append_chunk"]
+    assert len(appends) == 4
+    for _, worker_frames, decoder_frames in appends:
+        assert worker_frames == decoder_frames
+    assert decode_fn.commits == [cs, cs, cs, 4]
+
+
+def test_state_cached_overlap_add_blends_identical_audio():
+    """Story 20.4's seam blend under carried state.
+
+    The tail a chunk retains past its splice is decoded from the same state
+    the next chunk resumes from, so the two are the same samples and the
+    cross-fade is an identity. AC #3 asks for the blend to be re-evaluated on
+    evidence rather than assumed away — this is that evidence at the worker
+    level; ``test_codec_state_cache.py`` asserts it against a real decoder.
+    """
+    cs, la = 10, 5
+    posted, _, _ = _run_stateful(cs, la, [(0, cs + la), (cs, cs + la)])
+    assert posted[1][0] == pytest.approx(posted[0][-1] + 1, abs=0.05)
+    np.testing.assert_allclose(
+        posted[1][:64],
+        np.arange(cs * SPF, cs * SPF + 64, dtype=np.float32),
+        rtol=0, atol=0.05,
+    )
+
+
+def test_stateless_path_is_untouched_by_the_state_cached_geometry():
+    """Regression guard on the fallback. ``codec_state_cache`` declines any
+    decoder it has not verified, so the stateless splice must keep behaving
+    exactly as Story 20.4 left it: every chunk ``chunk_size*1920``, including
+    the first."""
+    cs, la = 10, 5
+    streamer = _build_streamer(chunk_size=cs, lookahead=la)
+    fake_post = _RecordingPostMutation()
+    for k in range(3):
+        streamer.queue.put(_frames(k * cs, cs + la))
+    streamer.queue.put(END_OF_STREAM)
+    worker = StreamingDecoderWorker(
+        streamer=streamer, decode_fn=_codec_like_decode,
+        post_mutation=fake_post, session_id="abc-123",
+    )
+    worker.start()
+    worker.join(timeout=5.0)
+    posted = [c[2] for c in fake_post.calls if c[0] == "append_chunk"]
+    assert [p.size for p in posted] == [cs * SPF] * 3
+
+
+def test_state_cached_geometry_violation_still_falls_back_and_says_so(monkeypatch):
+    """The guard stays live on the new path. A decode_fn that advertises
+    carried state but returns an unrecognised length must degrade to the
+    proportional trim and emit ``decode_geometry_unverified`` — once."""
+    recorder = _RecordingMetrics()
+    monkeypatch.setattr(_metrics_module, "record", recorder)
+
+    class _WrongLength(_StatefulCodecLikeDecode):
+        def __call__(self, chunk):
+            return super().__call__(chunk)[:-1]
+
+    cs, la = 10, 5
+    streamer = _build_streamer(chunk_size=cs, lookahead=la)
+    for k in range(2):
+        streamer.queue.put(_frames(k * cs, cs + la))
+    streamer.queue.put(END_OF_STREAM)
+    worker = StreamingDecoderWorker(
+        streamer=streamer, decode_fn=_WrongLength(cs, la),
+        post_mutation=_RecordingPostMutation(), session_id="abc-123",
+    )
+    worker.start()
+    worker.join(timeout=5.0)
+
+    names = [c["metric_name"] for c in recorder.calls]
+    assert names.count("decode_geometry_unverified") == 1
+
+
+# ---- AC #3: state is reset on session start, cancel, and completion ------- #
+
+
+def test_codec_state_is_reset_on_session_start_and_on_completion():
+    """Two of the three reset points AC #3 names. The third (cancel) has its
+    own row below."""
+    cs, la = 10, 5
+    _, decode_fn, _ = _run_stateful(cs, la, [(0, cs + la), (cs, cs + la)])
+    # One at loop entry, one on END_OF_STREAM.
+    assert decode_fn.resets == 2
+    assert decode_fn.frames == 0, (
+        "codec state survived the end of the session; the next generation "
+        "would resume mid-utterance from the previous one's context."
+    )
+
+
+def test_codec_state_is_reset_on_cancel_before_the_cancel_post():
+    """The third reset point, and its ordering.
+
+    Cancel must clear codec state, and it must do so before ('cancel', sid)
+    reaches the registry — a cancelled session that left state behind would
+    contaminate whatever generation the user starts next.
+    """
+    cs, la = 10, 5
+    streamer = _build_streamer(chunk_size=cs, lookahead=la)
+    decode_fn = _StatefulCodecLikeDecode(cs, la)
+    order = []
+
+    def _post(*args):
+        order.append((args[0], decode_fn.frames, decode_fn.resets))
+
+    streamer.queue.put(_frames(0, cs + la))
+    streamer.queue.put(END_OF_STREAM)
+    streamer._cancel_event.set()
+
+    worker = StreamingDecoderWorker(
+        streamer=streamer, decode_fn=decode_fn,
+        post_mutation=_post, session_id="abc-123",
+    )
+    worker.start()
+    worker.join(timeout=5.0)
+
+    assert [o[0] for o in order] == ["cancel"]
+    # State already cleared at the moment the cancel post fired.
+    assert order[0][1] == 0
+    assert order[0][2] >= 1
+
+
+def test_mid_stream_cancel_resets_codec_state():
+    """Cancel arriving after real frames have been committed. Modelled on
+    ``test_cancel_set_mid_stream_drains_remaining_chunks``: the event flips
+    from inside the first post, so the second chunk is drained rather than
+    decoded and the session ends CANCELLED with state already carried."""
+    cs, la = 10, 5
+    streamer = _build_streamer(chunk_size=cs, lookahead=la)
+    cancel_event = streamer._cancel_event
+    decode_fn = _StatefulCodecLikeDecode(cs, la)
+
+    class _FlipOnFirstPost(_RecordingPostMutation):
+        def __call__(self, *args):
+            super().__call__(*args)
+            if len(self.calls) == 1:
+                # State really was carried before the cancel landed.
+                assert decode_fn.frames == cs
+                cancel_event.set()
+
+    fake_post = _FlipOnFirstPost()
+    streamer.queue.put(_frames(0, cs + la))
+    streamer.queue.put(_frames(cs, cs + la))
+    streamer.queue.put(END_OF_STREAM)
+
+    worker = StreamingDecoderWorker(
+        streamer=streamer, decode_fn=decode_fn,
+        post_mutation=fake_post, session_id="abc-123",
+    )
+    worker.start()
+    worker.join(timeout=5.0)
+
+    assert [c[0] for c in fake_post.calls] == ["append_chunk", "cancel"]
+    assert decode_fn.frames == 0
+    assert streamer.queue.empty() is True
+
+
+def test_a_raising_reset_cannot_break_the_cancel_chain(monkeypatch):
+    """P-7: nothing escapes the worker, and cancel always reaches the
+    registry. Story 16.5's cooperative-cancel chain must be unaffected by
+    Story 20.5, including when the decode_fn's reset itself misbehaves."""
+    recorder = _RecordingMetrics()
+    monkeypatch.setattr(_metrics_module, "record", recorder)
+
+    class _BadReset(_StatefulCodecLikeDecode):
+        def reset(self):
+            raise RuntimeError("boom")
+
+    cs, la = 10, 5
+    streamer = _build_streamer(chunk_size=cs, lookahead=la)
+    fake_post = _RecordingPostMutation()
+    streamer.queue.put(END_OF_STREAM)
+    streamer._cancel_event.set()
+
+    worker = StreamingDecoderWorker(
+        streamer=streamer, decode_fn=_BadReset(cs, la),
+        post_mutation=fake_post, session_id="abc-123",
+    )
+    worker.start()
+    worker.join(timeout=5.0)
+
+    assert [c[0] for c in fake_post.calls] == ["cancel"]
+    assert "codec_state_reset_error" in [
+        c["metric_name"] for c in recorder.calls
+    ]
+
+
+def test_decode_fn_without_reset_is_tolerated():
+    """Every synthetic decode_fn in this file — and the stock stateless
+    adapter — has no ``reset``. The worker must not care."""
+    streamer = _build_streamer(chunk_size=4, lookahead=2)
+    fake_post = _RecordingPostMutation()
+    streamer.queue.put(list(range(6)))
+    streamer.queue.put(END_OF_STREAM)
+    worker = StreamingDecoderWorker(
+        streamer=streamer, decode_fn=_make_decoded_pcm,
+        post_mutation=fake_post, session_id="abc-123",
+    )
+    worker.start()
+    worker.join(timeout=5.0)
+    assert [c[0] for c in fake_post.calls] == ["append_chunk", "finalize"]

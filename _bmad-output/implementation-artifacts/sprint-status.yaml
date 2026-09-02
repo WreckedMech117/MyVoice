@@ -141,3 +141,102 @@ development_status:
   18-4-torch-compile-decoder-persistent-cache: done
   18-5-cuda-toolkit-triton-bundling: done
   epic-18-retrospective: done
+
+  # Epic 20 — First-Audio Latency (Phase ⊥-Polish-3)
+  # Added 2026-08-31 from Mary's TTFA research memo
+  # (`planning-artifacts/research/technical-qwen3-tts-ttfa-optimization-2026-08-31.md`).
+  # Epic 18 closed the PRODUCER-BOTTLENECK question (emit/drain 3.23x -> 0.670x). It did NOT
+  # close the TIME-TO-FIRST-AUDIO question: Story 18.4 measured compile at -7.46% on
+  # first_chunk_latency_ms because `compile_talker=False` (Story 16.8 forward-hook
+  # incompatibility) leaves the talker eager, and TTFA is talker-bound. Median TTFA is
+  # ~5,929 ms on RTX 5090 at the shipping config.
+  # Third-party evidence (andimarafioti/faster-qwen3-tts, MIT, same 12Hz model family,
+  # single-stream, RTX 4090) reports 4.1x RTF / 3.0x TTFA via torch.cuda.CUDAGraph +
+  # StaticCache, and independently reproduces our torch.compile null result
+  # ("dynamic KV-cache shapes defeat the compiler").
+  # Story 20.1 is a SPIKE — evidence + routed ADOPT/PORT/REJECT verdict, zero production
+  # behavior change. Gates the Epic 20 architecture pass so Winston scopes against measured
+  # 1.7B numbers rather than a published 0.6B table on different hardware.
+  # Epic 19 remains RESERVED for the architected-but-unregistered Lightning Tier scope
+  # (`architecture-streaming-acceleration-and-lightning-tier.md`) — do not reuse the number.
+  # Winston architecture pre-read 2026-08-31: 3 amendments applied. D-25 re-graded to
+  # non-issue (assertion never fires from the production call path); PORT split into
+  # PORT-a (vendor) / PORT-b (build); AC #2b added so the decomposition covers the
+  # product's worst case (short utterances + sub-16GiB adaptive-pre-buffer hosts), not
+  # only the 5090 long-form best case. Story remains ready-for-dev.
+  # 2026-08-31: RTX 3060 not reachable near-term (second PC, no hot-swap), so AC #2b is
+  # three-phased - 5090 cells + a DERIVED break-even producer rate close Gate B now;
+  # the 3060 confirmation is deferred and needs only Story 18.1's already-shipped
+  # env-var CSV capture (no new build). Gate B is not hardware-blocked.
+  epic-20: in-progress
+  20-1-ttfa-spike-faster-qwen3-tts: done
+  # Story 20.2 added 2026-08-31 from Story 20.1 evidence 6.4 Follow-up A - the largest
+  # single TTFA term (~3.96s in-process inductor reload handed to the user's first
+  # utterance on every launch, because warmup_compile_async primes only on a COLD cache).
+  # Sequenced first because it is independent: Follow-ups B (chunk_size) and C (adaptive
+  # cushion) are coupled to each other and ship together in a later story.
+  20-2-warm-path-compile-priming: done
+  # Story 20.3 added 2026-08-31. Story 20.2 measured the win but found it unreachable:
+  # (1) warmup_compile_async is scheduled at app.py:594 while the first await in that
+  #     coroutine is the preload at :613, so it always exits at no_model_loaded;
+  # (2) priming hard-codes CUSTOM_VOICE while the cache key is computed from the LOADED
+  #     model, so mark_warm can mark a key for a model never compiled.
+  # Commander 2026-08-31: BASE is the default resident model (typical user loads their
+  # usual cloned voice), so priming targets BASE + the Story 17.2 cached clone prompt.
+  # Central invariant: priming must NEVER switch models - evicting the user's model
+  # would cost a reload on their first generation, inverting the epic's purpose.
+  # 2026-08-31: AC #1/#2/#3/#5 implemented and verified (12/12 mutations caught, zero new
+  # regression failures). AC #4's through-the-GUI measurement is still open — it needs >=5
+  # interactive launches with a cloned voice active; procedure + comparison baseline are in
+  # 20-3-prime-the-resident-model-evidence.md section 4.
+  20-3-prime-the-resident-model: done
+  # Story 20.4 added 2026-09-01 from Story 20.1 Follow-ups B + C, shipped as ONE story
+  # because 20.1 found them coupled: chunk_size=10 worsens the sub-16GiB
+  # cushion-to-talker ratio from 2.5x to 4.0x, since the talker shrinks while the 10s
+  # MAX_PRE_DELAY cap does not. B alone would speed up large-VRAM hosts and leave the
+  # RTX 30xx tier pinned at the cap.
+  # Carries the D-25 trap from 20.1 5.4: engage_compile_optimizations hard-codes
+  # streamer_chunk_size=25/lookahead=5 and model_registry.py:591 passes neither, so
+  # retuning the constant without threading real geometry silently violates the very
+  # invariant the assertion protects.
+  # First Epic 20 story to carry an NFR3 perceptual gate - chunk boundaries change for
+  # every generation, so chunk-stitching is in scope.
+  20-4-chunk-size-and-adaptive-cushion: done
+  # Story 20.5 added 2026-09-01. Story 20.4 closed the chunk-size question at cs25
+  # after four auditions and named codec state caching as the thing that would
+  # reopen it. Mary's research filed it as a THROUGHPUT item; 20.4 measured it as
+  # primarily a QUALITY one - the causal convs zero-pad their left edge
+  # (modeling_qwen3_tts_tokenizer_v2.py:189-192), which is the single cause of both
+  # the 555-sample fixed edge loss AND the ~35% cold-start decode error the current
+  # seam fix masks rather than removes.
+  # PHASE-GATED: Phase 1 is a bench spike with a hard go/no-go and zero src changes.
+  # The fork's decode_streaming looks like the answer and is not - it is a speed
+  # path carrying no state. This is ours to build.
+  # CLOSED 2026-09-01. Phase 1 GO on both thresholds. Phase 2 carries state per session
+  # via services/tts_streaming/codec_state_cache.py (a wrapper - no vendoring): edge loss
+  # 555 -> 0, head NRMSE 0.406 -> 0.0078, correlation 1.0000, lag jitter 0 on every seam,
+  # error-by-position flat. Two blinded NFR3 rounds. Round 1 MIXED - preferred 5-1 where
+  # the seam was exposed, but 2 single-seam rows blocked on the 64-sample consumer
+  # crossfade, which the Phase 2 evidence had already named with numbers BEFORE the round
+  # ran: with the cold start gone it is a 2.7ms comb on continuous audio. Phase 4 scoped
+  # that crossfade to discontinuous producers (SENTENCE_STREAM and the stateless fallback
+  # keep it; batch never reaches it). Round 2 UNANIMOUS PASS: 10-0-4, zero blocking.
+  # AC #5 is deliberately NOT met - it defers the chunk-size retune to its own story and
+  # no geometry was measured here. DEFAULT_CHUNK_SIZE is still 25.
+  # SEQUENCING for whoever picks up the follow-ups: the lookahead/trim removal (F1) must
+  # come BEFORE the chunk-size reopen (F2). The two-pass decode in codec_state_cache
+  # exists ONLY to serve the 5-frame lookahead, so the +7-10ms/chunk tax is the
+  # lookahead's, not state caching's - and it scales with chunk count, the exact variable
+  # F2 varies. F1 also gains 5 talker steps of TTFA on its own. Full list with costs:
+  # 20-5-codec-state-caching.md, 'Follow-ups - the canonical list'.
+  20-5-codec-state-caching: done
+
+  # Out-of-epic UI work, following the tooling-N precedent for non-epic stories.
+  # Commander 2026-09-01: the X minimizes to tray and Settings/Interface has no
+  # toggle for it. AppSettings.minimize_to_tray already exists and is persisted;
+  # only the UI control is missing. Grounding the story surfaced a second defect:
+  # custom_title_bar.py:181 guards on hasattr(parent, '_minimize_to_tray'), which
+  # is always True, so the minimize button ALWAYS tray-minimizes and its
+  # showMinimized() branch is dead code. Shipping the toggle without that fix
+  # would give the user a control that appears not to work.
+  ui-1-close-to-tray-toggle: done

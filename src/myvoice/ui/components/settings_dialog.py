@@ -29,6 +29,7 @@ from myvoice.ui.components.voice_library_widget import VoiceLibraryWidget
 from myvoice.ui.dialogs.settings import (
     ClearCommsSettingsPanel,  # Story 15.3
     StreamingSettingsPanel,  # Story 16.6
+    APIAccessSettingsPanel,  # Local TTS API
 )
 from myvoice.ui.dialogs.voice_design_studio import VoiceDesignStudioDialog
 from myvoice.services.quick_speak_service import QuickSpeakService
@@ -177,6 +178,9 @@ class SettingsDialog(QDialog):
 
         # Clear Comms settings tab (Story 15.3)
         self._create_clear_comms_tab()
+
+        # Local TTS API settings tab (OpenAI-compatible localhost server).
+        self._create_api_access_tab()
 
         layout.addWidget(self.tab_widget)
 
@@ -706,6 +710,30 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(theme_group)
 
+        # Story ui-1: Window Behavior Group — surfaces `minimize_to_tray`,
+        # which governs both closeEvent and the title-bar minimize button.
+        behavior_group = QGroupBox("Window Behavior")
+        behavior_layout = QVBoxLayout(behavior_group)
+
+        close_behavior_form = QFormLayout()
+        self.close_behavior_combo = QComboBox()
+        self.close_behavior_combo.addItem("Minimize to system tray", True)
+        self.close_behavior_combo.addItem("Quit MyVoice", False)
+        close_behavior_form.addRow("When closing the window:", self.close_behavior_combo)
+        behavior_layout.addLayout(close_behavior_form)
+
+        close_behavior_help = QLabel(
+            "Minimize to system tray keeps MyVoice running in the background - "
+            "click the tray icon to bring the window back, or right-click it and "
+            "choose Exit to quit. This also controls the title bar's minimize button."
+        )
+        close_behavior_help.setWordWrap(True)
+        close_behavior_help.setProperty("class", "description-label")
+        close_behavior_help.setStyleSheet("color: #888; font-style: italic; margin-top: 4px;")
+        behavior_layout.addWidget(close_behavior_help)
+
+        layout.addWidget(behavior_group)
+
         # Advanced Settings Group
         advanced_group = QGroupBox("Advanced")
         advanced_layout = QFormLayout(advanced_group)
@@ -756,6 +784,19 @@ class SettingsDialog(QDialog):
         )
         self.tab_widget.addTab(self.streaming_panel, "Streaming")
 
+    def _create_api_access_tab(self):
+        """Create the Local TTS API settings tab (enable / port / key).
+
+        Mirrors ``_create_streaming_tab``: the panel binds to
+        ``current_settings`` (the staging copy applied on OK). Its values are
+        hydrated/persisted explicitly via ``load_state``/``save_state`` in
+        ``_load_current_settings``/``_save_current_settings``.
+        """
+        self.api_access_panel = APIAccessSettingsPanel(
+            app_settings=self.current_settings, parent=self
+        )
+        self.tab_widget.addTab(self.api_access_panel, "API Access")
+
     def _mark_settings_modified(self):
         """Mark settings as modified (for future save tracking)."""
         # Currently settings are applied on OK, but this could be used
@@ -790,6 +831,13 @@ class SettingsDialog(QDialog):
             self.transparency_slider.setValue(transparency_percent)
             self.transparency_value_label.setText(f"{transparency_percent}%")
 
+            # Story ui-1: Close-button behavior (minimize_to_tray)
+            close_behavior_index = self.close_behavior_combo.findData(
+                bool(self.current_settings.minimize_to_tray)
+            )
+            if close_behavior_index >= 0:
+                self.close_behavior_combo.setCurrentIndex(close_behavior_index)
+
             log_level_index = self.log_level_combo.findText(self.current_settings.log_level)
             if log_level_index >= 0:
                 self.log_level_combo.setCurrentIndex(log_level_index)
@@ -819,6 +867,9 @@ class SettingsDialog(QDialog):
                 file_path=self.current_settings.clear_comms_file_path,
                 queue_mode=self.current_settings.clear_comms_queue_mode,
             )
+
+            # Local TTS API: hydrate enable/port/key from current_settings.
+            self.api_access_panel.load_state(self.current_settings)
 
             self.logger.debug("Loaded current settings into UI")
 
@@ -888,6 +939,11 @@ class SettingsDialog(QDialog):
             # Convert percentage (20-100) to opacity (0.2-1.0)
             self.current_settings.window_transparency = self.transparency_slider.value() / 100.0
 
+            # Story ui-1: Close-button behavior (minimize_to_tray)
+            close_behavior_value = self.close_behavior_combo.currentData()
+            if close_behavior_value is not None:
+                self.current_settings.minimize_to_tray = bool(close_behavior_value)
+
             self.current_settings.log_level = self.log_level_combo.currentText()
 
             # Custom emotion settings (Story 3.4)
@@ -929,6 +985,9 @@ class SettingsDialog(QDialog):
             self.current_settings.clear_comms_source_kind = cc_source
             self.current_settings.clear_comms_file_path = cc_path
             self.current_settings.clear_comms_queue_mode = cc_queue
+
+            # Local TTS API: read enable/port/key into current_settings.
+            self.api_access_panel.save_state(self.current_settings)
 
             self.logger.debug("Saved UI values to current settings")
 

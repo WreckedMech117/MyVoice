@@ -109,19 +109,90 @@ class TestEnableCsvCapture:
                 is_final=False,
                 audio_data_size=2400,
             )
+            # Story 20.1 Task 2.1: the six first-audio segment boundaries
+            # are captured by the same env-var-gated surface. AC #2b
+            # Phase 3 (the deferred RTX 3060 confirmation) reads them out
+            # of this CSV, so the closed set below is the contract that
+            # keeps that capture from silently losing columns.
+            for _ttfa_name in (
+                "ttfa_generation_start_ms",
+                "ttfa_talker_thread_start_ms",
+                "ttfa_first_decode_step_ms",
+                "ttfa_first_chunk_emit_ms",
+                "ttfa_first_decode_complete_ms",
+                "ttfa_first_playback_write_ms",
+            ):
+                metrics.record(_ttfa_name, 1_700_000_000_000.0, session_id="s")
         finally:
             stop()
 
         rows = list(csv.reader(path.open("r", encoding="utf-8")))
-        # Header + 4 captured rows (queue_depth filtered out).
-        assert len(rows) == 1 + 4, f"unexpected rows: {rows}"
+        # Header + 4 chunk/latency rows + 6 TTFA boundary rows
+        # (queue_depth filtered out).
+        assert len(rows) == 1 + 10, f"unexpected rows: {rows}"
         captured_names = {r[0] for r in rows[1:]}
         assert captured_names == {
             "progressive_chunk_emit_ms",
             "progressive_chunk_audio_duration_ms",
             "progressive_chunk_playback_arrival_ms",
             "first_chunk_latency_ms",
+            "ttfa_generation_start_ms",
+            "ttfa_talker_thread_start_ms",
+            "ttfa_first_decode_step_ms",
+            "ttfa_first_chunk_emit_ms",
+            "ttfa_first_decode_complete_ms",
+            "ttfa_first_playback_write_ms",
         }
+
+    def test_ttfa_boundary_rows_columns_match_header(self, tmp_logs_dir):
+        """Story 20.1 Task 2.1 — the six ``ttfa_*`` boundaries share the
+        unchanged Story 18.1 CSV header.
+
+        Two of them carry ``chunk_index`` and land it in the column; the
+        other four carry only tags the header has no slot for (``frames``,
+        ``path``, ``pcm_samples``, ``text_length``, ``buffer_mode``), which
+        are visible in the structured ``myvoice.metrics`` log but blank
+        here. That trade is deliberate — the schema Stories 18.1-18.4
+        already consume must not churn — and this test pins it so a future
+        header change is a conscious one.
+        """
+        path = tmp_logs_dir / "out.csv"
+        stop = enable_csv_capture(path)
+        try:
+            metrics.record(
+                "ttfa_generation_start_ms",
+                1_700_000_000_000.0,
+                session_id="sess-ttfa",
+                text_length=349,
+            )
+            metrics.record(
+                "ttfa_first_decode_complete_ms",
+                1_700_000_001_500.0,
+                session_id="sess-ttfa",
+                chunk_index=0,
+                pcm_samples=50000,
+            )
+        finally:
+            stop()
+
+        rows = list(csv.reader(path.open("r", encoding="utf-8")))[1:]
+        assert len(rows) == 2
+        assert rows[0] == [
+            "ttfa_generation_start_ms",
+            "1700000000000.0",
+            "sess-ttfa",
+            "",  # chunk_index — N/A for the t0 boundary
+            "",  # is_final — N/A
+            "",  # audio_data_size — N/A
+        ]
+        assert rows[1] == [
+            "ttfa_first_decode_complete_ms",
+            "1700000001500.0",
+            "sess-ttfa",
+            "0",  # chunk_index — the boundary is first-chunk-only
+            "",
+            "",
+        ]
 
     def test_first_chunk_latency_row_columns_match_header(self, tmp_logs_dir):
         """Story 18.2 Task 4.1: first_chunk_latency_ms rows have empty

@@ -28,11 +28,106 @@ Public surface (consumed by Stories 16.5, 16.6):
 
 Overlap-add interpretation: future-lookahead. Each non-final chunk
 decodes (chunk_size + lookahead) tokens; the worker posts only the
-leading chunk_size's worth of PCM samples (the trailing lookahead's
-worth is discarded — the next chunk's leading lookahead tokens
-re-establish the same audio with better priming). The final residual
+leading chunk_size's worth of PCM samples. The final residual
 chunk (length < chunk_size + lookahead) is posted whole — there is
 no following chunk to overlap with.
+
+Story 20.4 — the overlap is now actually ADDED
+----------------------------------------------
+Through Story 20.3 the "overlap-add" was an overlap-*discard*: the
+trailing lookahead's worth of PCM was thrown away and the next chunk's
+independent decode of the same tokens was butt-spliced on. Story 20.4's
+failed NFR3 audition traced two distinct defects to that splice, both
+measured against captured pcm_full (see
+``_bmad-output/implementation-artifacts/20-4-seam-analysis.py``):
+
+1. **A splice-alignment bug.** ``decode(N frames)`` returns exactly
+   ``1920 * N - 555`` samples — 1920 samples per codec frame plus a
+   FIXED 555-sample convolution edge loss. The trim was computed as
+   ``round(lookahead * len(pcm_full) / len(chunk))``, which treats that
+   fixed loss as if it were proportional, so every posted chunk fell
+   short by ``555 * chunk_size / (chunk_size + lookahead)`` samples:
+   370 at chunk_size=10, 463 at 25. Cross-correlating consecutive
+   pcm_full arrays puts the true splice point at exactly
+   ``chunk_size * 1920``, so those samples were real speech — measured
+   RMS at or above the utterance's own — silently deleted at every
+   chunk boundary. This shipped from Story 16.4 onward and is why the
+   round-1 audition flagged long-form seams at chunk_size=25 too.
+
+2. **A codec-state mismatch.** The two decodes of the shared lookahead
+   frames differ by ~35 % NRMSE (correlation ~0.93) because each decode
+   starts from a cold codec state. Alignment cannot fix that; correcting
+   the trim ALONE measurably makes the click worse (seam step 8.5x ->
+   18.0x the non-seam baseline at chunk_size=25), because it butts two
+   genuinely different waveforms together at the same instant.
+
+The fix pairs them. The tail this module used to discard is exactly the
+audio the next chunk re-decodes at its head, so it is now retained and
+cross-faded into that head over ``_OVERLAP_ADD_SAMPLES``. Unlike widening
+the CONSUMER crossfade in ``streaming_chunk_buffer.py``, this consumes no
+audio and no duration: both sides of the blend are the same moment in
+time. Measured effect, seam step as a multiple of the non-seam baseline:
+
+    chunk_size=25   shipped 8.46x  ->  aligned+OLA 1.25x
+    chunk_size=10   shipped 13.06x ->  aligned+OLA 0.85x
+
+Both land at the baseline on that metric. **That metric later turned out
+not to predict audibility** (Story 20.4 evidence SS13.1: two independent
+offline seam metrics failed to reproduce the listener's calls on 21 judged
+files, most likely for want of an auditory-masking model). What actually
+certifies this code is a round-3 A/B audition at chunk_size=25 with the
+geometry held fixed and only the stitching varied: the fix was cleaner on
+both long fixtures, never worse on any, preferred 2-0. chunk_size=10 was
+attempted by the same story and REVERTED - at 2.5x the seam density the
+blend's own harm overtakes the alignment gain (SS13.2/SS13.3, SS15.1).
+
+A known residual, not masked: the blend fades into the next chunk's
+cold-start region, where the decode error is 0.5-1.4x local RMS and the two
+copies correlate at only ~0.55 (not the ~0.93 measured over a wider window).
+At chunk_size=25 the alignment gain dominates that and the net is positive.
+Better-shaped remedies - blending after the next chunk settles, or caching
+codec state across chunks - are recorded in the evidence SS13.6/SS11.9 and
+are not implemented here.
+
+This does NOT make the codec carry state across chunks — the reference
+implementations do that and we still do not (see the Story 20.4 evidence
+file, §11). It masks the consequence at the boundary rather than removing
+the cause.
+
+Story 20.5 — the cause is now removed, and this blend is inert
+--------------------------------------------------------------
+``services/tts_streaming/codec_state_cache.py`` carries the codec's real
+state across the boundary, so on the state-cached path the two paragraphs
+above describe a defect that no longer exists. The worker learns which regime
+it is in from ``decode_fn.carries_codec_state`` and switches its geometry
+model accordingly:
+
+    stateless (pre-20.5, and still the fallback)
+        every decode returns ``1920*N - 555``; splice at ``chunk_size*1920``
+    state-cached
+        the FIRST decode of a session returns ``1920*N - 555`` and every later
+        one returns exactly ``1920*N`` — the 555 moves to the stream-start
+        call rather than shrinking — so the first splice is
+        ``chunk_size*1920 - 555`` and every later one is ``chunk_size*1920``
+
+The overlap-add below is deliberately left running on both paths. Under
+carried state the tail this chunk retains was decoded from the *same state
+snapshot* the next chunk resumes from, so the blend mixes a signal with a
+numerically identical copy of itself: an identity operation, measured at
+0 samples of difference on the CPU reference model
+(``test_overlap_add_is_an_identity_under_carried_state``) rather than
+assumed. AC #3 asks for the Story 20.4 seam fix to be re-evaluated on
+evidence and not merely assumed away; leaving it in place and proving it
+inert is what keeps Story 20.5 Phase 2 to a single variable. Removing it —
+and the 64-sample consumer crossfade in ``streaming_chunk_buffer.py``, which
+under carried state blends genuinely *different* moments and is therefore
+mildly harmful rather than merely useless — is a follow-up with its own
+audition, not a rider on this one.
+
+State lifecycle (AC #3): ``decode_fn.reset()`` is called on session start, on
+cancel, and on completion. It is strictly per-session — the decode_fn is
+built per dispatch and owns its own state object — so concurrent generations
+never share codec state.
 """
 
 import queue
@@ -47,6 +142,60 @@ from myvoice.services.tts_streaming.codec_token_streamer import (
     CodecTokenStreamer,
     END_OF_STREAM,
 )
+
+
+# --------------------------------------------------------------------------- #
+# Story 20.4 — the codec's measured output geometry.
+#
+# ``speech_tokenizer.decode`` on N codec frames returns exactly
+# ``_CODEC_SAMPLES_PER_FRAME * N - _CODEC_EDGE_LOSS_SAMPLES`` samples. Both
+# numbers were MEASURED, not assumed: solved from posted chunk lengths at two
+# chunk sizes and then cross-checked against 14 independent residual-chunk
+# lengths, every one of which is integral under the model
+# (``20-4-seam-capture.py`` / ``20-4-seam-analysis.py``).
+#
+# Note 1920 samples/frame = 12.5 Hz, NOT the 12 Hz this codebase's prose has
+# assumed since Story 16.3. Nothing depended on the 12 Hz figure except
+# human-facing "seconds of audio per chunk" arithmetic in comments and
+# evidence files, which is ~4 % optimistic wherever it appears.
+#
+# These are verified at runtime rather than trusted: ``_decode_and_post``
+# checks the identity on every chunk and falls back to the pre-20.4
+# proportional trim (with no overlap-add) if it ever fails, so a codec or
+# pin change degrades to the old behaviour loudly instead of producing
+# mis-spliced audio silently.
+_CODEC_SAMPLES_PER_FRAME = 1920
+_CODEC_EDGE_LOSS_SAMPLES = 555
+
+# Width of the decoder-side overlap-add, in samples (~42.7 ms at 24 kHz).
+#
+# Chosen from the offline sweep in ``20-4-seam-fix-sweep.py``, which
+# re-stitched captured pcm_full at eight widths and scored each seam
+# against non-seam positions in the same audio:
+#
+#   width   seam step (x baseline)      excess spectral jump
+#            cs25      cs10              cs25      cs10
+#      0    18.04     12.32             +4.43 dB  +2.04 dB   <- alignment only
+#     64     1.31      1.00             +4.36     +1.93
+#    256     1.06      0.75             +4.90     +2.36
+#   1024     1.25      0.85             +0.71     +1.99      <- chosen
+#   2048     1.46      0.83             +1.27     +1.63
+#   4096     1.50      0.96             +1.59     +1.23
+#   9045     1.46      0.80             +2.21     +1.81      <- the whole budget
+#
+# The step metric plateaus at the baseline by 64-256; the spectral metric
+# keeps improving to ~1024-4096. 1024 is the smallest width that is at the
+# plateau on BOTH, which matters because the blend is not free in every
+# sense: inside the window the signal is the average of two decodes, which
+# mildly softens fine structure. That cost scales with the fraction of the
+# stream inside a blend — 1024/(25*1920) = 2.1 % at the committed
+# chunk_size=25 (5.3 % at the attempted-and-reverted 10) — so the smallest
+# sufficient width is the right pick, not the largest.
+#
+# The hard ceiling is the audio the two chunks actually share:
+# ``lookahead * 1920 - 555`` = 9,045 samples (377 ms) at lookahead=5.
+# ``_decode_and_post`` clamps to it; a larger constant cannot over-read.
+_OVERLAP_ADD_SAMPLES = 1024
 
 
 class _PostMutationCallable(Protocol):
@@ -105,6 +254,31 @@ class StreamingDecoderWorker:
         self._hardware = hardware
         self._chunk_size = streamer.chunk_size
         self._lookahead = streamer.lookahead
+        # Story 20.1 (TTFA spike) — one-shot flag for the segment-3
+        # boundary metric below. Instance state, not module state, so
+        # concurrent workers (one per session) never share it.
+        self._ttfa_first_decode_recorded = False
+        # Story 20.4 overlap-add state. ``_pending_overlap`` is the tail of
+        # the previous chunk's pcm_full BEYOND its splice point — the audio
+        # the next chunk is about to re-decode at its head. Per-instance, so
+        # concurrent per-session workers never share it.
+        self._pending_overlap: Optional[np.ndarray] = None
+        # One-shot latch: the codec output-length identity failed, so this
+        # session has fallen back to the pre-20.4 proportional trim.
+        self._geometry_fallback = False
+        # Story 20.5 — does this decode_fn carry codec state across chunks?
+        # Read once at construction (the decode_fn is built per dispatch and
+        # cannot change mid-session) so the hot path does no getattr.
+        self._carries_codec_state = bool(
+            getattr(decode_fn, "carries_codec_state", False)
+        )
+        # Frames the decode_fn has committed to its codec state. Mirrors the
+        # decode_fn's own advance, and both derive it from the SAME
+        # snapshotted streamer geometry — the agreement is pinned by
+        # ``test_commit_predicate_matches_the_workers_full_window_predicate``.
+        # Zero means "the next decode is this session's first", which is the
+        # only chunk that still pays the 555-sample edge loss.
+        self._codec_state_frames = 0
         # Same threading.Event the streamer was constructed with — Story 16.5
         # wires registry.cancel() to flip this event; both producer and
         # consumer observe the single flip.
@@ -142,6 +316,11 @@ class StreamingDecoderWorker:
         # global exception handler surfaces as a user-visible dialog even
         # though the dispatch's fallback chain produces audio.
         appended = 0
+        # AC #3 reset point 1 of 3 — session start. The decode_fn is built per
+        # dispatch so its state is already empty; resetting here makes the
+        # invariant hold for a re-used decode_fn too (the integration suite
+        # injects one), and costs nothing.
+        self._reset_codec_state()
         while True:
             # P-6 step 5 + P-7: cancel takes priority over decode.
             if self._cancel_event.is_set():
@@ -157,6 +336,10 @@ class StreamingDecoderWorker:
             # session settles into a terminal state cleanly and the
             # dispatch's own cleanup races harmlessly.
             if chunk is END_OF_STREAM:
+                # AC #3 reset point 2 of 3 — completion. Before the terminal
+                # post, so a registry handoff that raises still leaves no
+                # codec state behind.
+                self._reset_codec_state()
                 if appended > 0:
                     self._post_terminal("finalize")
                 else:
@@ -195,6 +378,22 @@ class StreamingDecoderWorker:
         pcm_full = self._decode_fn(chunk)
         t_end = time.perf_counter()
 
+        # Story 20.1 (TTFA spike) segment boundary #3 — the first token
+        # chunk has been turned into PCM. Closes segment 3 (first decode)
+        # and opens segment 4 (consumer-side cushion). Wall-clock ms to
+        # join against the other TTFA boundaries; ``decode_chunk_latency_ms``
+        # below stays the per-chunk elapsed measure and is unchanged.
+        # One-shot: fires only for the first decoded chunk of a session.
+        if not self._ttfa_first_decode_recorded:
+            self._ttfa_first_decode_recorded = True
+            metrics.record(
+                "ttfa_first_decode_complete_ms",
+                time.time() * 1000.0,
+                session_id=self._session_id,
+                chunk_index=0,
+                pcm_samples=int(len(pcm_full)),
+            )
+
         metrics.record(
             "decode_chunk_latency_ms",
             (t_end - t_start) * 1000.0,
@@ -203,15 +402,150 @@ class StreamingDecoderWorker:
             hardware=self._hardware,
         )
 
-        if len(chunk) >= self._chunk_size + self._lookahead and self._lookahead > 0:
-            samples_per_token = len(pcm_full) / len(chunk)
+        n_frames = len(chunk)
+        is_full_window = (
+            n_frames >= self._chunk_size + self._lookahead
+            and self._lookahead > 0
+        )
+
+        # Story 20.4 — exact splice, guarded by the codec's own arithmetic.
+        # The identity is checked on EVERY chunk (residuals included, where
+        # it also holds) rather than trusted, so a codec/pin change cannot
+        # silently produce mis-spliced audio.
+        #
+        # Story 20.5 — which identity holds depends on whether the decode_fn
+        # carries codec state. Under carried state the 555-sample edge loss
+        # is paid ONCE, on the session's first decode, exactly as a
+        # whole-sequence decode pays it; every later chunk decodes its own
+        # frames from real context and returns the full 1920*N.
+        first_decode = self._codec_state_frames == 0
+        pays_edge_loss = first_decode or not self._carries_codec_state
+        expected = _CODEC_SAMPLES_PER_FRAME * n_frames - (
+            _CODEC_EDGE_LOSS_SAMPLES if pays_edge_loss else 0
+        )
+        geometry_ok = len(pcm_full) == expected and not self._geometry_fallback
+        if not geometry_ok and not self._geometry_fallback:
+            self._geometry_fallback = True
+            metrics.record(
+                "decode_geometry_unverified",
+                1.0,
+                session_id=self._session_id,
+                model_type=self._model_type,
+                hardware=self._hardware,
+                frames=int(n_frames),
+                pcm_samples=int(len(pcm_full)),
+                expected_samples=int(expected),
+            )
+
+        next_overlap: Optional[np.ndarray] = None
+        if geometry_ok and is_full_window:
+            # The stream advances by exactly chunk_size frames of audio.
+            #
+            # Story 20.5: on the state-cached path the first decode's output
+            # begins 555 samples INTO the nominal window (the codec's own
+            # left-pad trim, which the whole-sequence decode also loses),
+            # while every later decode begins exactly at its first frame. So
+            # the first splice is short by that constant and every later one
+            # is frame-exact. Getting this wrong duplicates or drops 555
+            # samples at the FIRST seam only — 23 ms, once per utterance,
+            # which is precisely the class of defect Story 20.4 spent four
+            # audition rounds finding.
+            splice = self._chunk_size * _CODEC_SAMPLES_PER_FRAME
+            if self._carries_codec_state and first_decode:
+                splice -= _CODEC_EDGE_LOSS_SAMPLES
+            if splice >= len(pcm_full):
+                # Defensive: cannot happen while the identity holds and
+                # lookahead > 0, since the remainder is lookahead*1920-555.
+                pcm_segment = pcm_full
+            else:
+                pcm_segment = pcm_full[:splice]
+                # Retain, do not discard: this is the audio the NEXT chunk
+                # re-decodes at its head, and it is what the overlap-add
+                # blends against.
+                keep = min(_OVERLAP_ADD_SAMPLES, len(pcm_full) - splice)
+                next_overlap = np.asarray(
+                    pcm_full[splice: splice + keep], dtype=np.float32
+                )
+        elif is_full_window:
+            # Pre-20.4 proportional trim. Retained verbatim as the fallback
+            # for an unrecognised codec geometry — and it is also the path
+            # every synthetic test decode_fn takes, since a fake that
+            # returns one sample per token does not satisfy the identity.
+            samples_per_token = len(pcm_full) / n_frames
             trim_samples = int(round(self._lookahead * samples_per_token))
             pcm_segment = pcm_full[: len(pcm_full) - trim_samples]
         else:
             # Final residual chunk OR lookahead == 0 → no trim.
             pcm_segment = pcm_full
 
+        pcm_segment = self._apply_overlap_add(pcm_segment)
+        self._pending_overlap = next_overlap
+
+        # Track what the decode_fn committed to codec state. Mirrors
+        # ``StatefulCodecDecoder.__call__``'s own commit rule exactly: a full
+        # window commits ``chunk_size`` frames and holds the lookahead back
+        # on a snapshot; anything shorter (the residual flush) commits all of
+        # it. Advanced even when the geometry check failed, because the
+        # decode_fn advanced regardless and the two must not desync.
+        self._codec_state_frames += (
+            self._chunk_size if is_full_window else n_frames
+        )
+
         self._post_mutation("append_chunk", self._session_id, pcm_segment)
+
+    def _apply_overlap_add(self, pcm_segment: np.ndarray) -> np.ndarray:
+        """Cross-fade the previous chunk's retained tail into this head.
+
+        Both sides cover the SAME moment in time — the previous chunk
+        decoded it with future context, this chunk decoded it cold — so the
+        blend costs no audio and no duration; it only chooses how to
+        reconcile two renditions of one instant.
+
+        A linear ramp is correct here rather than an equal-power one: the
+        two decodes correlate at ~0.93 (measured), so they add coherently
+        and a linear ramp preserves amplitude. An equal-power ramp would
+        bulge the level mid-blend on signals this correlated.
+        """
+        pending = self._pending_overlap
+        if pending is None or pending.size == 0 or pcm_segment.size == 0:
+            return pcm_segment
+        m = int(min(pending.size, pcm_segment.size))
+        if m <= 0:
+            return pcm_segment
+        ramp = np.linspace(0.0, 1.0, m, dtype=np.float32)
+        head = (
+            np.asarray(pcm_segment[:m], dtype=np.float32) * ramp
+            + pending[:m] * (1.0 - ramp)
+        )
+        return np.concatenate(
+            [head, np.asarray(pcm_segment[m:], dtype=np.float32)]
+        )
+
+    def _reset_codec_state(self) -> None:
+        """Drop the decode_fn's carried codec state (Story 20.5, AC #3).
+
+        Called at exactly the three points the AC names — session start,
+        cancel, completion — and nowhere else. Never raises: it is on the
+        cancel path, where P-7 says nothing may escape the worker, and a
+        failed reset must not stop ('cancel', session_id) from reaching the
+        registry. A decode_fn without a ``reset`` (every synthetic test
+        fake, and the stock stateless adapter) is a no-op here.
+        """
+        self._codec_state_frames = 0
+        reset = getattr(self._decode_fn, "reset", None)
+        if reset is None:
+            return
+        try:
+            reset()
+        except Exception as exc:  # noqa: BLE001 — see docstring
+            metrics.record(
+                "codec_state_reset_error",
+                1.0,
+                session_id=self._session_id,
+                model_type=self._model_type,
+                hardware=self._hardware,
+                error_repr=repr(exc),
+            )
 
     def _post_terminal(self, method_name: str) -> None:
         """Post a single terminal mutation — 'finalize' or 'cancel'.
@@ -256,4 +590,10 @@ class StreamingDecoderWorker:
                 hardware=self._hardware,
                 error_repr=repr(exc),
             )
+        # AC #3 reset point 3 of 3 — cancel. Before the cancel post and
+        # after the drain, so a cancelled session leaves no codec state for
+        # the next generation to inherit. ``_reset_codec_state`` swallows its
+        # own exceptions precisely so this cannot break the P-7 invariant
+        # that cancel always propagates to the registry.
+        self._reset_codec_state()
         self._post_terminal("cancel")

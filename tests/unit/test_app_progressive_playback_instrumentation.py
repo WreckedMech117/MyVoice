@@ -124,6 +124,15 @@ class TestProgressivePlaybackInstrumentation:
         # so the consumer-side row joins to the producer-side emit row by
         # (session_id, chunk_index), not chunk_index alone.
         assert rec.session_id == "sid-arrival"
+        # Story 20.1: the SAME session id must reach the coordinator's
+        # segment-4 boundary. Asserted against a non-None value on purpose
+        # — the two exact-call assertions in test_app_progressive_playback
+        # pass ``session_id=None``, so hard-coding None would satisfy them
+        # both while the propagation was in fact broken.
+        assert (
+            coordinator.start_streaming_session.await_args.kwargs["session_id"]
+            == "sid-arrival"
+        )
         # Value is wall-clock ms — must be a positive float in the
         # year-2026 epoch range (loose sanity bound).
         assert isinstance(rec.value, float)

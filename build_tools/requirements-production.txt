@@ -18,6 +18,19 @@ qasync>=0.27.0
 requests>=2.31.0
 # Size: ~5MB (includes urllib3, certifi, charset-normalizer, idna)
 
+# =============================================================================
+# Local TTS API (OpenAI-compatible) — tech-spec local-tts-api-v1
+# =============================================================================
+# Settings-toggled localhost HTTP server (off by default) exposing
+# /v1/audio/speech over QwenTTSService. uvicorn runs as a task on the existing
+# qasync loop (install_signal_handlers=False, reload=False). All pure wheels;
+# no ffmpeg. See myvoice.spec hiddenimports for the uvicorn protocol/loop
+# modules PyInstaller can't see via static analysis (gated by AC17).
+fastapi>=0.110.0
+uvicorn>=0.29.0
+lameenc>=1.7.0
+# Size: fastapi+starlette+pydantic ~10MB, uvicorn ~2MB, lameenc ~1MB.
+
 truststore>=0.10.0
 # Size: ~20 KB (pure-Python). REQUIRED for end-users running SSL-scanning AV
 # (Norton, Kaspersky, Avast, Bitdefender, ESET, ...) or corporate MITM proxies.

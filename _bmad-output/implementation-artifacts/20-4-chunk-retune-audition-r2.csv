@@ -1,0 +1,8 @@
+utterance_id,listener_id,a_or_b_preferred,a_defects_observed,b_defects_observed,free_text_notes
+l-020,L1,A,click_or_discontinuity,click_or_discontinuity,A had a single click about midway while B had several throughout.
+l-021,L1,A,none,click_or_discontinuity,
+m-020,L1,A,none,click_or_discontinuity,
+m-021,L1,equivalent,none,none,
+s-020,L1,equivalent,none,none,
+s-021,L1,equivalent,none,none,
+s-022,L1,A,none,click_or_discontinuity,

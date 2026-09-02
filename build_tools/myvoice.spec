@@ -407,6 +407,27 @@ hiddenimports_jaraco = [
     'pkg_resources',
 ]
 
+# Local TTS API (OpenAI-compatible) — tech-spec local-tts-api-v1 / F12.
+# uvicorn lazily imports its protocol/loop/lifespan implementations by string,
+# so PyInstaller's static analysis misses them. Without these the frozen exe
+# raises ModuleNotFoundError at server start (gated by AC17). fastapi/starlette/
+# pydantic are import-visible from our package, but collect_submodules keeps
+# their optional submodules reachable too. Expand this list if the frozen .exe
+# raises a missing-module error at API start.
+hiddenimports_api_server = [
+    'uvicorn',
+    'uvicorn.protocols.http.auto',
+    'uvicorn.protocols.http.h11_impl',
+    'uvicorn.protocols.websockets.auto',
+    'uvicorn.lifespan.on',
+    'uvicorn.lifespan.off',
+    'uvicorn.loops.auto',
+    'uvicorn.loops.asyncio',
+    'fastapi',
+    'lameenc',
+]
+hiddenimports_api_server += collect_submodules('uvicorn')
+
 # Windows-specific imports (pywin32 for Job Objects)
 # Use collect_all to ensure all pywin32 modules and DLLs are included
 import sys
@@ -441,6 +462,7 @@ hiddenimports = (
     hiddenimports_transformers +
     hiddenimports_jaraco +
     hiddenimports_triton +
+    hiddenimports_api_server +
     pywin32_hiddenimports
 )
 

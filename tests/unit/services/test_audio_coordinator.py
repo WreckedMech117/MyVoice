@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from myvoice.services import audio_coordinator as ac_module
 from myvoice.services.audio_coordinator import AudioCoordinator
 from myvoice.services.monitor_audio_service import MonitorAudioService
 from myvoice.services.virtual_microphone_service import VirtualMicrophoneService
@@ -796,3 +797,195 @@ class TestStopStreamingSessionDrain:
         # No silence pad dispatched because both services were inactive.
         monitor.play_audio_chunk.assert_not_called()
         virtual.play_audio_chunk.assert_not_called()
+
+@_pytest.mark.asyncio
+class TestTtfaFirstPlaybackWriteBoundary:
+    """Story 20.1 Task 2.1 — ``ttfa_first_playback_write_ms`` closes
+    segment 4 (the consumer-side cushion) at the instant the buffer
+    releases its first payload towards PyAudio.
+
+    Retained product surface by architect decision 2026-08-31: AC #2b
+    Phase 3 reads it out of the shipped CSV capture on an RTX 3060, which
+    is a multi-generation GUI session — hence the re-arm assertions.
+    """
+
+    @staticmethod
+    def _capture():
+        from myvoice.observability import metrics
+
+        recorded: list = []
+        unsub = metrics.add_listener(recorded.append)
+        return recorded, unsub
+
+    async def test_boundary_fires_once_across_multiple_chunks(self):
+        coord, _monitor, _virtual = _coord_with_drain_services()
+        recorded, unsub = self._capture()
+        try:
+            await coord.start_streaming_session(
+                sample_rate=24000, channels=1, sample_width=2,
+                session_id="sid-one",
+            )
+            # 24000 Hz int16 mono: 24000 bytes = 500 ms = exactly the
+            # static watermark, so the first push releases immediately.
+            await coord.play_audio_chunk(b"\x01\x02" * 12000)
+            await coord.play_audio_chunk(b"\x03\x04" * 12000)
+        finally:
+            unsub()
+
+        hits = [
+            r for r in recorded if r.name == "ttfa_first_playback_write_ms"
+        ]
+        assert len(hits) == 1, (
+            "the segment-4 boundary must fire once per streaming session, "
+            f"not once per dispatched chunk; got {len(hits)}"
+        )
+        assert hits[0].session_id == "sid-one", (
+            "the boundary must carry the session id threaded from the "
+            "progressive-playback consumer, or the CSV cannot join it to "
+            "the producer-side boundaries"
+        )
+        assert hits[0].tags["buffer_mode"] == "static"
+        assert hits[0].tags["chunk_index"] == 0
+        assert hits[0].tags["dispatched_bytes"] > 0
+
+    async def test_boundary_rearms_on_next_session_with_fresh_session_id(self):
+        """Regression for the review C2 finding: arming the one-shot flag
+        only in ``start_streaming_session`` left a multi-generation
+        playback session emitting the boundary once for the whole process
+        and tagging every later generation with a stale session id. Both
+        ``start_streaming_session`` and ``stop_streaming_session`` now
+        re-arm it.
+        """
+        coord, _monitor, _virtual = _coord_with_drain_services()
+        recorded, unsub = self._capture()
+        try:
+            await coord.start_streaming_session(
+                sample_rate=24000, channels=1, sample_width=2,
+                session_id="sid-first",
+            )
+            await coord.play_audio_chunk(b"\x01\x02" * 12000)
+            await coord.stop_streaming_session()
+
+            # Teardown must have disarmed the flag AND cleared the id.
+            assert coord._ttfa_first_write_recorded is False
+            assert coord._streaming_metric_session_id is None
+
+            await coord.start_streaming_session(
+                sample_rate=24000, channels=1, sample_width=2,
+                session_id="sid-second",
+            )
+            await coord.play_audio_chunk(b"\x05\x06" * 12000)
+            await coord.stop_streaming_session()
+        finally:
+            unsub()
+
+        hits = [
+            r for r in recorded if r.name == "ttfa_first_playback_write_ms"
+        ]
+        assert len(hits) == 2, (
+            "a second streaming session must emit its own segment-4 "
+            f"boundary; got {len(hits)}"
+        )
+        assert [h.session_id for h in hits] == ["sid-first", "sid-second"], (
+            "the second session must NOT be tagged with the first session's "
+            f"id; got {[h.session_id for h in hits]}"
+        )
+
+    async def test_session_id_defaults_to_none_for_legacy_callers(self):
+        """The keyword is observational and optional: every pre-existing
+        caller omits it and must keep working."""
+        coord, _monitor, _virtual = _coord_with_drain_services()
+        recorded, unsub = self._capture()
+        try:
+            await coord.start_streaming_session(
+                sample_rate=24000, channels=1, sample_width=2,
+            )
+            await coord.play_audio_chunk(b"\x01\x02" * 12000)
+        finally:
+            unsub()
+
+        hits = [
+            r for r in recorded if r.name == "ttfa_first_playback_write_ms"
+        ]
+        assert len(hits) == 1
+        assert hits[0].session_id is None
+
+
+# --------------------------------------------------------------------------- #
+# Story 20.4 AC #2 — the T_a estimator that feeds the adaptive cushion
+# --------------------------------------------------------------------------- #
+
+
+class TestTargetAudioSecondsEstimator:
+    """The character-count -> audio-duration estimate that drives tau_gapless.
+
+    Story 20.1 §2.7 measured the shipped 0.08 s/char proportional estimator
+    at ~44 % high on the canonical long fixture (349 chars -> 27.92 s
+    estimated vs 19.32 s measured), and it feeds tau_min directly. Story
+    20.4 replaced it with an affine fit through both measured fixtures.
+    """
+
+    # The two Story 20.1 measured points the fit is calibrated on.
+    LONG_CHARS, LONG_MEASURED = 349, 19.32
+    SHORT_CHARS, SHORT_MEASURED = 33, 2.30
+
+    def test_matches_the_long_fixture_within_five_percent(self):
+        est = ac_module.estimate_target_audio_seconds(self.LONG_CHARS)
+        err = (est - self.LONG_MEASURED) / self.LONG_MEASURED
+        assert abs(err) < 0.05, f"long fixture estimate off by {err:+.1%}"
+
+    def test_matches_the_short_fixture_within_five_percent(self):
+        est = ac_module.estimate_target_audio_seconds(self.SHORT_CHARS)
+        err = (est - self.SHORT_MEASURED) / self.SHORT_MEASURED
+        assert abs(err) < 0.05, f"short fixture estimate off by {err:+.1%}"
+
+    def test_bias_stays_conservative_not_short(self):
+        # Deliberate design choice: a thin two-point calibration should err
+        # slightly LONG (a marginally larger cushion) rather than short.
+        for chars, measured in (
+            (self.LONG_CHARS, self.LONG_MEASURED),
+            (self.SHORT_CHARS, self.SHORT_MEASURED),
+        ):
+            assert ac_module.estimate_target_audio_seconds(chars) >= measured
+
+    def test_beats_the_pre_20_4_proportional_estimator(self):
+        """Regression row for the exact defect: proportional-through-origin.
+
+        A single s/char constant cannot fit both fixtures, because short
+        utterances carry proportionally more non-speech time. Any future
+        edit that reverts to ``chars * k`` fails one of the two rows above;
+        this row states why, in one comparison.
+        """
+        old = self.LONG_CHARS * 0.08
+        new = ac_module.estimate_target_audio_seconds(self.LONG_CHARS)
+        old_err = abs(old - self.LONG_MEASURED) / self.LONG_MEASURED
+        new_err = abs(new - self.LONG_MEASURED) / self.LONG_MEASURED
+        assert old_err > 0.40      # the ~44 % overshoot Story 20.1 measured
+        assert new_err < 0.05
+        assert new_err < old_err
+
+    def test_zero_and_negative_lengths_are_safe(self):
+        assert ac_module.estimate_target_audio_seconds(0) == 0.0
+        assert ac_module.estimate_target_audio_seconds(-5) == 0.0
+
+    def test_monotonic_in_character_count(self):
+        vals = [
+            ac_module.estimate_target_audio_seconds(n)
+            for n in (1, 10, 50, 200, 1000)
+        ]
+        assert vals == sorted(vals)
+        assert len(set(vals)) == len(vals)
+
+    def test_cushion_budget_constant_is_below_the_guardrail(self):
+        """The budget is a policy knob; max_pre_delay stays the guardrail.
+
+        If a future edit raised the budget to (or past) the cap, the
+        guardrail would become the binding escape again and Story 20.4's
+        fix would silently revert.
+        """
+        assert (
+            ac_module._DEFAULT_STREAMING_CUSHION_BUDGET_SECONDS
+            < ac_module._DEFAULT_STREAMING_MAX_PRE_DELAY_SECONDS
+        )
+        # And Story 20.4 does not move the guardrail itself.
+        assert ac_module._DEFAULT_STREAMING_MAX_PRE_DELAY_SECONDS == 10.0

@@ -18,6 +18,7 @@ from myvoice.services.tts_streaming import (
     CodecTokenStreamer,
     END_OF_STREAM,
 )
+from myvoice.services.tts_streaming import codec_token_streamer
 
 
 # -- AC #1: importable from package; inherits from BaseStreamer --------- #
@@ -72,15 +73,50 @@ def test_package_all_lists_expected_symbols_in_order():
 
 
 def test_default_construction_uses_documented_constants():
+    """A bare ``CodecTokenStreamer()`` picks up the module constants.
+
+    Deliberately derived, not literal: the point of this row is that the
+    constructor defaults track the module constants, which is what makes
+    a retune a one-line edit. The committed VALUES are pinned separately
+    by ``test_committed_chunk_geometry_is_story_20_4_optimum``.
+    """
     s = CodecTokenStreamer()
-    assert s.chunk_size == 25
-    assert s.lookahead == 5
+    assert s.chunk_size == codec_token_streamer.DEFAULT_CHUNK_SIZE
+    assert s.lookahead == codec_token_streamer.DEFAULT_LOOKAHEAD
     # D-10: maxsize = 4 * chunk_size
-    assert s.queue.maxsize == 100
+    assert s.queue.maxsize == (
+        codec_token_streamer.DEFAULT_QUEUE_MAX_FACTOR
+        * codec_token_streamer.DEFAULT_CHUNK_SIZE
+    )
     assert isinstance(s.queue, queue.Queue)
     assert isinstance(s._cancel_event, threading.Event)
     assert not s._cancel_event.is_set()
     assert s._buffer == []
+
+
+def test_committed_chunk_geometry_is_25_plus_5_after_the_20_4_revert():
+    """Story 20.4 AC #1 — pin the committed geometry, and why it is 25.
+
+    Story 20.1 SS5.2/SS5.3 measured chunk_size = 10 as the latency optimum
+    and Story 20.4 shipped it as far as the NFR3 gate, where it failed
+    twice: seam artefacts scale with seam count, and 10 has 2.5x the seams
+    of 25. It was reverted. A round-3 audition then showed the SEAM FIX is
+    good on its own at 25, so the two changes are separable and only the
+    stitching fix ships.
+
+    This row exists so a future retune cannot be done on the latency sweep
+    alone — that sweep already said 10, and the ear disagreed. Moving this
+    number requires an NFR3 audition, and chunk_size = 15 in particular is
+    perceptually untested (1.5x the seams of 25).
+    """
+    assert codec_token_streamer.DEFAULT_CHUNK_SIZE == 25
+    assert codec_token_streamer.DEFAULT_LOOKAHEAD == 5
+    # The consumer's 500 ms static watermark must stay a no-op: a chunk
+    # carries chunk_size/12.5 s of audio at the codec's measured frame
+    # rate, and if that falls under the watermark the consumer holds two
+    # chunks and hands the producer-side gain straight back (Story 20.1
+    # SS5.4 measured exactly that at chunk_size = 5).
+    assert codec_token_streamer.DEFAULT_CHUNK_SIZE / 12.5 >= 0.5
 
 
 def test_custom_construction_honors_all_parameters():

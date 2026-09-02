@@ -22,8 +22,10 @@ Public surface (consumed by Stories 16.4-16.6):
   - CodecTokenStreamer: HF BaseStreamer subclass with bounded queue.
   - END_OF_STREAM: module-level singleton; decoder loop-exit signal.
 
-Defaults: chunk_size=25, lookahead=5 (matching the example in
-01-streaming-tts-research.md:184). Story 16.7's empirical-validation
+Defaults: chunk_size=25, lookahead=5. Story 20.4 attempted a retune to
+10 -- measured as the throughput/latency optimum by Story 20.1 SS5.2/5.3 --
+and REVERTED it after the NFR3 perceptual gate failed twice. See the
+constants below for the full record. Story 16.7's empirical-validation
 harness may revise via direct module-constant edit.
 """
 
@@ -40,9 +42,59 @@ from transformers.generation.streamers import BaseStreamer
 END_OF_STREAM = object()
 
 
-# Defaults matching the 01-streaming-tts-research.md:184 example.
-# Story 16.7's empirical-validation harness may revise these via a direct
-# edit to these module constants. No settings-layer plumbing required.
+# THE COMMITTED GEOMETRY -- and the record of an attempt to change it.
+#
+# Story 20.4 (Epic 20, Follow-up B) tried chunk_size = 10 and reverted it.
+# The number stays at 25. Both halves of that are load-bearing, so the
+# evidence is recorded here rather than only in the story file.
+#
+# WHY 10 LOOKED RIGHT. Story 20.1 SS5.2/SS5.3 swept {5, 10, 15, 25} with
+# lookahead held at 5, on an RTX 5090, in the shipping tts_compile="auto"
+# regime:
+#
+#   cs  window  TTFA long  TTFA short  ratio  short first-emit path
+#    5      10     951 ms      899 ms  0.760  threshold 5/5
+#   10      15     875 ms      921 ms  0.676  threshold 5/5   <- fastest
+#   15      20   1,172 ms    1,174 ms  0.677  threshold 5/5
+#   25      30   1,785 ms    1,651 ms  0.665  residual_flush 11/20
+#
+# Story 20.4 re-measured that on current code and reproduced it: long-form
+# TTFA 1,491 -> 829 ms and short 1,409 -> 784 ms, with the short class
+# moving off the ``residual_flush`` dispatch path 6/6. Through the shipped
+# GUI it measured 976 ms long / 1,065 ms short. The speed win was real.
+#
+# WHY IT WAS REVERTED ANYWAY. It failed the NFR3 perceptual gate twice.
+# Every chunk boundary is a seam, and seam artefacts scale with seam
+# count -- chunk_size = 10 has 2.5x as many as 25. Commander flagged
+# audible defects on 1 of 7 fixtures in round 1 and 3 of 7 in round 2, and
+# preferred chunk_size = 25 on every utterance where the two differed.
+# AC #5 makes an audible chunk-boundary artefact blocking, not a note.
+#
+# A round-3 audition then isolated the variables and showed the SEAM FIX
+# in ``streaming_decoder.py`` is good on its own at chunk_size = 25 -- it
+# removed the defect on both long fixtures and was never worse. So the two
+# things Story 20.4 built are separable, and only one of them ships: the
+# stitching fix does, the geometry retune does not.
+#
+# WHAT WOULD REOPEN IT. The seam harm and the alignment gain BOTH scale
+# with seam count, so the balance at intermediate geometries is genuinely
+# unknown. chunk_size = 15 is untested perceptually -- 1.5x the seams of
+# 25, against Story 20.1's measured 1,157 ms TTFA. That is an open
+# question, not a recommendation. Any future attempt needs an NFR3
+# audition, not just the latency sweep, because the latency sweep already
+# said 10 and the ear disagreed.
+#
+# ANY change to these two constants must be threaded into
+# ``torch_runtime.engage_compile_optimizations`` -- it derives D-25's
+# ``decode_window_frames`` from them (it imports this module for exactly
+# that reason), and the value is one of compile_cache's seven key
+# dimensions, so a retune auto-invalidates the compile cache (D-24).
+# Story 20.1 SS5.4 documents the trap that made this necessary: before
+# Story 20.4 the compile path carried its own hard-coded 25/5 literals and
+# the sole production call site passed neither, so ``decode_window_frames``
+# was pinned at 30 regardless of the streamer's real geometry. That
+# threading is the part of Follow-up B that DID ship, and it is what made
+# this revert a one-line edit.
 DEFAULT_CHUNK_SIZE = 25
 DEFAULT_LOOKAHEAD = 5
 DEFAULT_QUEUE_MAX_FACTOR = 4  # D-10: maxsize = factor * chunk_size

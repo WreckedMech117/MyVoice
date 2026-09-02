@@ -424,15 +424,38 @@ class TestCustomTitleBarMinimize:
     """Tests for custom title bar minimize button."""
 
     def test_title_bar_minimize_calls_minimize_to_tray(self, qapp):
-        """Test title bar minimize button calls _minimize_to_tray when available."""
+        """Test title bar minimize button calls _minimize_to_tray when enabled.
+
+        Story ui-1: the button now reads ``minimize_to_tray`` instead of the
+        always-true ``hasattr`` guard, so the setting must be enabled for the
+        tray branch to fire. See ``tests/ui/test_close_to_tray_toggle.py`` for
+        the full both-branch coverage.
+        """
         from myvoice.ui.main_window import MainWindow
 
         window = MainWindow()
+        window.app_settings = AppSettings(minimize_to_tray=True)
         window._minimize_to_tray = MagicMock()
 
         window.title_bar._on_minimize_clicked()
 
         window._minimize_to_tray.assert_called_once()
+
+        window.deleteLater()
+
+    def test_title_bar_minimize_uses_taskbar_when_tray_disabled(self, qapp):
+        """Story ui-1: with the toggle off, minimize goes to the taskbar."""
+        from myvoice.ui.main_window import MainWindow
+
+        window = MainWindow()
+        window.app_settings = AppSettings(minimize_to_tray=False)
+        window._minimize_to_tray = MagicMock()
+        window.showMinimized = MagicMock()
+
+        window.title_bar._on_minimize_clicked()
+
+        window._minimize_to_tray.assert_not_called()
+        window.showMinimized.assert_called_once()
 
         window.deleteLater()
 

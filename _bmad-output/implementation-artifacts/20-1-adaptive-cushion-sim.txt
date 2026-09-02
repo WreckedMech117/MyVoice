@@ -1,0 +1,109 @@
+# Story 20.1 A4 - adaptive-cushion simulation against the shipped
+# StreamingChunkBuffer (streaming_chunk_buffer.py), injected clock.
+# T_a_est is what the code actually uses: text_length * 0.08 s/char
+# (audio_coordinator.py:89). Measured T_a is shown for contrast.
+
+## Long fixture: 349 chars -> T_a_est 27.92s (measured T_a 19.32s, estimator overshoot +45%)
+
+  chunk_size=25 (committed default), P=0.50
+    P=0.50  chunk_size=25  audio/chunk=2.083s  wall/chunk=4.167s  T_a_est=27.92s
+    segment 4 (release offset from chunk 0): 12.50 s
+    released by -> escape 3: elapsed >= MAX_PRE_DELAY_SECONDS (10.0 s)
+    talker segment (window/P) for comparison: 5.00 s
+    cushion / talker ratio: 2.50x
+
+  chunk_size=25 (committed default), P=0.70
+    P=0.70  chunk_size=25  audio/chunk=2.083s  wall/chunk=2.976s  T_a_est=27.92s
+    segment 4 (release offset from chunk 0): 11.90 s
+    released by -> escape 3: elapsed >= MAX_PRE_DELAY_SECONDS (10.0 s)
+    talker segment (window/P) for comparison: 3.57 s
+    cushion / talker ratio: 3.33x
+
+  chunk_size=25 (committed default), P=0.75
+    P=0.75  chunk_size=25  audio/chunk=2.083s  wall/chunk=2.778s  T_a_est=27.92s
+    segment 4 (release offset from chunk 0): 11.11 s
+    released by -> escape 3: elapsed >= MAX_PRE_DELAY_SECONDS (10.0 s)
+    talker segment (window/P) for comparison: 3.33 s
+    cushion / talker ratio: 3.33x
+
+  chunk_size=25 (committed default), P=0.80
+    P=0.80  chunk_size=25  audio/chunk=2.083s  wall/chunk=2.604s  T_a_est=27.92s
+    segment 4 (release offset from chunk 0): 7.81 s
+    released by -> escape 5: buffered >= tau_min (6.98 s)
+    talker segment (window/P) for comparison: 3.12 s
+    cushion / talker ratio: 2.50x
+
+  chunk_size=25 (committed default), P=0.85
+    P=0.85  chunk_size=25  audio/chunk=2.083s  wall/chunk=2.451s  T_a_est=27.92s
+    segment 4 (release offset from chunk 0): 4.90 s
+    released by -> escape 5: buffered >= tau_min (4.93 s)
+    talker segment (window/P) for comparison: 2.94 s
+    cushion / talker ratio: 1.67x
+
+  chunk_size=25 (committed default), P=0.90
+    P=0.90  chunk_size=25  audio/chunk=2.083s  wall/chunk=2.315s  T_a_est=27.92s
+    segment 4 (release offset from chunk 0): 2.31 s
+    released by -> escape 5: buffered >= tau_min (3.10 s)
+    talker segment (window/P) for comparison: 2.78 s
+    cushion / talker ratio: 0.83x
+
+  chunk_size=25 (committed default), P=0.95
+    P=0.95  chunk_size=25  audio/chunk=2.083s  wall/chunk=2.193s  T_a_est=27.92s
+    segment 4 (release offset from chunk 0): 2.19 s
+    released by -> escape 5: buffered >= tau_min (1.47 s)
+    talker segment (window/P) for comparison: 2.63 s
+    cushion / talker ratio: 0.83x
+
+## Same host, chunk_size=10 (the Follow-up B candidate)
+
+  chunk_size=10, P=0.50
+    P=0.50  chunk_size=10  audio/chunk=0.833s  wall/chunk=1.667s  T_a_est=27.92s
+    segment 4 (release offset from chunk 0): 10.00 s
+    released by -> escape 3: elapsed >= MAX_PRE_DELAY_SECONDS (10.0 s)
+    talker segment (window/P) for comparison: 2.50 s
+    cushion / talker ratio: 4.00x
+
+  chunk_size=10, P=0.75
+    P=0.75  chunk_size=10  audio/chunk=0.833s  wall/chunk=1.111s  T_a_est=27.92s
+    segment 4 (release offset from chunk 0): 10.00 s
+    released by -> escape 3: elapsed >= MAX_PRE_DELAY_SECONDS (10.0 s)
+    talker segment (window/P) for comparison: 1.67 s
+    cushion / talker ratio: 6.00x
+
+  chunk_size=10, P=0.90
+    P=0.90  chunk_size=10  audio/chunk=0.833s  wall/chunk=0.926s  T_a_est=27.92s
+    segment 4 (release offset from chunk 0): 2.78 s
+    released by -> escape 5: buffered >= tau_min (3.10 s)
+    talker segment (window/P) for comparison: 1.39 s
+    cushion / talker ratio: 2.00x
+
+## Estimator sensitivity (A5): same P, T_a_est vs measured T_a
+
+  P=0.50, T_a_est 27.92 s (what ships)
+    P=0.50  chunk_size=25  audio/chunk=2.083s  wall/chunk=4.167s  T_a_est=27.92s
+    segment 4 (release offset from chunk 0): 12.50 s
+    released by -> escape 3: elapsed >= MAX_PRE_DELAY_SECONDS (10.0 s)
+    talker segment (window/P) for comparison: 5.00 s
+    cushion / talker ratio: 2.50x
+
+  P=0.80, T_a_est 27.92 s (what ships)
+    P=0.80  chunk_size=25  audio/chunk=2.083s  wall/chunk=2.604s  T_a_est=27.92s
+    segment 4 (release offset from chunk 0): 7.81 s
+    released by -> escape 5: buffered >= tau_min (6.98 s)
+    talker segment (window/P) for comparison: 3.12 s
+    cushion / talker ratio: 2.50x
+
+  P=0.50, T_a measured 19.32 s (a perfect estimator)
+    P=0.50  chunk_size=25  audio/chunk=2.083s  wall/chunk=4.167s  T_a_est=19.32s
+    segment 4 (release offset from chunk 0): 12.50 s
+    released by -> escape 3: elapsed >= MAX_PRE_DELAY_SECONDS (10.0 s)
+    talker segment (window/P) for comparison: 5.00 s
+    cushion / talker ratio: 2.50x
+
+  P=0.80, T_a measured 19.32 s (a perfect estimator)
+    P=0.80  chunk_size=25  audio/chunk=2.083s  wall/chunk=2.604s  T_a_est=19.32s
+    segment 4 (release offset from chunk 0): 5.21 s
+    released by -> escape 5: buffered >= tau_min (4.83 s)
+    talker segment (window/P) for comparison: 3.12 s
+    cushion / talker ratio: 1.67x
+

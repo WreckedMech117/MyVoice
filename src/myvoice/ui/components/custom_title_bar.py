@@ -169,16 +169,40 @@ class CustomTitleBar(QWidget):
         else:
             super().mouseDoubleClickEvent(event)
 
+    def _should_minimize_to_tray(self) -> bool:
+        """
+        Decide whether the minimize button should hide to the system tray.
+
+        Story ui-1: the original guard here was
+        ``hasattr(parent, '_minimize_to_tray')``, which is always True on
+        ``MainWindow`` — so the taskbar branch was unreachable and the
+        minimize button ignored the user's ``minimize_to_tray`` setting.
+        This reads the actual setting instead, and falls back to the safer
+        taskbar behaviour whenever the setting (or the tray helper) is not
+        wired up on the parent.
+
+        Returns:
+            bool: True to hide to tray, False to minimize to the taskbar.
+        """
+        if not hasattr(self._parent_window, '_minimize_to_tray'):
+            return False
+
+        app_settings = getattr(self._parent_window, 'app_settings', None)
+        if app_settings is None:
+            return False
+
+        return bool(getattr(app_settings, 'minimize_to_tray', False))
+
     def _on_minimize_clicked(self):
         """
         Handle minimize button click.
 
-        Story 7.2: If parent window has system tray enabled,
-        minimizes to tray instead of taskbar.
+        Story 7.2 / ui-1: honours the user's ``minimize_to_tray`` setting —
+        hides to the system tray when enabled, otherwise minimizes to the
+        taskbar like a normal window.
         """
         if self._parent_window:
-            # Story 7.2: Check if parent supports minimize to tray
-            if hasattr(self._parent_window, '_minimize_to_tray'):
+            if self._should_minimize_to_tray():
                 self._parent_window._minimize_to_tray()
                 self.logger.debug("Window minimized to tray")
             else:
