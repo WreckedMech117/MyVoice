@@ -1,6 +1,6 @@
 # Story 20.5: Codec State Caching Across Chunks (Phase ⊥-Polish-3)
 
-Status: **AT THE GATE** — Phase 1 complete, verdict **GO** on both stated thresholds (2026-09-01). Phases 2–3 await Commander approval; not self-authorised.
+Status: in-progress — Phase 1 GO (gate passed 2026-09-01, Commander approved); Phase 2 COMPLETE and verified; Phase 3 fixture built, audition NOT yet run
 
 <!-- Phase tag: Phase ⊥-Polish-3. Fifth story of Epic 20. -->
 <!-- Source: Mary's research Finding 1 (re-filed as audio-quality per 20-4 evidence §11.9); Story 20.4 §11/§13/§17. -->
@@ -150,9 +150,9 @@ pre-existing failures are unchanged in count and identity
 
 - [x] **Task 1 — Phase 1 bench** (AC: #1, #2) — chunked-with-state vs whole-sequence, error attributed per sub-stack, cost and CUDA-graph interaction reported. **No `src/` changes.** ✅ `git diff --stat -- src/` empty.
 - [x] **Task 2 — GATE.** Reported. **Stopped.** Verdict GO; Phase 2 not begun.
-- [ ] **Task 3 — Phase 2** (AC: #3), gated.
-- [ ] **Task 4 — Phase 3 audition prep** (AC: #4), gated.
-- [ ] **Task 5 — Regression** (AC: #6).
+- [x] **Task 3 — Phase 2** (AC: #3) — state carried in `_build_true_stream_decode_fn`'s decode path via `services/tts_streaming/codec_state_cache.py`; per-session, reset on start/cancel/completion; `cs25` and the 5-frame lookahead + post-decode trim untouched; both smoothing layers re-evaluated on evidence and left in place. Verified on the real model.
+- [x] **Task 4 — Phase 3 audition prep** (AC: #4) — paired-take fixture generator + audition helper built; prediction pre-registered. **Audition not yet run — awaiting Commander.**
+- [x] **Task 5 — Regression** (AC: #6) — 344 streaming/dispatch unit tests pass; integration 166 pass / 4 fail, the 4 pre-existing and unchanged (verified by stashing the change).
 
 ## Dev Notes
 
@@ -266,7 +266,128 @@ wrapper walks.
 **AC #1 "no production code modified" — verified.** `git diff --stat -- src/` empty;
 `git status --porcelain -- src/ tests/ tools/ build_tools/` empty.
 
+### Phase 2 result — 2026-09-01 (AC #3)
+
+Full evidence: `20-5-phase2-evidence.md`. Implementation:
+`src/myvoice/services/tts_streaming/codec_state_cache.py` (new, wrapper — no vendoring, as
+Phase 1 §3.3 predicted). Verification: `20-5-phase2-verify.py` / `.json`.
+
+**On the real model, on the production decode path** (bf16, RTX 5090; both arms replayed from the
+SAME captured token chunks through a real `StreamingDecoderWorker`, so the only difference is the
+decode). Columns are l-020 / l-021 / m-020:
+
+| | ships today (stateless) | state carried |
+|---|---|---|
+| whole-signal NRMSE vs whole-sequence decode | 0.208 / 0.603 / 0.163 | **0.0099 / 0.0102 / 0.079** |
+| head NRMSE at seams (1024 samples, median) | 0.406 / 0.477 / 0.220 | **0.0078 / 0.0075 / 0.0055** |
+| correlation med / min | 0.93/0.73 · 0.89/0.81 · 0.98/0.98 | **1.0000 med, 0.9937 worst** |
+| lag jitter | +0…+368 samples | **0 on every seam** |
+| error by position into chunk | head-weighted (0.15 → 0.54 → 0.28) | **flat (0.012/0.009/0.007/0.008/0.010/0.011)** |
+| per-session state | — | **37 tensors, 2.49 MiB, bounded** (identical after 4 and after 10 chunks) |
+
+**The regression bar is exact, not statistical.**
+`tests/unit/services/tts_streaming/test_codec_state_cache.py` builds a genuine tiny
+`Qwen3TTSTokenizerV2Decoder` from the real upstream classes and asserts single-chunk streaming ==
+`forward` **bit-for-bit** (`torch.equal`), fp64 chunked == whole at 3e-16 across four chunk sizes,
+the stitched worker output == the whole-sequence decode to 1e-06, and the retained overlap tail ==
+the next chunk's head bit-for-bit. On the loaded bf16 model the single-call traversal is likewise
+**bit-exact (0.0)**, on random and on real token sequences alike.
+
+**The `nn.ConvTranspose1d` bias double-count is carried and pinned.**
+`test_transposed_conv_bias_is_not_double_counted` runs the naive form deliberately: 2.2e-02 against
+the corrected form's 3.2e-16 — seven orders apart, and **with the correct length**, which is why it
+reads as NO-GO rather than as a bug. It is also why the runtime self-test was re-derived rather than
+loosened: a first-draft 5e-02 bf16 tolerance failed on *correct* code (5.13e-02 on random codes).
+
+**Trip-wire extended.** Nine rows in `tests/test_qwen_tts_internals.py` pin the module chain the
+wrapper walks: the eight classes it dispatches on, seven fragments of `Decoder.forward`, the zero
+left-pad premise, the `[left_pad : −right_pad]` discard that owns 100 % of the 555, the five decoder
+attribute names, all-sliding `layer_types`, the `upsample_rates` arithmetic that yields 1920/555,
+`Model.decode` still routing through `chunked_decode` and not `forward_optimized`, and the
+`DynamicCache` rebind-not-mutate contract the free state snapshot depends on.
+
+**AC #3's other clauses.** State is one plain object per `StatefulCodecDecoder` per dispatch — no
+module- or class-level storage, so concurrent HTTP-API generations are isolated (pinned by a test
+that drives two decoders in different orders). `reset()` fires on session start, on `END_OF_STREAM`
+before the terminal post, and in `_drain_and_post_cancel` after the drain and before the cancel
+post; it can never raise, so the **Story 16.5 cooperative-cancel chain is unaffected** — pinned by a
+reset that raises and a required cancel post. `cs25`, the 5-frame lookahead and the post-decode trim
+are untouched.
+
+**Both smoothing layers re-evaluated, neither changed** (evidence §4):
+
+- The **Story 20.4 1,024-sample seam blend is now an identity.** Its two inputs — the tail a chunk
+  retains and the head of the next — are decoded from the same state snapshot; they differ by NRMSE
+  0.0037–0.0046 median against 0.22–0.56 today, a ~125× reduction, and are bit-identical in fp64 on
+  CPU. No quality argument either way; left in place, and leaving it is what keeps Phase 2 to one
+  variable.
+- The **64-sample `StreamingChunkBuffer` crossfade is now the dominant remaining error term.** It
+  blends *different moments in time* (sample `n+i` with `n−64+i`), so on continuous audio it is a
+  2.7 ms comb. Measured against ground truth it makes the state-cached output **2.6× / 3.3× worse**
+  on the two long fixtures (0.0099 → 0.0254, 0.0102 → 0.0337) while touching 0.13 % of samples, with
+  local excursions to 0.35 full scale. It was already mildly harmful pre-20.5 — the cold-start error
+  was simply 20× larger. **Primary follow-up, with its own audition. Not bundled here.**
+
+**One honest regression: decode time.** +7.0 to +10.4 ms per chunk (+22 % to +48 %), where Phase 1's
+bench measured −21 % to −30 %. The bench decoded 25 frames in ONE call with no lookahead; the shipped
+path must preserve the lookahead and the trim, so each chunk is two passes (25 frames committed, 5 on
+a discarded snapshot) and the decoder is launch-overhead dominated at these tensor sizes. Against a
+chunk carrying 2,000 ms of audio that is 1.0 % → 1.5 % of real time, and +0.6 % on a measured
+1,491 ms long-form TTFA. Recoverable by dropping the lookahead (follow-up 2, which also *gains* five
+talker steps of TTFA) or by single-pass state capture. Reported rather than fixed, because fixing it
+means changing the trim — which this story is not doing.
+
+**Failure policy: decline loudly, never degrade silently.** Three build-time gates — the
+`MYVOICE_CODEC_STATE_CACHE` kill switch, a structural probe that refuses any module graph it has not
+been shown exact on, and a numerical self-test against the loaded weights — each return the pre-20.5
+stateless adapter with a logged reason. At runtime the length identity is re-checked on every chunk
+and a mismatch raises rather than posting mis-spliced audio.
+
+### Phase 3 preparation — 2026-09-01 (AC #4). NOT YET RUN.
+
+Fixture: `20-5-regen-audition-fixture.py` → `20-5-perceptual-fixtures/`. Helper:
+`20-5-l1-audition-helper.py`, Commander solo. Reference = `cs25` + the Story 20.4 seam fix (what
+ships today); candidate = the same plus state caching. Same seven utterances as Story 20.4 rounds
+1–4, so every round stays comparable.
+
+**The variance requirement is answered by removing the confound, not averaging over it.** Both files
+in every pair are decoded from **one talker run** — the talker's token chunks are captured once and
+decoded twice — so within a pair the wording, prosody, pauses and total duration are identical *to
+the sample*. Story 20.4's arms were necessarily different takes, because a chunk-size change perturbs
+what the streamer emits and therefore what the talker samples; that is what §17 measured. Nothing
+upstream of the decoder is touched by this story, so the tokens are literally reused, a single pair
+per utterance is already sufficient for **attribution**, and the round is **not** limited to
+detecting a large effect. Two takes per utterance are generated anyway — to sample the *content*
+lottery (whether a held vowel or plosive lands on a boundary), not to average arm variance. 14
+trials. Levels are deliberately **not** normalised: sharing a take, any level difference would itself
+be a finding, and the generator warns above 0.2 dB.
+
+**Prediction, recorded before the audition:**
+
+- **P1 (BLOCKING)** — no blocking seam defect (`audible_seam`, `click_or_discontinuity`,
+  `prosody_break_at_stitch`) on any candidate trial. *Falsified by one.*
+- **P2 (DIRECTION)** — where the two differ the candidate is preferred; the reference is never
+  preferred on seam grounds. *Falsified if the reference is preferred on ≥ 4 of 14.*
+- **P3 (MAGNITUDE)** — `equivalent` is the modal answer, **6–11 of 14**. Story 20.4 round 3 already
+  certified `cs25` + blend as clean to this listener, so there is little audible headroom left at
+  this seam density. *Falsified either way:* ≥ 10 candidate-preferred is a large effect; ≤ 4
+  equivalent means the arms are far more separable than predicted.
+- **P4 (LOCATION)** — any difference is on l-020 / l-021 (8–9 seams), not on the short fixtures (0–1
+  seams). *Falsified by a difference on a short fixture but not a long one.*
+
+P3 predicts *against* the exciting outcome deliberately. The offline numbers are dramatic — 50–60×
+less seam error, zero lag jitter — and it would be easy to assume that must be audible. It probably
+is not, at `cs25`, because Story 20.4 established that the 1,024-sample blend masks this defect well
+enough at this seam density for Commander to call it clean. A round returning "equivalent everywhere,
+no new defects" is a **PASS**: the prize is not audible quality at `cs25`, it is that the harm which
+killed `cs10` is gone at the cause, and AC #5 reopens the chunk-size question as its own story. A
+large effect *is* plausible — Phase 1 removed the cause rather than masking it, and masking is never
+perfect — but it is offered as a prediction to be falsified, not as an expectation. If P3 is
+falsified by a large candidate win, that is itself evidence the blend was masking less well than
+round 3 suggested, which strengthens the AC #5 case.
+
 ## Change Log
 
+- 2026-09-01 — Phase 2 implemented and verified on the real model; Phase 3 fixture + helper built and the prediction pre-registered. State is carried per session by a wrapper that re-walks the decoder traversal (no vendoring); the `nn.ConvTranspose1d` bias correction is carried and pinned by its own test; the regression bar is bit-exactness rather than a tolerance; the trip-wire now pins the module chain. `cs25`, the lookahead and the trim are untouched. Both smoothing layers measured: the 20.4 seam blend is now an identity (left in), the 64-sample consumer crossfade is now the dominant error term (left in, flagged as the primary follow-up with its own audition). Decode time regresses +8.6 ms/chunk — the price of keeping the lookahead — which is 0.5 % of a chunk's audio duration and is recoverable by follow-up 2. **Audition not run; awaiting Commander.**
 - 2026-09-01 — Phase 1 executed. Bench + stage probe built and run on RTX 5090. Verdict **GO**: the 555-sample edge loss reaches zero exactly, head NRMSE falls 115–144 % → 0.56–0.82 % (bit-exact in fp32 with TF32 off), lag jitter ±1200 → 0, cost ≤ 2.52 MiB/session with no decode-time regression, expressible as a wrapper, and no CUDA-graph trade because the compiled decoder graph is not on the production decode path. Stopped at the gate per the story's phase rule; Phase 2 not begun.
 - 2026-09-01 — Drafted by Winston after Story 20.4 closed the chunk-size question at `cs25` and named this as the thing that would reopen it. Phase-gated deliberately: the mechanism is understood but the reachable state may not determine the output, and that is answerable on a bench for a fraction of the cost of finding out in the dispatch chain.

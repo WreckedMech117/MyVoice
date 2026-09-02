@@ -93,6 +93,41 @@ This does NOT make the codec carry state across chunks — the reference
 implementations do that and we still do not (see the Story 20.4 evidence
 file, §11). It masks the consequence at the boundary rather than removing
 the cause.
+
+Story 20.5 — the cause is now removed, and this blend is inert
+--------------------------------------------------------------
+``services/tts_streaming/codec_state_cache.py`` carries the codec's real
+state across the boundary, so on the state-cached path the two paragraphs
+above describe a defect that no longer exists. The worker learns which regime
+it is in from ``decode_fn.carries_codec_state`` and switches its geometry
+model accordingly:
+
+    stateless (pre-20.5, and still the fallback)
+        every decode returns ``1920*N - 555``; splice at ``chunk_size*1920``
+    state-cached
+        the FIRST decode of a session returns ``1920*N - 555`` and every later
+        one returns exactly ``1920*N`` — the 555 moves to the stream-start
+        call rather than shrinking — so the first splice is
+        ``chunk_size*1920 - 555`` and every later one is ``chunk_size*1920``
+
+The overlap-add below is deliberately left running on both paths. Under
+carried state the tail this chunk retains was decoded from the *same state
+snapshot* the next chunk resumes from, so the blend mixes a signal with a
+numerically identical copy of itself: an identity operation, measured at
+0 samples of difference on the CPU reference model
+(``test_overlap_add_is_an_identity_under_carried_state``) rather than
+assumed. AC #3 asks for the Story 20.4 seam fix to be re-evaluated on
+evidence and not merely assumed away; leaving it in place and proving it
+inert is what keeps Story 20.5 Phase 2 to a single variable. Removing it —
+and the 64-sample consumer crossfade in ``streaming_chunk_buffer.py``, which
+under carried state blends genuinely *different* moments and is therefore
+mildly harmful rather than merely useless — is a follow-up with its own
+audition, not a rider on this one.
+
+State lifecycle (AC #3): ``decode_fn.reset()`` is called on session start, on
+cancel, and on completion. It is strictly per-session — the decode_fn is
+built per dispatch and owns its own state object — so concurrent generations
+never share codec state.
 """
 
 import queue
@@ -231,6 +266,19 @@ class StreamingDecoderWorker:
         # One-shot latch: the codec output-length identity failed, so this
         # session has fallen back to the pre-20.4 proportional trim.
         self._geometry_fallback = False
+        # Story 20.5 — does this decode_fn carry codec state across chunks?
+        # Read once at construction (the decode_fn is built per dispatch and
+        # cannot change mid-session) so the hot path does no getattr.
+        self._carries_codec_state = bool(
+            getattr(decode_fn, "carries_codec_state", False)
+        )
+        # Frames the decode_fn has committed to its codec state. Mirrors the
+        # decode_fn's own advance, and both derive it from the SAME
+        # snapshotted streamer geometry — the agreement is pinned by
+        # ``test_commit_predicate_matches_the_workers_full_window_predicate``.
+        # Zero means "the next decode is this session's first", which is the
+        # only chunk that still pays the 555-sample edge loss.
+        self._codec_state_frames = 0
         # Same threading.Event the streamer was constructed with — Story 16.5
         # wires registry.cancel() to flip this event; both producer and
         # consumer observe the single flip.
@@ -268,6 +316,11 @@ class StreamingDecoderWorker:
         # global exception handler surfaces as a user-visible dialog even
         # though the dispatch's fallback chain produces audio.
         appended = 0
+        # AC #3 reset point 1 of 3 — session start. The decode_fn is built per
+        # dispatch so its state is already empty; resetting here makes the
+        # invariant hold for a re-used decode_fn too (the integration suite
+        # injects one), and costs nothing.
+        self._reset_codec_state()
         while True:
             # P-6 step 5 + P-7: cancel takes priority over decode.
             if self._cancel_event.is_set():
@@ -283,6 +336,10 @@ class StreamingDecoderWorker:
             # session settles into a terminal state cleanly and the
             # dispatch's own cleanup races harmlessly.
             if chunk is END_OF_STREAM:
+                # AC #3 reset point 2 of 3 — completion. Before the terminal
+                # post, so a registry handoff that raises still leaves no
+                # codec state behind.
+                self._reset_codec_state()
                 if appended > 0:
                     self._post_terminal("finalize")
                 else:
@@ -355,8 +412,16 @@ class StreamingDecoderWorker:
         # The identity is checked on EVERY chunk (residuals included, where
         # it also holds) rather than trusted, so a codec/pin change cannot
         # silently produce mis-spliced audio.
-        expected = (
-            _CODEC_SAMPLES_PER_FRAME * n_frames - _CODEC_EDGE_LOSS_SAMPLES
+        #
+        # Story 20.5 — which identity holds depends on whether the decode_fn
+        # carries codec state. Under carried state the 555-sample edge loss
+        # is paid ONCE, on the session's first decode, exactly as a
+        # whole-sequence decode pays it; every later chunk decodes its own
+        # frames from real context and returns the full 1920*N.
+        first_decode = self._codec_state_frames == 0
+        pays_edge_loss = first_decode or not self._carries_codec_state
+        expected = _CODEC_SAMPLES_PER_FRAME * n_frames - (
+            _CODEC_EDGE_LOSS_SAMPLES if pays_edge_loss else 0
         )
         geometry_ok = len(pcm_full) == expected and not self._geometry_fallback
         if not geometry_ok and not self._geometry_fallback:
@@ -375,7 +440,19 @@ class StreamingDecoderWorker:
         next_overlap: Optional[np.ndarray] = None
         if geometry_ok and is_full_window:
             # The stream advances by exactly chunk_size frames of audio.
+            #
+            # Story 20.5: on the state-cached path the first decode's output
+            # begins 555 samples INTO the nominal window (the codec's own
+            # left-pad trim, which the whole-sequence decode also loses),
+            # while every later decode begins exactly at its first frame. So
+            # the first splice is short by that constant and every later one
+            # is frame-exact. Getting this wrong duplicates or drops 555
+            # samples at the FIRST seam only — 23 ms, once per utterance,
+            # which is precisely the class of defect Story 20.4 spent four
+            # audition rounds finding.
             splice = self._chunk_size * _CODEC_SAMPLES_PER_FRAME
+            if self._carries_codec_state and first_decode:
+                splice -= _CODEC_EDGE_LOSS_SAMPLES
             if splice >= len(pcm_full):
                 # Defensive: cannot happen while the identity holds and
                 # lookahead > 0, since the remainder is lookahead*1920-555.
@@ -403,6 +480,16 @@ class StreamingDecoderWorker:
 
         pcm_segment = self._apply_overlap_add(pcm_segment)
         self._pending_overlap = next_overlap
+
+        # Track what the decode_fn committed to codec state. Mirrors
+        # ``StatefulCodecDecoder.__call__``'s own commit rule exactly: a full
+        # window commits ``chunk_size`` frames and holds the lookahead back
+        # on a snapshot; anything shorter (the residual flush) commits all of
+        # it. Advanced even when the geometry check failed, because the
+        # decode_fn advanced regardless and the two must not desync.
+        self._codec_state_frames += (
+            self._chunk_size if is_full_window else n_frames
+        )
 
         self._post_mutation("append_chunk", self._session_id, pcm_segment)
 
@@ -433,6 +520,32 @@ class StreamingDecoderWorker:
         return np.concatenate(
             [head, np.asarray(pcm_segment[m:], dtype=np.float32)]
         )
+
+    def _reset_codec_state(self) -> None:
+        """Drop the decode_fn's carried codec state (Story 20.5, AC #3).
+
+        Called at exactly the three points the AC names — session start,
+        cancel, completion — and nowhere else. Never raises: it is on the
+        cancel path, where P-7 says nothing may escape the worker, and a
+        failed reset must not stop ('cancel', session_id) from reaching the
+        registry. A decode_fn without a ``reset`` (every synthetic test
+        fake, and the stock stateless adapter) is a no-op here.
+        """
+        self._codec_state_frames = 0
+        reset = getattr(self._decode_fn, "reset", None)
+        if reset is None:
+            return
+        try:
+            reset()
+        except Exception as exc:  # noqa: BLE001 — see docstring
+            metrics.record(
+                "codec_state_reset_error",
+                1.0,
+                session_id=self._session_id,
+                model_type=self._model_type,
+                hardware=self._hardware,
+                error_repr=repr(exc),
+            )
 
     def _post_terminal(self, method_name: str) -> None:
         """Post a single terminal mutation — 'finalize' or 'cancel'.
@@ -477,4 +590,10 @@ class StreamingDecoderWorker:
                 hardware=self._hardware,
                 error_repr=repr(exc),
             )
+        # AC #3 reset point 3 of 3 — cancel. Before the cancel post and
+        # after the drain, so a cancelled session leaves no codec state for
+        # the next generation to inherit. ``_reset_codec_state`` swallows its
+        # own exceptions precisely so this cannot break the P-7 invariant
+        # that cancel always propagates to the registry.
+        self._reset_codec_state()
         self._post_terminal("cancel")

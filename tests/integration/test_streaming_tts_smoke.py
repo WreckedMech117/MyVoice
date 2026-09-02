@@ -626,7 +626,7 @@ class TestTrueStreamDispatchEndToEnd:
         )
 
         # Patch the decode_fn builder so we don't need a real torch tokenizer.
-        def fake_decode_fn_builder(model):
+        def fake_decode_fn_builder(model, *_geometry, **_kwargs):
             def decode(chunk_tokens):
                 return np.array(
                     [t * 0.01 for t in chunk_tokens], dtype=np.float32
@@ -736,7 +736,7 @@ class TestTrueStreamDispatchEndToEnd:
                 streamer.end()
             return run
 
-        def fake_decode_fn_builder(model):
+        def fake_decode_fn_builder(model, *_geometry, **_kwargs):
             def decode(chunk_tokens):
                 return np.array(
                     [t * 0.01 for t in chunk_tokens], dtype=np.float32
@@ -833,7 +833,7 @@ class TestTrueStreamDispatchEndToEnd:
                     pass
             return run
 
-        def fake_decode_fn_builder(model):
+        def fake_decode_fn_builder(model, *_geometry, **_kwargs):
             def decode(chunk_tokens):
                 return np.array(
                     [t * 0.01 for t in chunk_tokens], dtype=np.float32
@@ -931,7 +931,7 @@ class TestTrueStreamDispatchEndToEnd:
                 streamer.end()
             return run
 
-        def fake_decode_fn_builder(model):
+        def fake_decode_fn_builder(model, *_geometry, **_kwargs):
             def decode(chunk_tokens):
                 return np.array(
                     [t * 0.01 for t in chunk_tokens], dtype=np.float32
@@ -1026,7 +1026,7 @@ class TestTrueStreamDispatchEndToEnd:
                     pass
             return run
 
-        def fake_decode_fn_builder(model):
+        def fake_decode_fn_builder(model, *_geometry, **_kwargs):
             def decode(chunk_tokens):
                 return np.array(
                     [t * 0.01 for t in chunk_tokens], dtype=np.float32
@@ -1140,7 +1140,7 @@ class TestTrueStreamDispatchEndToEnd:
                     pass
             return run
 
-        def fake_decode_fn_builder(model):
+        def fake_decode_fn_builder(model, *_geometry, **_kwargs):
             def decode(chunk_tokens):
                 return np.array(
                     [t * 0.01 for t in chunk_tokens], dtype=np.float32
@@ -1267,7 +1267,7 @@ class TestSilentTalkerSurfacesAsFailure:
                 streamer.end()
             return run
 
-        def fake_decode_fn_builder(model):
+        def fake_decode_fn_builder(model, *_geometry, **_kwargs):
             def decode(chunk_tokens):
                 return np.array([0.0] * len(chunk_tokens), dtype=np.float32)
             return decode
@@ -1336,7 +1336,7 @@ class TestSilentTalkerSurfacesAsFailure:
                 streamer.end()
             return run
 
-        def fake_decode_fn_builder(model):
+        def fake_decode_fn_builder(model, *_geometry, **_kwargs):
             def decode(chunk_tokens):
                 return np.array([0.0] * len(chunk_tokens), dtype=np.float32)
             return decode
@@ -1606,7 +1606,7 @@ class TestTrueStreamWireUpEndToEnd:
         # has well-defined geometry.
         SAMPLES_PER_STEP = 100
 
-        def fake_decode_fn_builder(model):
+        def fake_decode_fn_builder(model, *_geometry, **_kwargs):
             def decode(chunk_tensor):
                 # chunk_tensor: torch.Tensor of shape (N_steps, num_code_groups)
                 if isinstance(chunk_tensor, torch.Tensor):
@@ -1715,7 +1715,7 @@ class TestTrueStreamWireUpEndToEnd:
         original_talker_generate = fake_model.model.talker.generate
         original_talker_forward = fake_model.model.talker.forward
 
-        def fake_decode_fn_builder(model):
+        def fake_decode_fn_builder(model, *_geometry, **_kwargs):
             def decode(chunk_tensor):
                 n_steps = (
                     chunk_tensor.shape[0]
@@ -1891,7 +1891,7 @@ class TestTrueStreamWireUpEndToEnd:
             return_value=fake_model
         )
 
-        def fake_decode_fn_builder(model):
+        def fake_decode_fn_builder(model, *_geometry, **_kwargs):
             def decode(chunk_tensor):
                 n_steps = (
                     chunk_tensor.shape[0]
@@ -2011,7 +2011,7 @@ class TestTtfaTalkerBoundaryInstrumentation:
 
         SAMPLES_PER_STEP = 100
 
-        def fake_decode_fn_builder(model):
+        def fake_decode_fn_builder(model, *_geometry, **_kwargs):
             def decode(chunk_tensor):
                 if isinstance(chunk_tensor, torch.Tensor):
                     n_steps = chunk_tensor.shape[0]

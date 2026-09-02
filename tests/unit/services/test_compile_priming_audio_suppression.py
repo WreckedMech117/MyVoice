@@ -266,7 +266,7 @@ def _fake_talker_factory(token_count: int):
     return builder
 
 
-def _fake_decode_fn(model):
+def _fake_decode_fn(model, *_geometry, **_kwargs):
     return lambda chunk: np.array([t * 0.01 for t in chunk], dtype=np.float32)
 
 

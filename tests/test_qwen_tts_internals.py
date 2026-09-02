@@ -289,3 +289,308 @@ def test_qwen3_tts_wrapper_calls_self_talker_generate_in_generate():
         "_build_true_stream_talker (likely by switching to literal Path A "
         "preprocessing replication) before bumping the qwen-tts pin."
     )
+
+
+# ============================================================================
+# Story 20.5 extension — pin the 12Hz V2 decoder module chain
+#
+# ``services/tts_streaming/codec_state_cache.py`` does something no other part
+# of MyVoice does: it re-walks ``Qwen3TTSTokenizerV2Decoder.forward``'s module
+# traversal itself, calling the loaded submodules' inner ``nn.Conv1d`` /
+# ``nn.ConvTranspose1d`` directly so it can thread per-session codec state
+# through them. That buys the whole of Story 20.5 (edge loss 555 -> 0, chunk-
+# head NRMSE ~130 % -> 0.8 %, lag jitter +/-1200 -> 0 samples) without
+# vendoring a single upstream file.
+#
+# The price is that the traversal is a RESTATEMENT. If a pin bump reorders
+# ``decoder`` / ``upsample``, renames an attribute, or inserts a new
+# time-mixing module, the wrapper would walk a graph that no longer matches
+# and produce subtly wrong audio at every chunk boundary — a failure that is
+# inaudible as a bug and audible only as "the codec got worse". Two things
+# stop that. ``codec_state_cache.probe_decoder`` refuses at runtime, falling
+# back to the stateless decode; and these tests fail in CI first, which is the
+# outcome we actually want.
+#
+# Note the division of labour: ``probe_decoder`` checks the loaded INSTANCE
+# (strides, pads, layer types) and is exercised by
+# ``tests/unit/services/tts_streaming/test_codec_state_cache.py`` against a
+# real tiny decoder. The rows below pin the SYMBOLS and the source-level
+# invariants, which is what a trip-wire can do without loading a model.
+# ============================================================================
+
+
+def _v2_module():
+    from qwen_tts.core.tokenizer_12hz import (
+        modeling_qwen3_tts_tokenizer_v2 as v2,
+    )
+    return v2
+
+
+def test_qwen3_tts_tokenizer_v2_decoder_module_classes_are_importable():
+    """Story 20.5 — pin every class ``codec_state_cache`` switches on.
+
+    ``_run_module`` dispatches on these five types by isinstance. A rename
+    would send a module down the "pointwise in time, safe to call as-is"
+    fallthrough, which for a time-mixing module means silently decoding it
+    from a cold state at every chunk boundary. ``probe_decoder`` catches that
+    at runtime by refusing unknown leaves; this test catches it in CI.
+    """
+    v2 = _v2_module()
+    expected = (
+        "Qwen3TTSTokenizerV2Decoder",
+        "Qwen3TTSTokenizerV2CausalConvNet",
+        "Qwen3TTSTokenizerV2CausalTransConvNet",
+        "Qwen3TTSTokenizerV2ConvNeXtBlock",
+        "Qwen3TTSTokenizerV2DecoderDecoderBlock",
+        "Qwen3TTSTokenizerV2DecoderDecoderResidualUnit",
+        "Qwen3TTSTokenizerV2DecoderTransformerModel",
+        "SnakeBeta",
+    )
+    missing = [name for name in expected if not isinstance(getattr(v2, name, None), type)]
+    assert not missing, (
+        f"qwen-tts renamed or removed {missing}. "
+        f"src/myvoice/services/tts_streaming/codec_state_cache.py dispatches "
+        f"its streaming traversal on these classes by isinstance — update "
+        f"_UpstreamTypes and re-run the Story 20.5 exactness suite "
+        f"(tests/unit/services/tts_streaming/test_codec_state_cache.py) "
+        f"before bumping the qwen-tts pin."
+    )
+
+
+def test_qwen3_tts_v2_decoder_forward_traversal_is_what_the_wrapper_mirrors():
+    """Pin the traversal ``codec_state_cache.stream_forward`` restates.
+
+    Source-level and therefore brittle (it asserts on string content), which
+    is the point: the alternative is discovering the divergence as a chunk-
+    boundary artefact in an audition. The five stages below are exactly the
+    five ``stream_forward`` reproduces, in this order.
+    """
+    import inspect
+
+    v2 = _v2_module()
+    source = inspect.getsource(v2.Qwen3TTSTokenizerV2Decoder.forward)
+    for fragment in (
+        "self.quantizer.decode(codes)",
+        "self.pre_conv(hidden).transpose(1, 2)",
+        "self.pre_transformer(inputs_embeds=hidden)",
+        "hidden.permute(0, 2, 1)",
+        "for blocks in self.upsample",
+        "for block in self.decoder",
+        "clamp(min=-1, max=1)",
+    ):
+        assert fragment in source, (
+            f"Qwen3TTSTokenizerV2Decoder.forward no longer contains "
+            f"{fragment!r}. codec_state_cache.stream_forward is a restatement "
+            f"of this method; the two have diverged and the streamed audio "
+            f"will be wrong at every chunk boundary. Re-derive stream_forward "
+            f"against the new source before bumping the pin."
+        )
+
+
+def test_causal_conv_still_left_pads_with_zeros():
+    """Pin the premise of the entire story.
+
+    Story 20.5 exists because this line puts ZEROS where the previous chunk's
+    real audio should be. If upstream ever fixes it — or changes the padding
+    formula — the wrapper's left-context substitution stops being the right
+    correction and the story needs re-deriving, not just re-testing.
+    """
+    import inspect
+
+    v2 = _v2_module()
+    source = inspect.getsource(v2.Qwen3TTSTokenizerV2CausalConvNet.forward)
+    assert 'mode="constant", value=0' in source and "F.pad(hidden_state" in source, (
+        "Qwen3TTSTokenizerV2CausalConvNet.forward no longer zero-left-pads. "
+        "That padding is the defect Story 20.5 removes; if upstream changed "
+        "it, re-derive codec_state_cache._stream_conv from the new source."
+    )
+    init_source = inspect.getsource(v2.Qwen3TTSTokenizerV2CausalConvNet.__init__)
+    assert "self.padding = self.kernel_size - self.stride" in init_source, (
+        "the causal conv's padding width changed. codec_state_cache carries "
+        "exactly `module.padding` samples of left context; that width is no "
+        "longer derived the way _stream_conv assumes."
+    )
+
+
+def test_causal_trans_conv_still_discards_left_and_right_pad():
+    """Pin the mechanism that owns 100 % of the 555-sample edge loss.
+
+    Phase 1's ablation attributed the whole edge loss to this discard: every
+    arm carrying transposed-conv state reached +0 samples, every arm without
+    it stayed at -555 per seam. ``_stream_tconv`` overlap-adds the discarded
+    right tail into the next chunk's head — and subtracts one copy of
+    ``conv.bias`` from the overlap, because ConvTranspose1d adds its bias to
+    every output position of each partial convolution.
+    """
+    import inspect
+
+    v2 = _v2_module()
+    source = inspect.getsource(v2.Qwen3TTSTokenizerV2CausalTransConvNet.forward)
+    assert "self.left_pad : hidden_state.shape[-1] - self.right_pad" in source, (
+        "Qwen3TTSTokenizerV2CausalTransConvNet.forward no longer trims "
+        "[left_pad : -right_pad]. That trim IS the 555-sample edge loss "
+        "codec_state_cache._stream_tconv recovers by overlap-add; re-derive "
+        "it against the new source."
+    )
+    init_source = inspect.getsource(
+        v2.Qwen3TTSTokenizerV2CausalTransConvNet.__init__
+    )
+    assert "nn.ConvTranspose1d" in init_source, (
+        "the transposed conv is no longer an nn.ConvTranspose1d. The bias "
+        "double-count correction in _stream_tconv is specific to "
+        "ConvTranspose1d's bias semantics (it adds bias to every output "
+        "position of each partial convolution) and must be re-derived."
+    )
+
+
+def test_v2_decoder_submodule_attribute_names_are_stable():
+    """``stream_forward`` and ``probe_decoder`` dereference these by name."""
+    import inspect
+
+    v2 = _v2_module()
+    init_source = inspect.getsource(v2.Qwen3TTSTokenizerV2Decoder.__init__)
+    for attr in ("self.quantizer", "self.pre_conv", "self.pre_transformer",
+                 "self.upsample", "self.decoder"):
+        assert f"{attr} =" in init_source, (
+            f"Qwen3TTSTokenizerV2Decoder.__init__ no longer assigns {attr}. "
+            f"codec_state_cache walks the decoder through these five "
+            f"attributes; probe_decoder will refuse and MyVoice will silently "
+            f"drop back to the pre-20.5 stateless decode (audible as the "
+            f"return of the chunk-boundary artefact Story 20.4 chased)."
+        )
+
+    for cls_name, attrs in (
+        ("Qwen3TTSTokenizerV2ConvNeXtBlock",
+         ("self.dwconv", "self.norm", "self.pwconv1", "self.act",
+          "self.pwconv2", "self.gamma")),
+        ("Qwen3TTSTokenizerV2DecoderDecoderResidualUnit",
+         ("self.act1", "self.conv1", "self.act2", "self.conv2")),
+        ("Qwen3TTSTokenizerV2DecoderDecoderBlock", ("self.block",)),
+    ):
+        source = inspect.getsource(getattr(v2, cls_name).__init__)
+        for attr in attrs:
+            assert f"{attr} =" in source, (
+                f"{cls_name}.__init__ no longer assigns {attr}; "
+                f"codec_state_cache._run_module reproduces this module's "
+                f"forward body and dereferences it by name."
+            )
+
+
+def test_v2_decoder_transformer_layers_are_all_sliding_attention():
+    """The KV cache Story 20.5 carries is bounded ONLY because every layer is
+    sliding. A full-attention layer would make it grow without bound over a
+    long utterance, voiding AC #2's <= 2.52 MiB per-session cost claim.
+
+    ``probe_decoder`` refuses such a config at runtime; this fails first.
+    """
+    from qwen_tts.core.tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 import (
+        Qwen3TTSTokenizerV2DecoderConfig,
+    )
+
+    config = Qwen3TTSTokenizerV2DecoderConfig()
+    assert config.sliding_window == 72
+    assert set(config.layer_types) == {"sliding_attention"}, (
+        "Qwen3TTSTokenizerV2DecoderConfig.layer_types is no longer all "
+        "sliding_attention. codec_state_cache's carried KV cache is bounded "
+        "by sliding_window; a full-attention layer makes it unbounded."
+    )
+
+
+def test_v2_decoder_upsample_geometry_still_yields_1920_and_555():
+    """The two constants ``streaming_decoder`` pins, re-derived from the
+    config rather than trusted.
+
+    ``codec_state_cache.build_stateful_decode_fn`` refuses to engage if the
+    loaded decoder's geometry disagrees with these, so a change here silently
+    disables Story 20.5 in production. Fail in CI instead.
+    """
+    import math
+
+    from qwen_tts.core.tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 import (
+        Qwen3TTSTokenizerV2DecoderConfig,
+    )
+    from myvoice.services.tts_streaming.streaming_decoder import (
+        _CODEC_EDGE_LOSS_SAMPLES,
+        _CODEC_SAMPLES_PER_FRAME,
+    )
+
+    config = Qwen3TTSTokenizerV2DecoderConfig()
+    rates = tuple(config.upsample_rates)
+    ratios = tuple(config.upsampling_ratios)
+
+    assert math.prod(rates + ratios) == _CODEC_SAMPLES_PER_FRAME
+
+    # Each kernel==2*stride transposed conv discards `stride` samples at its
+    # own resolution; everything downstream multiplies that up.
+    edge = 0
+    for i, stride in enumerate(rates):
+        edge += stride * math.prod(rates[i + 1:])
+    assert edge == _CODEC_EDGE_LOSS_SAMPLES, (
+        f"the decoder's upsample_rates now imply a {edge}-sample edge loss, "
+        f"not {_CODEC_EDGE_LOSS_SAMPLES}. Both streaming_decoder's splice "
+        f"arithmetic and codec_state_cache's length identity depend on this."
+    )
+
+
+def test_v2_model_decode_still_routes_to_chunked_decode_then_forward():
+    """Pin the path the STATELESS fallback takes.
+
+    ``_build_true_stream_decode_fn``'s fallback adapter calls
+    ``speech_tokenizer.decode([...])`` -> ``Qwen3TTSTokenizerV2Model.decode``
+    -> ``decoder.chunked_decode`` -> plain ``decoder.forward``. Phase 1
+    established that this path never reaches ``forward_optimized``, which is
+    why carrying state trades away no CUDA-graph speedup — Story 18.4's win
+    comes from the talker and code-predictor compiles, not this one.
+    """
+    import inspect
+
+    v2 = _v2_module()
+    decode_source = inspect.getsource(v2.Qwen3TTSTokenizerV2Model.decode)
+    assert "self.decoder.chunked_decode(" in decode_source, (
+        "Qwen3TTSTokenizerV2Model.decode no longer routes through "
+        "chunked_decode. The stateless fallback adapter's measured output "
+        "geometry (1920*N - 555) may no longer hold."
+    )
+    chunked_source = inspect.getsource(v2.Qwen3TTSTokenizerV2Decoder.chunked_decode)
+    assert "forward_optimized" not in chunked_source, (
+        "chunked_decode now reaches forward_optimized. Story 20.5 Phase 1's "
+        "finding that the compiled decoder graph is NOT on MyVoice's decode "
+        "path no longer holds; re-audit the CUDA-graph interaction before "
+        "trusting the AC #2 'no trade' conclusion."
+    )
+
+
+def test_transformers_dynamic_cache_snapshot_contract_is_intact():
+    """Story 20.5 — pin the KV-cache surface ``CodecStreamState`` relies on.
+
+    The snapshot/restore that holds the lookahead frames out of committed
+    state is free ONLY because ``DynamicSlidingWindowLayer.update`` rebinds
+    ``self.keys`` / ``self.values`` to new tensors rather than writing into
+    the old ones. If a future transformers mutates in place, holding the old
+    references stops being a valid snapshot and the state would silently
+    advance past the splice — every chunk after the first would then skip
+    ``lookahead`` frames of audio.
+    """
+    import inspect
+
+    from transformers.cache_utils import DynamicCache, DynamicSlidingWindowLayer
+
+    assert "config" in inspect.signature(DynamicCache.__init__).parameters, (
+        "DynamicCache no longer accepts a `config` kwarg; "
+        "codec_state_cache._stream_transformer builds the cache that way so "
+        "the sliding-window layer types come from the model's own config."
+    )
+
+    update_source = inspect.getsource(DynamicSlidingWindowLayer.update)
+    assert "self.keys = full_key_states[" in update_source, (
+        "DynamicSlidingWindowLayer.update no longer REBINDS self.keys. "
+        "CodecStreamState.snapshot() holds the previous tensors by reference "
+        "and assumes they are never mutated in place; if that changed, the "
+        "snapshot must start cloning or the lookahead frames will be "
+        "committed to state and every seam will skip audio."
+    )
+    for attr in ("keys", "values", "cumulative_length"):
+        assert attr in update_source or hasattr(DynamicSlidingWindowLayer, attr), (
+            f"DynamicSlidingWindowLayer no longer exposes {attr!r}; "
+            f"CodecStreamState.snapshot/restore reads it by name."
+        )

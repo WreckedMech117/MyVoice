@@ -4343,7 +4343,10 @@ class QwenTTSService(BaseService):
         return chunks
 
     def _build_true_stream_decode_fn(
-        self, model: Any
+        self,
+        model: Any,
+        chunk_size: Optional[int] = None,
+        lookahead: Optional[int] = None,
     ) -> Callable[[Any], np.ndarray]:
         """Story 16.8 — adapter wrapping the qwen-tts speech tokenizer's decode.
 
@@ -4371,10 +4374,56 @@ class QwenTTSService(BaseService):
 
         The trip-wire test at ``tests/test_qwen_tts_internals.py`` covers
         the ``Qwen3TTSTokenizerV1Model.decode`` symbol (Story 16.4 added
-        it; Story 16.8 left it unchanged). 12Hz models use V2 not V1, so
-        the 12Hz path is not currently pinned — opportunity for a future
-        trip-wire extension if 12Hz becomes critical.
+        it; Story 16.8 left it unchanged). Story 20.5 extends it to the
+        12Hz V2 decoder module chain, which the state-cached path below
+        walks directly.
+
+        Story 20.5 Phase 2 (AC #3) — codec state caching
+        ------------------------------------------------
+        The adapter below decodes each chunk from a **cold codec state**:
+        ``Qwen3TTSTokenizerV2CausalConvNet.forward`` left-pads with zeros
+        where the previous chunk's real audio should be. Story 20.4
+        measured the consequence (~35 % NRMSE at each chunk head, ±35
+        samples of lag jitter, a deterministic 555-sample edge loss) and
+        masked it with a 1,024-sample seam blend. Story 20.5 Phase 1
+        proved on a bench that carrying the codec's real state removes the
+        cause outright — edge loss to zero, head NRMSE to 0.6-0.8 %, lag
+        jitter to 0 on every seam, at ≤ 2.52 MiB per session and no decode-
+        time cost.
+
+        So this builder now *prefers* the stateful decoder in
+        ``services/tts_streaming/codec_state_cache.py`` and keeps the
+        cold-state adapter below as the fallback. The preference is
+        conditional on three build-time gates, all of which must pass:
+
+          1. the operator kill switch ``MYVOICE_CODEC_STATE_CACHE`` is not
+             set to a disabling value (this is also how the Phase 3
+             audition generates its reference arm from one build);
+          2. ``probe_decoder`` recognises every module in the loaded
+             decoder graph and derives 1920 samples/frame with a
+             555-sample edge loss, matching the two measured constants in
+             ``streaming_decoder.py``;
+          3. a one-shot numerical self-test on the *loaded weights* agrees
+             with ``decoder.forward`` (memoised on the decoder object, so
+             in the shipping configuration the compile-priming generation
+             at startup pays for it and no user generation does).
+
+        Any failure logs the reason and returns the stateless adapter, so
+        the worst case is today's audio, never wrong audio. That asymmetry
+        is deliberate: this wrapper re-walks upstream internals, and a
+        silent desync there would present as "the codec got worse" rather
+        than as a bug.
         """
+        from myvoice.services.tts_streaming import codec_state_cache
+        from myvoice.services.tts_streaming.codec_token_streamer import (
+            DEFAULT_CHUNK_SIZE,
+            DEFAULT_LOOKAHEAD,
+        )
+
+        if chunk_size is None:
+            chunk_size = DEFAULT_CHUNK_SIZE
+        if lookahead is None:
+            lookahead = DEFAULT_LOOKAHEAD
         def _decode(chunk: Any) -> np.ndarray:
             import torch as _torch  # lazy: keeps test envs without
             # CUDA-bound torch DLLs viable until decode actually fires
@@ -4413,7 +4462,48 @@ class QwenTTSService(BaseService):
             if hasattr(audio, "detach"):
                 audio = audio.detach().cpu().numpy()
             return np.asarray(audio, dtype=np.float32).flatten()
-        return _decode
+
+        # ---- Story 20.5: prefer the state-cached decoder ---------------- #
+        try:
+            decoder = model.model.speech_tokenizer.model.decoder
+            device = getattr(model.model.speech_tokenizer, "device", None)
+        except Exception as exc:  # noqa: BLE001 — never break dispatch
+            self.logger.info(
+                "[QwenTTS] codec state cache unavailable "
+                "(decoder not reachable: %r) — using stateless decode",
+                exc,
+            )
+            return _decode
+
+        try:
+            stateful, reason = codec_state_cache.build_stateful_decode_fn(
+                decoder,
+                chunk_size=chunk_size,
+                lookahead=lookahead,
+                device=device,
+                log=self.logger,
+            )
+        except Exception:  # noqa: BLE001 — never break dispatch
+            self.logger.exception(
+                "[QwenTTS] codec state cache build raised — "
+                "using stateless decode"
+            )
+            return _decode
+
+        if stateful is None:
+            self.logger.info(
+                "[QwenTTS] codec state cache off (%s) — "
+                "using the pre-20.5 stateless decode",
+                reason,
+            )
+            return _decode
+
+        self.logger.info(
+            "[QwenTTS] codec state cache %s (chunk_size=%d lookahead=%d) — "
+            "chunk boundaries carry real codec state",
+            reason, chunk_size, lookahead,
+        )
+        return stateful
 
     def _build_true_stream_talker(
         self,
@@ -5059,7 +5149,16 @@ class QwenTTSService(BaseService):
                 # Build streamer + worker pair (Story 16.3 + 16.4).
                 streamer = CodecTokenStreamer()
                 model = self._model_registry.get_loaded_model()
-                decode_fn = self._build_true_stream_decode_fn(model)
+                # Story 20.5 — the decode_fn's codec-state commit point is
+                # the streamer's splice, so it is built FROM the streamer's
+                # geometry rather than from the module defaults. Passing the
+                # live values keeps a future retune (AC #5's separate story)
+                # from silently desyncing the two.
+                decode_fn = self._build_true_stream_decode_fn(
+                    model,
+                    chunk_size=streamer.chunk_size,
+                    lookahead=streamer.lookahead,
+                )
 
                 hardware_label = (
                     "gpu"

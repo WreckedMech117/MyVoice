@@ -142,10 +142,18 @@ def _fake_talker_factory(token_count: int):
     return builder
 
 
-def _fake_decode_fn(model):
+def _fake_decode_fn(model, *_geometry, **_kwargs):
     """Deterministic decode: token id → ``token_id * 0.01`` PCM sample.
     Matches the integration-suite fixture so chunk → audio mapping is
     predictable across both suites.
+
+    ``*_geometry, **_kwargs`` absorbs the chunk_size / lookahead the Story
+    20.5 dispatch now threads into the real builder (the state-cached decoder
+    commits codec state at the streamer's splice, so it must be built FROM
+    the streamer's geometry). This fake returns a stateless decode_fn with no
+    ``carries_codec_state`` attribute, so the worker keeps the pre-20.5
+    geometry model — which is the point: these tests are about callback and
+    metric wiring, not about the codec.
     """
     return lambda chunk: np.array([t * 0.01 for t in chunk], dtype=np.float32)
 
