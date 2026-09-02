@@ -44,7 +44,11 @@ import torch  # noqa: F401 — conftest already enforced DLL ordering
 
 from myvoice.models.app_settings import AppSettings
 from myvoice.services.qwen_tts_service import QwenTTSService
-from myvoice.services.tts_streaming import codec_token_streamer, compile_cache
+from myvoice.services.tts_streaming import (
+    codec_token_streamer,
+    compile_cache,
+    resolve_streamer_geometry,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -52,10 +56,14 @@ SRC = REPO_ROOT / "src" / "myvoice"
 
 
 def _live_window() -> int:
-    return (
-        codec_token_streamer.DEFAULT_CHUNK_SIZE
-        + codec_token_streamer.DEFAULT_LOOKAHEAD
-    )
+    """The window the compile path must describe, derived the one legal way.
+
+    Story 20.6 made the lookahead half conditional (retired to 0 whenever the
+    state-carrying decode path is live), so this reads the single derivation
+    point rather than summing the raw constants. Summing them here would
+    quietly re-pin this whole file at 30 and make every row below vacuous.
+    """
+    return sum(resolve_streamer_geometry())
 
 
 # --------------------------------------------------------------------------- #
@@ -152,15 +160,54 @@ async def test_warmup_cache_key_moves_with_a_streamer_retune(
     Before Story 20.4 the key carried a hard-coded ``decode_window_frames=30``.
     With that literal back, this row fails: the key would stay pinned at the
     30-frame window while the engage path (and therefore the inductor cache
-    directory that priming actually warms) moved to 20.
+    directory that priming actually warms) moved.
+
+    Story 20.6: on the shipping (state-carrying) path the lookahead is
+    retired, so the window follows ``chunk_size`` alone — 17, not 20.
     """
     monkeypatch.setattr(codec_token_streamer, "DEFAULT_CHUNK_SIZE", 17)
     monkeypatch.setattr(codec_token_streamer, "DEFAULT_LOOKAHEAD", 3)
     key = await _capture_warmup_key(monkeypatch)
-    assert key == _expected_key(20)
+    assert key == _expected_key(17)
     assert key != _expected_key(30), (
         "warmup priming key is still pinned to the pre-20.4 30-frame window"
     )
+
+
+@pytest.mark.asyncio
+async def test_warmup_cache_key_follows_the_lookahead_retirement(
+    monkeypatch, _restore_warm_priming_env
+):
+    """Story 20.6 AC #1 — the committed 30 → 25 move, at the priming site.
+
+    The site Story 20.3's warm-path priming depends on: if this key kept
+    summing the raw module constants it would prime a 30-frame directory
+    while the engage path moved to 25, and the ~4 s first-generation win
+    would silently stop working — the same failure Story 20.4 §5.4 closed,
+    re-opened from the Story 20.6 side.
+    """
+    key = await _capture_warmup_key(monkeypatch)
+    assert key == _expected_key(codec_token_streamer.DEFAULT_CHUNK_SIZE)
+    assert key == _expected_key(25)
+    assert key != _expected_key(30)
+
+
+@pytest.mark.asyncio
+async def test_warmup_cache_key_reverts_to_30_under_the_kill_switch(
+    monkeypatch, _restore_warm_priming_env
+):
+    """Story 20.6 AC #2 — the retirement is conditional at this site too.
+
+    With ``MYVOICE_CODEC_STATE_CACHE`` set to a disabling value, dispatch
+    falls back to the stateless adapter and the streamer keeps its 5-frame
+    lookahead, so the compile geometry the priming key describes has to be
+    the 30-frame one again. A global constant change could not produce this
+    row: it would read 25 both ways.
+    """
+    monkeypatch.setenv("MYVOICE_CODEC_STATE_CACHE", "0")
+    key = await _capture_warmup_key(monkeypatch)
+    assert key == _expected_key(30)
+    assert key != _expected_key(25)
 
 
 @pytest.mark.asyncio
@@ -285,20 +332,70 @@ def test_model_registry_threads_the_streamer_geometry_into_the_compile_call():
         f"found {len(calls)}"
     )
     kwargs = {k.arg: k.value for k in calls[0].keywords}
-    for arg, const in (
-        ("streamer_chunk_size", "DEFAULT_CHUNK_SIZE"),
-        ("streamer_lookahead", "DEFAULT_LOOKAHEAD"),
-    ):
+    # Story 20.6: the two values now come from ``resolve_streamer_geometry()``
+    # — the single place the conditional-lookahead rule lives — rather than
+    # from ``codec_token_streamer.DEFAULT_*`` directly. The trap this row
+    # guards is unchanged: a freshly-typed literal at the one call site Story
+    # 20.1 §5.4 named. What changed is that re-stating the raw constants is
+    # now ALSO wrong, because it would pin the window at 30 while the
+    # shipping streamer emits 25.
+    for arg in ("streamer_chunk_size", "streamer_lookahead"):
         assert arg in kwargs, (
             f"model_registry must pass {arg} — the Story 20.1 §5.4 trap was "
             f"exactly that this call site passed neither"
         )
-        value = kwargs[arg]
-        assert isinstance(value, ast.Attribute) and value.attr == const, (
-            f"{arg} must be read from codec_token_streamer.{const}, not "
-            f"restated as a literal"
+        assert isinstance(kwargs[arg], ast.Name), (
+            f"{arg} must be a name bound from resolve_streamer_geometry(), "
+            f"not a literal or a re-stated module constant"
         )
-        assert (
-            isinstance(value.value, ast.Name)
-            and value.value.id == "codec_token_streamer"
-        )
+    unpacks = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "resolve_streamer_geometry"
+    ]
+    assert len(unpacks) == 1, (
+        "model_registry must derive the compile geometry from exactly one "
+        "resolve_streamer_geometry() call"
+    )
+    bound = {elt.id for elt in unpacks[0].targets[0].elts}
+    assert {
+        kwargs["streamer_chunk_size"].id,
+        kwargs["streamer_lookahead"].id,
+    } == bound, (
+        "the values passed to engage_compile_optimizations are not the ones "
+        "resolve_streamer_geometry() returned"
+    )
+
+
+def test_no_source_file_re_derives_the_compile_window_from_raw_constants():
+    """Story 20.6 AC #1/#2, static arm — one derivation point, not four.
+
+    ``DEFAULT_CHUNK_SIZE + DEFAULT_LOOKAHEAD`` is the *pre-20.6* window. Any
+    site that still computes it that way describes a 30-frame decode the
+    shipping streamer no longer performs, and — because the sum is
+    unconditional — would keep describing it with the kill switch set either
+    way. That is the D-25 drift re-opened from the Story 20.6 side, and it is
+    invisible to every runtime row above that happens to run under the same
+    environment as the site it is checking.
+    """
+    offenders = []
+    for path in SRC.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.BinOp) or not isinstance(node.op, ast.Add):
+                continue
+            names = {
+                side.attr for side in (node.left, node.right)
+                if isinstance(side, ast.Attribute)
+            } | {
+                side.id for side in (node.left, node.right)
+                if isinstance(side, ast.Name)
+            }
+            if {"DEFAULT_CHUNK_SIZE", "DEFAULT_LOOKAHEAD"} <= names:
+                offenders.append(str(path.relative_to(REPO_ROOT)))
+    assert not offenders, (
+        "the compile window must be derived from resolve_streamer_geometry(), "
+        f"which applies the Story 20.6 retirement. Offending sites: {offenders}"
+    )

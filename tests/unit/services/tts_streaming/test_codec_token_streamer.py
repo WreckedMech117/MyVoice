@@ -50,7 +50,8 @@ def test_package_all_lists_expected_symbols_in_order():
     # one, then Story 18.2's two, then Story 18.3's one, then Story 18.4's
     # two (engage_compile_optimizations + compile_cache module), then the
     # compile-disengage-post-generation-reload spec's two
-    # (apply_reload_compile_fix + collect_compile_gate_diagnostic) —
+    # (apply_reload_compile_fix + collect_compile_gate_diagnostic), then
+    # Story 20.6's one (resolve_streamer_geometry) —
     # declaration order matches each story's append-only precedent.
     assert pkg.__all__ == [
         "StreamingMode",
@@ -66,6 +67,7 @@ def test_package_all_lists_expected_symbols_in_order():
         "resolve_tts_precision",
         "engage_compile_optimizations",
         "compile_cache",
+        "resolve_streamer_geometry",
     ]
 
 

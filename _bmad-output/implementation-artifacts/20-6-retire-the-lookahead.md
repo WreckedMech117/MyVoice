@@ -1,6 +1,6 @@
 # Story 20.6: Retire the Lookahead and the Post-Decode Trim (Phase ⊥-Polish-3)
 
-Status: ready-for-dev
+Status: awaiting-operator (AC #3 GUI capture, AC #4 audition)
 
 <!-- Phase tag: Phase ⊥-Polish-3. Sixth story of Epic 20. Follow-up F1 from Story 20.5. -->
 <!-- Risk: MEDIUM. Small change, but the machinery being retired is the ONLY seam handling the stateless fallback path has — see AC #2, which is the story's load-bearing constraint. -->
@@ -120,13 +120,17 @@ lookahead
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Conditional retirement** (AC: #1, #2) — producer declares, consumer acts; stateless path keeps the pre-20.6 geometry exactly; source-derived invariant against the staleness trap.
-- [ ] **Task 2 — Single-pass decode** (AC: #1) — collapse the snapshot/restore; confirm the exact bars still hold.
-- [ ] **Task 3 — Geometry propagation** (AC: #1) — verify all three sites follow 30 → 25; confirm priming warms the new key.
-- [ ] **Task 4 — Bench measurement** (AC: #3, partial) — per-chunk decode time and producer ratio, headless.
-- [ ] **Task 5 — Audition fixture + prediction** (AC: #4).
-- [ ] **Task 6 — Regression sweep** (AC: #5).
-- [ ] **Task 7 — Operator hand-off** — GUI capture + audition as ONE consolidated request, not piecemeal.
+- [x] **Task 1 — Conditional retirement** (AC: #1, #2) — producer declares, consumer acts; stateless path keeps the pre-20.6 geometry exactly; source-derived invariant against the staleness trap.
+- [x] **Task 2 — Single-pass decode** (AC: #1) — collapse the snapshot/restore; confirm the exact bars still hold.
+- [x] **Task 3 — Geometry propagation** (AC: #1) — verify all three sites follow 30 → 25; confirm priming warms the new key.
+- [x] **Task 4 — Bench measurement** (AC: #3, partial) — per-chunk decode time and producer ratio, headless.
+- [x] **Task 5 — Audition fixture + prediction** (AC: #4).
+- [x] **Task 6 — Regression sweep** (AC: #5).
+- [x] **Task 7 — Operator hand-off** — GUI capture + audition as ONE consolidated request, not piecemeal.
+
+**Status: awaiting operator.** AC #1, #2, #5 are closed. AC #3's headless half
+and AC #4's fixture + prediction are closed; their remaining halves need a
+human — see the evidence file §7.
 
 ## Dev Notes
 
@@ -162,8 +166,93 @@ lookahead
 
 ## Dev Agent Record
 
-_(to be filled by dev agent)_
+Full evidence: `_bmad-output/implementation-artifacts/20-6-retire-the-lookahead-evidence.md`.
+
+### The shape (AC #2, which drove everything)
+
+`DEFAULT_LOOKAHEAD` stays **5** and `DEFAULT_CHUNK_SIZE` stays **25**. The
+retirement is resolved per stream from the decode_fn's own
+`carries_codec_state` declaration — the producer-declares / consumer-acts shape
+Story 20.5 used for the crossfade, now with two consumers of one declaration:
+
+```
+decode_fn.carries_codec_state
+  ├─ self._progressive_stream_continuous     # the consumer crossfade (20.5)
+  └─ streamer.apply_codec_state_geometry()   # the lookahead          (20.6)
+```
+
+`codec_token_streamer.effective_lookahead()` is the rule;
+`CodecTokenStreamer.apply_codec_state_geometry()` is the single reversible
+entry point that applies it (it sets `lookahead` and `_chunk_with_lookahead`
+together, from the constructed value, and refuses to run mid-generation).
+
+**The trim and the seam blend are removed by construction.** `streaming_decoder.py`
+has no behavioural change: its `is_full_window` predicate already requires
+`lookahead > 0`, so with the lookahead retired the trim arm is never entered
+(the worker posts the whole decode) and `_pending_overlap` is never populated
+(there is no retained tail to blend). Said plainly here as the story asked,
+rather than presented as a bundled second change.
+
+**The two-pass decode collapses without modifying `codec_state_cache.py`.**
+The dispatch builds `StatefulCodecDecoder` with `lookahead = 0`, so
+`window_frames == commit_frames`, so its own commit rule takes the
+`commit = n_frames` branch and never snapshots. Counted, not inferred: 3
+snapshots over 3 chunks at the old geometry, **0** at the retired one.
+
+### AC #1's second clause — the answer is "no, and that is the finding"
+
+The Story 20.4 threading carries a change *to the constants* automatically. It
+cannot carry this one, because AC #2 forbids changing them. So the derivation
+itself became conditional in one place — `torch_runtime.resolve_streamer_geometry()`
+— and all three sites now read it. Verified both ways: `decode_window_frames`
+is **25** normally and **30** under the kill switch, at all three sites, with
+the warm-path priming key equal to the engage-path key in both regimes; and a
+static invariant now forbids any source file from summing the raw constants.
+
+### Measured (AC #3, headless half) — `20-6-lookahead-bench.json`
+
+RTX 5090, bf16, Story 20.5's own captured tokens (reused, not redrawn):
+
+| | l-020 | l-021 | m-020 |
+|---|---|---|---|
+| per-chunk, lookahead 5 | 23.39 ms | 23.29 ms | 17.15 ms |
+| per-chunk, retired | 11.82 ms | 11.85 ms | 11.45 ms |
+| **saving** | **+11.57** | **+11.44** | **+5.70** |
+
+Per-chunk decode time roughly **halves**, over-recovering Story 20.5's
++7–10 ms tax because the second pass also decoded 5 extra frames. Posted
+sample counts identical to a whole-sequence decode in every case. First-emit
+threshold 30 → 25 frames.
+
+### AC #4 — fixture generated, prediction recorded
+
+`20-6-perceptual-fixtures/` (16 trials), driven by
+`14_Story_20.6_AC4_Audition.bat`. Reference = what ships today; candidate =
+this change; one talker run per pair (**token reuse verified as still
+available** — the chunking is downstream of generation, so the fixture recovers
+the flat frame sequence and re-slices it per arm). Zero-seam control
+`ctl-020` is byte-identical, confirmed on both takes. Offline: identical length
+16/16, worst level delta 0.005 dB, median waveform difference −70 dB. P1–P5
+recorded in the evidence §6 and in the helper's docstring, including P4 — the
+one that would embarrass the diagnosis and force a revert.
+
+### Regressions (AC #5)
+
+Full suite run twice on this machine — `main` state vs this branch — with the
+story's `src/`/`tests/`/`tools/` changes stashed for the first: **2,852 passed
+/ 49 failed / 4 errors** before, **2,883 passed / 49 failed / 4 errors** after.
+The pre-existing failure set is unchanged in count *and identity* (sorted diff
+of the two FAILED lists is empty both ways); none of the 49 touch streaming.
+The exact bars hold at both geometries, the stateless path's rows are
+untouched, Story 16.5's cancel chain is unaffected, and `DEFAULT_CHUNK_SIZE`
+is still 25.
+
+### Awaiting operator
+
+Evidence §7, one sitting: `13_Story_20.6_AC3_GUI_Capture.bat` then
+`14_Story_20.6_AC4_Audition.bat`.
 
 ## Change Log
 
 - 2026-09-01 — Drafted by Winston as Story 20.5 follow-up F1, sequenced ahead of the chunk-size reopen because the two-pass tax scales with chunk count and would otherwise confound it. Scope is dominated by AC #2: the machinery being retired is the only seam handling the stateless fallback path has, so retirement must be conditional on carried state rather than a global constant change.
+- 2026-09-01 — Implemented. Retirement is conditional on `carries_codec_state`, resolved by `effective_lookahead()` and applied by `apply_codec_state_geometry()`; the constants are unchanged. The trim, the seam blend and the two-pass decode all fall away by construction. AC #1's "carries 30 → 25 automatically" turned out to be false and the derivation had to be made conditional at one point — recorded rather than quietly reinterpreted. AC #3's headless half and AC #4's fixture + prediction are complete; both remaining halves are one consolidated operator request.

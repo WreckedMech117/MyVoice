@@ -2213,7 +2213,7 @@ class QwenTTSService(BaseService):
             return
 
         from myvoice.services.tts_streaming import compile_cache
-        from myvoice.services.tts_streaming import codec_token_streamer
+        from myvoice.services.tts_streaming import resolve_streamer_geometry
         import torch
         # Story 20.4 AC #1 — the SECOND D-25 drift site. This method mirrors
         # ``engage_compile_optimizations``' key construction so warmup and
@@ -2224,10 +2224,14 @@ class QwenTTSService(BaseService):
         # reads and Story 20.3's warm-path priming would silently stop
         # working. Derive it from the streamer's own constants, exactly as
         # ``engage_compile_optimizations`` now does.
-        _decode_window_frames = (
-            codec_token_streamer.DEFAULT_CHUNK_SIZE
-            + codec_token_streamer.DEFAULT_LOOKAHEAD
-        )
+        #
+        # Story 20.6 AC #1 — the lookahead half of that derivation is now
+        # CONDITIONAL, so this site reads ``resolve_streamer_geometry()``,
+        # the one place that rule lives. Summing the raw module constants
+        # here would prime a 30-frame key while the engage path (and the
+        # inductor cache directory it actually reads) moved to 25 — the
+        # third D-25 drift site, re-opened from the Story 20.6 side.
+        _decode_window_frames = sum(resolve_streamer_geometry())
         # Story 20.3 AC #3 — the two identities the coherence guard compares:
         # the model the KEY is computed from, captured here, and the model
         # priming actually exercises, captured in ``_run_compile_priming``.
@@ -4442,6 +4446,7 @@ class QwenTTSService(BaseService):
         from myvoice.services.tts_streaming.codec_token_streamer import (
             DEFAULT_CHUNK_SIZE,
             DEFAULT_LOOKAHEAD,
+            effective_lookahead,
         )
 
         if chunk_size is None:
@@ -4499,11 +4504,28 @@ class QwenTTSService(BaseService):
             )
             return _decode
 
+        # Story 20.6 — if the stateful decoder gets built at all then carried
+        # state is active, and the lookahead is retired for this stream. So it
+        # is constructed in the RETIRED geometry: ``window_frames`` equals
+        # ``commit_frames``, which makes ``StatefulCodecDecoder.__call__``'s
+        # commit rule take the ``commit = n_frames`` branch on every chunk —
+        # the snapshot / decode-lookahead-on-the-snapshot / restore second
+        # pass collapses to a single pass with no code change inside
+        # ``codec_state_cache`` (Story 20.5's wrapper is the foundation this
+        # stands on; it is not modified). ``build_stateful_decode_fn`` accepts
+        # ``window_frames == commit_frames``; only ``<`` is rejected.
+        #
+        # If it declines, ``_decode`` below is returned and the caller leaves
+        # the streamer at the configured lookahead, so the stateless fallback
+        # keeps the pre-20.6 geometry exactly.
+        stateful_lookahead = effective_lookahead(
+            carries_codec_state=True, lookahead=lookahead
+        )
         try:
             stateful, reason = codec_state_cache.build_stateful_decode_fn(
                 decoder,
                 chunk_size=chunk_size,
-                lookahead=lookahead,
+                lookahead=stateful_lookahead,
                 device=device,
                 log=self.logger,
             )
@@ -4523,9 +4545,10 @@ class QwenTTSService(BaseService):
             return _decode
 
         self.logger.info(
-            "[QwenTTS] codec state cache %s (chunk_size=%d lookahead=%d) — "
-            "chunk boundaries carry real codec state",
-            reason, chunk_size, lookahead,
+            "[QwenTTS] codec state cache %s (chunk_size=%d lookahead=%d, "
+            "was %d) — chunk boundaries carry real codec state and the "
+            "lookahead is retired (Story 20.6)",
+            reason, chunk_size, stateful_lookahead, lookahead,
         )
         return stateful
 
@@ -5193,8 +5216,41 @@ class QwenTTSService(BaseService):
                 # behaviour is kept. Read off the decode_fn rather than
                 # assumed, so the fallback and the kill switch both do the
                 # right thing automatically.
-                self._progressive_stream_continuous = bool(
+                _carries_codec_state = bool(
                     getattr(decode_fn, "carries_codec_state", False)
+                )
+                self._progressive_stream_continuous = _carries_codec_state
+
+                # Story 20.6 — the second consumer of the SAME declaration.
+                # With carried state the chunks are continuous by
+                # construction, so the 5-frame future lookahead re-establishes
+                # priming the state already provides exactly: it is retired,
+                # the streamer emits ``chunk_size`` frames per chunk with no
+                # overlap, and the worker's trim and Story 20.4 seam blend
+                # fall away *by construction* (its ``is_full_window``
+                # predicate requires ``lookahead > 0``, so neither is a
+                # separate decision — there is no retained tail left to blend).
+                #
+                # Without it — the ``MYVOICE_CODEC_STATE_CACHE`` kill switch,
+                # or any build-time refusal by ``codec_state_cache`` — the
+                # pre-20.6 geometry is restored exactly. That path still
+                # renders overlapping token spans independently, so the
+                # lookahead, the trim and the blend are the only seam
+                # handling it has.
+                #
+                # Ordering is load-bearing: this runs BEFORE the worker
+                # snapshots ``streamer.lookahead`` at construction and before
+                # ``_build_true_stream_talker`` reads it into its chunking
+                # arithmetic, so all three follow one declaration.
+                _effective_lookahead = streamer.apply_codec_state_geometry(
+                    _carries_codec_state
+                )
+                self.logger.info(
+                    "[QwenTTS] TRUE_STREAM geometry: chunk_size=%d "
+                    "lookahead=%d (carries_codec_state=%s)",
+                    streamer.chunk_size,
+                    _effective_lookahead,
+                    _carries_codec_state,
                 )
 
                 hardware_label = (
