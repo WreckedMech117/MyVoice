@@ -1,6 +1,6 @@
 # Story 20.8: Re-baseline and Reopen the Chunk-Size Question (Phase ⊥-Polish-3)
 
-Status: ready-for-dev
+Status: in-progress — Phase 1 (headless re-baseline) running; Phase 2 gated on Commander's approval
 
 <!-- Phase tag: Phase ⊥-Polish-3. Eighth story of Epic 20. Follow-up F2 from Story 20.5. -->
 <!-- Story class: PHASE-GATED. Phase 1 is a headless re-baseline with a hard go/no-go. Phase 2 does not start until Commander approves it. -->

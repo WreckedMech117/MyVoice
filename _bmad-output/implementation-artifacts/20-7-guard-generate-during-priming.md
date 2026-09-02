@@ -1,6 +1,6 @@
 # Story 20.7: Don't Let Generate Silently Queue Behind Priming (Phase ⊥-Polish-3)
 
-Status: ready-for-review
+Status: done — 2026-09-02. Gate verified on a real launch: ENGAGED before priming dispatch, RELEASED after completion, held 5.768 s against a 5,780 ms prime.
 
 <!-- Phase tag: Phase ⊥-Polish-3. Seventh story of Epic 20. -->
 <!-- Source: measured twice during Story 20.6's operator captures. Not on any follow-up list — found by telemetry, not by design review. -->
