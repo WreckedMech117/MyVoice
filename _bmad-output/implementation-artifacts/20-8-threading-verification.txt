@@ -1,0 +1,91 @@
+==============================================================================
+Story 20.8 AC #3 — geometry threading verification
+==============================================================================
+== site 1: resolve_streamer_geometry(), both directions ==
+  [PASS] committed constant DEFAULT_CHUNK_SIZE                      got=10 want=10
+  [PASS] DEFAULT_LOOKAHEAD untouched (stateless path)               got=5 want=5
+  [PASS] state-carrying geometry                                    got=(10, 0) want=(10, 0)
+  [PASS]   -> decode_window_frames                                  got=10 want=10
+  [PASS] kill-switch geometry (the other direction)                 got=(10, 5) want=(10, 5)
+  [PASS]   -> decode_window_frames                                  got=15 want=15
+== the streamer itself follows the constant ==
+  [PASS] CodecTokenStreamer() chunk_size                            got=10 want=10
+  [PASS] apply_codec_state_geometry(True) -> lookahead              got=0 want=0
+  [PASS]   chunk_size unchanged by retirement                       got=10 want=10
+CUDAGraph supports dynamic shapes by recording a new graph for each distinct input size. Recording too many CUDAGraphs may lead to extra overhead. We have observed 9 distinct sizes. Please consider the following options for better performance: a) padding inputs to a few fixed number of shapes; or b) set torch._inductor.config.triton.cudagraph_skip_dynamic_graphs=True. Set torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit=None to silence this warning.
+[QwenTTS] TRUE_STREAM talker error: 'list' object has no attribute 'ref_code'
+Traceback (most recent call last):
+  File "I:\MyVoiceV2\src\myvoice\services\qwen_tts_service.py", line 4990, in _run_talker
+    model.generate_voice_clone(
+  File "I:\MyVoiceV2\python310\Lib\site-packages\torch\utils\_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\qwen_tts\inference\qwen3_tts_model.py", line 638, in generate_voice_clone
+    voice_clone_prompt_dict = self._prompt_items_to_voice_clone_prompt(prompt_items)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\qwen_tts\inference\qwen3_tts_model.py", line 518, in _prompt_items_to_voice_clone_prompt
+    ref_code=[it.ref_code for it in items],
+  File "I:\MyVoiceV2\python310\Lib\site-packages\qwen_tts\inference\qwen3_tts_model.py", line 518, in <listcomp>
+    ref_code=[it.ref_code for it in items],
+AttributeError: 'list' object has no attribute 'ref_code'
+[QwenTTS] TRUE_STREAM dispatch failed
+Traceback (most recent call last):
+  File "I:\MyVoiceV2\src\myvoice\services\qwen_tts_service.py", line 5580, in _generate_true_stream
+    raise RuntimeError(
+RuntimeError: TRUE_STREAM produced 0 audio chunks — talker thread likely raised (see prior log). Routing to fallback chain.
+Streaming generation failed: 'list' object has no attribute 'ref_code'
+Traceback (most recent call last):
+  File "I:\MyVoiceV2\src\myvoice\services\qwen_tts_service.py", line 4178, in _generate_streaming
+    audio_data, sr = await loop.run_in_executor(
+  File "concurrent\futures\thread.py", line 58, in run
+  File "I:\MyVoiceV2\src\myvoice\services\qwen_tts_service.py", line 6099, in _generate_sync
+    wavs, sr = model.generate_voice_clone(
+  File "I:\MyVoiceV2\python310\Lib\site-packages\torch\utils\_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\qwen_tts\inference\qwen3_tts_model.py", line 638, in generate_voice_clone
+    voice_clone_prompt_dict = self._prompt_items_to_voice_clone_prompt(prompt_items)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\qwen_tts\inference\qwen3_tts_model.py", line 518, in _prompt_items_to_voice_clone_prompt
+    ref_code=[it.ref_code for it in items],
+  File "I:\MyVoiceV2\python310\Lib\site-packages\qwen_tts\inference\qwen3_tts_model.py", line 518, in <listcomp>
+    ref_code=[it.ref_code for it in items],
+AttributeError: 'list' object has no attribute 'ref_code'
+[QwenTTS] Streaming failed, falling back to batch
+TTS generation failed: 'list' object has no attribute 'ref_code'
+Traceback (most recent call last):
+  File "I:\MyVoiceV2\src\myvoice\services\qwen_tts_service.py", line 3865, in _generate
+    audio_data, sample_rate = await loop.run_in_executor(
+  File "concurrent\futures\thread.py", line 58, in run
+  File "I:\MyVoiceV2\src\myvoice\services\qwen_tts_service.py", line 6099, in _generate_sync
+    wavs, sr = model.generate_voice_clone(
+  File "I:\MyVoiceV2\python310\Lib\site-packages\torch\utils\_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\qwen_tts\inference\qwen3_tts_model.py", line 638, in generate_voice_clone
+    voice_clone_prompt_dict = self._prompt_items_to_voice_clone_prompt(prompt_items)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\qwen_tts\inference\qwen3_tts_model.py", line 518, in _prompt_items_to_voice_clone_prompt
+    ref_code=[it.ref_code for it in items],
+  File "I:\MyVoiceV2\python310\Lib\site-packages\qwen_tts\inference\qwen3_tts_model.py", line 518, in <listcomp>
+    ref_code=[it.ref_code for it in items],
+AttributeError: 'list' object has no attribute 'ref_code'
+TTS Error [AttributeError]: 'list' object has no attribute 'ref_code'
+[QwenTTS] Batch fallback also failed
+[Tokenizer] Enabling streaming optimizations...
+  use_compile=True, compile_mode=reduce-overhead
+  use_cuda_graphs=True (manual)
+[Decoder] Compiling forward with mode=reduce-overhead, backend=inductor...
+[Decoder] Note: mode='reduce-overhead' includes CUDA graphs automatically
+[Decoder] Compilation complete
+[Tokenizer] Note: compile_mode='reduce-overhead' already includes CUDA graphs
+[Tokenizer] Manual CUDA graph capture skipped (not needed)
+[CodePredictor] Compiling model with mode=reduce-overhead...
+== keys ==
+  cs10 (new, committed) -> ef8efd9237ad2a9f
+  cs25 (old)            -> 205b94cf67d78d0a
+== site 2: engage_compile_optimizations — which directory does the compile read? ==
+  TORCHINDUCTOR_CACHE_DIR = C:\Users\AL301\AppData\Local\MyVoice\torch_compile_cache\ef8efd9237ad2a9f
+  [PASS] engage path points at the NEW key's directory              got='ef8efd9237ad2a9f' want='ef8efd9237ad2a9f'
+== site 3: warmup_compile_async — which key does priming warm? ==
+  is_warm(new key) before = False
+  telemetry: reason='primed_cold' tags={'reason': 'primed_cold', 'duration_ms': 0}
+  [PASS] priming wrote meta.json into the NEW key's directory       got=True want=True
+  [PASS] the OLD key's meta.json state is unchanged                 got=True want=True
+  [PASS] sites 2 and 3 AGREE — priming warms what engage reads      got='ef8efd9237ad2a9f' want='ef8efd9237ad2a9f'
+==============================================================================
+ALL THREADING CHECKS PASS — the constant moves all three sites, and it moves back under the kill switch.

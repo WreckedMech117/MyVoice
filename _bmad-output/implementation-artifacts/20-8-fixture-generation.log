@@ -1,0 +1,116 @@
+'sox' is not recognized as an internal or external command,
+operable program or batch file.
+SoX could not be found!
+
+    If you do not have SoX, proceed here:
+     - - - http://sox.sourceforge.net/ - - -
+
+    If you do (or think that you should) have SoX, double-check your
+    path variables.
+    
+`torch_dtype` is deprecated! Use `dtype` instead!
+
+********
+Warning: flash-attn is not installed. Will only run the manual PyTorch version. Please install flash-attn for faster inference.
+********
+ 
+preflight OK
+  committed geometry = (10, 0)  [capture runs here]
+  reference arm chunk_size=25   candidate arm chunk_size=10
+  seam fix on both arms: samples/frame=1920 edge=555 ola=1024
+  watermark floor cleared by both arms (first chunk 47445 / 18645 samples vs 12000)
+Fetching 4 files:   0%|          | 0/4 [00:00<?, ?it/s]Fetching 4 files: 100%|##########| 4/4 [00:00<?, ?it/s]
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+CUDAGraph supports dynamic shapes by recording a new graph for each distinct input size. Recording too many CUDAGraphs may lead to extra overhead. We have observed 9 distinct sizes. Please consider the following options for better performance: a) padding inputs to a few fixed number of shapes; or b) set torch._inductor.config.triton.cudagraph_skip_dynamic_graphs=True. Set torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit=None to silence this warning.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+[Tokenizer] Enabling streaming optimizations...
+  use_compile=True, compile_mode=reduce-overhead
+  use_cuda_graphs=True (manual)
+[Decoder] Compiling forward with mode=reduce-overhead, backend=inductor...
+[Decoder] Note: mode='reduce-overhead' includes CUDA graphs automatically
+[Decoder] Compilation complete
+[Tokenizer] Note: compile_mode='reduce-overhead' already includes CUDA graphs
+[Tokenizer] Manual CUDA graph capture skipped (not needed)
+[CodePredictor] Compiling model with mode=reduce-overhead...
+  priming done
+
+=== capture: one talker run per pair, at the committed geometry ===
+  ctl-020  take 1    14 frames  residual ref=14 cand=4      892 ms  ok
+  ctl-020  take 2    12 frames  residual ref=12 cand=2      811 ms  REDRAW
+  ctl-020  take 2    11 frames  residual ref=11 cand=1      753 ms  REDRAW
+  ctl-020  take 2    16 frames  residual ref=16 cand=6      976 ms  ok
+  l-020    take 1   232 frames  residual ref=7  cand=2    10626 ms  REDRAW
+  l-020    take 1   242 frames  residual ref=17 cand=2    10969 ms  REDRAW
+  l-020    take 1   248 frames  residual ref=23 cand=8    11243 ms  ok
+  l-020    take 2   240 frames  residual ref=15 cand=0    10923 ms  ok
+  l-021    take 1   184 frames  residual ref=9  cand=4     8505 ms  ok
+  l-021    take 2   167 frames  residual ref=17 cand=7     7842 ms  ok
+  m-020    take 1    49 frames  residual ref=24 cand=9     2622 ms  ok
+  m-020    take 2    48 frames  residual ref=23 cand=8     2394 ms  ok
+  m-021    take 1    45 frames  residual ref=20 cand=5     2310 ms  ok
+  m-021    take 2    49 frames  residual ref=24 cand=9     2468 ms  ok
+  s-020    take 1    28 frames  residual ref=3  cand=8     1479 ms  ok
+  s-020    take 2    27 frames  residual ref=2  cand=7     1463 ms  REDRAW
+  s-020    take 2    34 frames  residual ref=9  cand=4     1794 ms  ok
+  s-021    take 1    31 frames  residual ref=6  cand=1     1703 ms  REDRAW
+  s-021    take 1    31 frames  residual ref=6  cand=1     1669 ms  REDRAW
+  s-021    take 1    31 frames  residual ref=6  cand=1     1685 ms  REDRAW
+  s-021    take 1    39 frames  residual ref=14 cand=9     2037 ms  ok
+  s-021    take 2    35 frames  residual ref=10 cand=5     1826 ms  ok
+  s-022    take 1    48 frames  residual ref=23 cand=8     2376 ms  ok
+  s-022    take 2    45 frames  residual ref=20 cand=5     2254 ms  ok
+
+=== render both arms from each captured take ===
+  ctl-020-t1   control_cs25 frames=14   seams  0 ->  0  len equal  level +0.000 dB  waveform -312.87 dB  BYTE-IDENTICAL
+  ctl-020-t2   control_cs10 frames=16   seams  1 ->  1  len equal  level +0.000 dB  waveform -311.58 dB  BYTE-IDENTICAL
+  l-020-t1     ab           frames=248  seams  9 -> 24  len equal  level +0.000 dB  waveform  -40.50 dB
+  l-020-t2     ab           frames=240  seams  9 -> 23  len equal  level +0.002 dB  waveform  -40.20 dB
+  l-021-t1     ab           frames=184  seams  7 -> 18  len equal  level -0.004 dB  waveform  -40.35 dB
+  l-021-t2     ab           frames=167  seams  6 -> 16  len equal  level +0.001 dB  waveform  -40.77 dB
+  m-020-t1     ab           frames=49   seams  1 ->  4  len equal  level -0.003 dB  waveform  -40.14 dB
+  m-020-t2     ab           frames=48   seams  1 ->  4  len equal  level -0.000 dB  waveform  -41.01 dB
+  m-021-t1     ab           frames=45   seams  1 ->  4  len equal  level +0.001 dB  waveform  -38.18 dB
+  m-021-t2     ab           frames=49   seams  1 ->  4  len equal  level +0.003 dB  waveform  -38.08 dB
+  s-020-t1     ab           frames=28   seams  1 ->  2  len equal  level -0.061 dB  waveform  -39.89 dB
+  s-020-t2     ab           frames=34   seams  1 ->  3  len equal  level -0.056 dB  waveform  -40.59 dB
+  s-021-t1     ab           frames=39   seams  1 ->  3  len equal  level -0.004 dB  waveform  -38.84 dB
+  s-021-t2     ab           frames=35   seams  1 ->  3  len equal  level +0.040 dB  waveform  -40.63 dB
+  s-022-t1     ab           frames=48   seams  1 ->  4  len equal  level +0.009 dB  waveform  -38.06 dB
+  s-022-t2     ab           frames=45   seams  1 ->  4  len equal  level +0.004 dB  waveform  -36.75 dB
+
+Truth table -> _perlistener_truthtable.json (16 trials; reference is trial A on 8, candidate on 8)
+
+{
+  "ab_trials": 14,
+  "control_trials": 2,
+  "total_ref_seams": 41,
+  "total_cand_seams": 116,
+  "seam_ratio": 2.829,
+  "worst_level_delta_db": 0.0607,
+  "all_lengths_equal": true,
+  "redraws": 8
+}
+wrote 20-8-audition-manifest.json and 32 wav files -> 20-8-perceptual-fixtures

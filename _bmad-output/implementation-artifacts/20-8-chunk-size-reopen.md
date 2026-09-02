@@ -1,6 +1,6 @@
 # Story 20.8: Re-baseline and Reopen the Chunk-Size Question (Phase ⊥-Polish-3)
 
-Status: **Phase 1 COMPLETE — at the gate. Verdict GO on latency. Phase 2 awaiting Commander's approval; not started.**
+Status: **Phase 2 IMPLEMENTED AND VERIFIED.** `chunk_size` committed at 10; threading verified at all three sites in both directions; exact bars hold; suite unchanged. **Outstanding: the NFR3 audition (blocking) and the two-arm GUI capture — one operator hand-off at evidence §9.6.**
 
 <!-- Phase tag: Phase ⊥-Polish-3. Eighth story of Epic 20. Follow-up F2 from Story 20.5. -->
 <!-- Story class: PHASE-GATED. Phase 1 is a headless re-baseline with a hard go/no-go. Phase 2 does not start until Commander approves it. -->
@@ -160,8 +160,8 @@ pre-existing failure set unchanged in count and identity
 - [x] **Task 2 — Sweep** (AC: #1) — one sitting, one machine, `cs25` control included, warm measurements, cold-compile cost stated. → evidence §2–§3.
 - [x] **Task 3 — Audition cost estimate** (AC: #2). → evidence §5.
 - [x] **Task 4 — GATE.** Report to Commander. Stop. → **verdict GO on latency**; evidence §0 / §4. STOPPED HERE.
-- [ ] **Task 5 — Phase 2** (AC: #3), gated. **NOT STARTED — awaiting Commander.**
-- [ ] **Task 6 — Regression** (AC: #4). Belongs to Phase 2.
+- [x] **Task 5 — Phase 2** (AC: #3, #3a, #3b) — candidate chosen (`cs10`, evidence §8), constant committed through the threading and verified at all three sites in both directions (§9.2), fixture generated with AC #3a's four fixes observable in its output (§9.5). **Audition itself is operator work — hand-off §9.6.**
+- [x] **Task 6 — Regression** (AC: #4) — exact bars hold (§9.3); suite compared BEFORE/AFTER with an identical guarded runner, nothing removed, every addition attributed to one pre-existing non-terminating UI file (§9.4).
 
 ## Dev Notes
 
@@ -270,8 +270,63 @@ direction yet) and a bounded-queue deadlock that **any Phase 2 fixture
 generator derived from `20-5-regen-audition-fixture.py` will hit at small chunk
 sizes** unless it starts the worker before filling the queue.
 
+### Phase 2 — implemented and verified, 2026-09-02 (evidence §8–§9)
+
+**`DEFAULT_CHUNK_SIZE` 25 → 10 is committed.** One production constant; nothing
+else in `src/`. `DEFAULT_LOOKAHEAD` untouched at 5.
+
+**AC #3b — `cs10` chosen, on non-perceptual grounds (§8.1).** The marginal rate
+collapses across the curve — each step buys 60.9, then 26.6, then **13.0** ms
+per added seam — so `cs10` already takes **82.5 %** of the whole available win
+(645 of 782 ms) for 24 of 34 seams. `cs7` clears the watermark floor by **0.46
+of a frame** against `cs10`'s 3.5, and that floor **moved during this story**
+(Story 20.1 said 6; the exact solve on current code gives 7). `cs7` also costs
+35 % more decoder work, on the tier we have measured — the sub-16 GiB tier is
+unmeasured and has least OFR-E room. §8.3 fixes **in advance** what would earn a
+second candidate a round: only a *clean* pass buys `cs7` one; a mediocre pass
+buys none; a fail falls back to `cs15`.
+
+**AC #3 — threading verified at all three D-25 sites, both directions (§9.2).**
+`resolve_streamer_geometry()` → `(10, 0)` → window 10, and `(10, 5)` → 15 under
+the kill switch. `engage_compile_optimizations` points the inductor cache at the
+cs10 key; `warmup_compile_async` returns `primed_cold` and writes `meta.json`
+into **that same** directory, leaving the cs25 key untouched — the "priming
+warms the NEW key" check, confirmed rather than assumed. Three earlier
+"failures" were probe-ordering artefacts and are recorded as such.
+
+**AC #3a — fixture generated, all four fixes observable (§9.5).** 14 A/B trials
++ 2 byte-identical controls (−312 dB, 0.000 dB level); seams 41 → 116 (2.83×);
+every pair identical in length; worst level delta 0.061 dB, unnormalised. The
+1-/2-frame-residual redraw rule **fired 8 times** — without it, four of the
+fourteen trials would have carried the one chunk shape where the decoder is not
+bit-reproducible against itself.
+
+**AC #4 (§9.3–§9.4).** All four exact bars pass at the retuned geometry.
+Suite: nothing removed; the only additions are the 19 failures of one UI file
+that **hung in the BEFORE run** and hangs identically on the pre-change tree —
+demonstrated by stashing the change and re-running it. AFTER's 49 failures
+reproduce exactly the pre-existing count Story 20.6 recorded. Stated plainly in
+§9.4.5: this is *not* a bare "identical count and identity" and is not claimed
+as one.
+
+**A pre-existing problem worth raising separately:** a plain `pytest tests/`
+does not complete on current `main` — it stalls indefinitely at varying points.
+All the hangs are dialog/UI tests, none related to streaming. The regression
+runs use an external per-directory guard because `pytest-timeout` is not
+installed in the portable interpreter; installing it would turn these hangs into
+countable failures for every story after this one.
+
+**Outstanding: operator work only, one hand-off at evidence §9.6** — the NFR3
+audition (`18_`, ~25 min, the blocking gate) and the two-arm GUI TTFA capture
+(`16_` then `17_`, ~40 min, both arms in one sitting because Story 20.6 §12
+forbids a cross-session control).
+
 ## Change Log
 
+- 2026-09-02 — Phase 2 implemented and verified: candidate narrowed to `cs10`
+  on non-perceptual grounds, constant committed through the threading, fixture
+  generated with the prediction recorded first, exact bars and suite checked.
+  Audition and GUI capture handed off as one operator package.
 - 2026-09-02 — Viability check run at Commander's direction after the gate.
   Four claims tested, two of them controls added because a claim of identity is
   unreadable without knowing whether the thing is identical to itself; a fourth

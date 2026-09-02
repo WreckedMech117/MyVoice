@@ -47,60 +47,82 @@ from transformers.generation.streamers import BaseStreamer
 END_OF_STREAM = object()
 
 
-# THE COMMITTED GEOMETRY -- and the record of an attempt to change it.
+# THE COMMITTED GEOMETRY -- 10, and the record of how it got here.
 #
-# Story 20.4 (Epic 20, Follow-up B) tried chunk_size = 10 and reverted it.
-# The number stays at 25. Both halves of that are load-bearing, so the
-# evidence is recorded here rather than only in the story file.
+# Story 20.4 tried chunk_size = 10 and REVERTED it. Story 20.8 re-measured
+# and committed it. Both of those are load-bearing and neither supersedes
+# the other by being newer, so the whole chain is recorded here rather than
+# only in the story files.
 #
-# WHY 10 LOOKED RIGHT. Story 20.1 SS5.2/SS5.3 swept {5, 10, 15, 25} with
-# lookahead held at 5, on an RTX 5090, in the shipping tts_compile="auto"
-# regime:
+# WHY 20.4 REVERTED IT. Not on latency -- on the ear. Every chunk boundary
+# is a seam and 10 has 2.5x as many as 25. Commander flagged audible
+# defects on 1 of 7 fixtures in round 1 and 3 of 7 in round 2, and
+# preferred 25 on every utterance where the two differed. A round-3
+# audition then isolated the variables and showed the SEAM FIX in
+# ``streaming_decoder.py`` was good on its own at 25, so only the fix
+# shipped. Story 20.4 SS17's closing line is the one to remember: *the
+# sweep optimised perceived latency and never asked the ear.*
 #
-#   cs  window  TTFA long  TTFA short  ratio  short first-emit path
-#    5      10     951 ms      899 ms  0.760  threshold 5/5
-#   10      15     875 ms      921 ms  0.676  threshold 5/5   <- fastest
-#   15      20   1,172 ms    1,174 ms  0.677  threshold 5/5
-#   25      30   1,785 ms    1,651 ms  0.665  residual_flush 11/20
+# WHAT CHANGED UNDERNEATH IT. Two things, in this order, and neither was
+# a chunk-size change:
 #
-# Story 20.4 re-measured that on current code and reproduced it: long-form
-# TTFA 1,491 -> 829 ms and short 1,409 -> 784 ms, with the short class
-# moving off the ``residual_flush`` dispatch path 6/6. Through the shipped
-# GUI it measured 976 ms long / 1,065 ms short. The speed win was real.
+#   * Story 20.5 -- codec state caching. The seam harm that killed cs10 was
+#     a cold-state residual at every boundary, MASKED by the Story 20.4
+#     blend. Carrying the codec's real state removes it at the cause: head
+#     NRMSE 0.406 -> 0.0078, lag jitter 0 samples on every seam, edge loss
+#     555 -> 0, so ``decode(N) == 1920*N`` exactly. Story 20.4 SS17 named
+#     precisely this as its reopening condition.
+#   * Story 20.6 -- the lookahead retirement. ``chunk_size = N`` now means
+#     first emit at N frames, not N + 5. That makes the geometry lever
+#     bigger than the old curve implied and it is why the numbers below do
+#     not match Story 20.1's.
 #
-# WHY IT WAS REVERTED ANYWAY. It failed the NFR3 perceptual gate twice.
-# Every chunk boundary is a seam, and seam artefacts scale with seam
-# count -- chunk_size = 10 has 2.5x as many as 25. Commander flagged
-# audible defects on 1 of 7 fixtures in round 1 and 3 of 7 in round 2, and
-# preferred chunk_size = 25 on every utterance where the two differed.
-# AC #5 makes an audible chunk-boundary artefact blocking, not a note.
+# THE RE-BASELINE (Story 20.8 Phase 1). Story 20.1's curve was measured
+# before both of those, and with ``decode_window_frames`` pinned at 30
+# regardless of geometry, so it was re-measured from scratch: one sitting,
+# one machine, cs25 captured as the control TWICE (first and last, drift
+# +14.0 ms), n = 10 warm runs per point, RTX 5090:
 #
-# A round-3 audition then isolated the variables and showed the SEAM FIX
-# in ``streaming_decoder.py`` is good on its own at chunk_size = 25 -- it
-# removed the defect on both long fixtures and was never worse. So the two
-# things Story 20.4 built are separable, and only one of them ships: the
-# stitching fix does, the geometry retune does not.
+#   cs   seams  first chunk  TTFA long  TTFA short  ratio  decoder work
+#   25       9     1,977 ms   1,167 ms    1,176 ms  0.539        366 ms
+#   15      16     1,177 ms     741 ms      738 ms  0.547        577 ms
+#   10      24       777 ms     528 ms      516 ms  0.558        840 ms
+#    7      34       537 ms     392 ms      393 ms  0.567      1,135 ms
 #
-# WHAT WOULD REOPEN IT. The seam harm and the alignment gain BOTH scale
-# with seam count, so the balance at intermediate geometries is genuinely
-# unknown. chunk_size = 15 is untested perceptually -- 1.5x the seams of
-# 25, against Story 20.1's measured 1,157 ms TTFA. That is an open
-# question, not a recommendation. Any future attempt needs an NFR3
-# audition, not just the latency sweep, because the latency sweep already
-# said 10 and the ear disagreed.
+# WHY 10 AND NOT 7. Three non-perceptual reasons (Story 20.8 SS8.1):
+#   1. the marginal rate collapses -- each step buys 60.9, then 26.6, then
+#      13.0 ms per added seam. cs10 already takes 82.5 % of the whole
+#      available win;
+#   2. the WATERMARK FLOOR is 7 and cs7 clears it by 0.46 of a frame.
+#      cs10 clears it by 3.5 frames. That floor MOVED during Story 20.8
+#      itself (Story 20.1 SS5.4 said 6; the exact solve on current code is
+#      ``N*1920 - 555 >= 12000`` -> N >= 6.54 -> 7), and it is a function
+#      of three constants that have all moved within this epic;
+#   3. per-chunk decode time is FLAT in chunk size, so decoder work scales
+#      with chunk count -- cs7 is 35 % more than cs10, and the sub-16 GiB
+#      tier where the OFR-E ratio has least room is still unmeasured.
+#
+# THE GATE THAT IS NOT YET CLOSED. This constant ships subject to an NFR3
+# audition whose falsifiable prediction is recorded in
+# ``20-8-chunk-size-reopen-evidence.md`` SS8.4 BEFORE the round. If cs10
+# flags a blocking seam defect again, the mechanism argument above is
+# wrong -- state caching did not remove what actually made cs10 worse --
+# and the geometry question closes for good rather than retuning to 15.
+# Story 20.4 shipped a retune this far and then reverted it; that is the
+# precedent, not a reason to assume this one lands.
 #
 # ANY change to these two constants must be threaded into
 # ``torch_runtime.engage_compile_optimizations`` -- it derives D-25's
-# ``decode_window_frames`` from them (it imports this module for exactly
-# that reason), and the value is one of compile_cache's seven key
-# dimensions, so a retune auto-invalidates the compile cache (D-24).
+# ``decode_window_frames`` from them via ``resolve_streamer_geometry()``,
+# and the value is one of compile_cache's seven key dimensions, so a retune
+# auto-invalidates the compile cache (D-24) and costs exactly one cold
+# compile on first launch (measured at +19.2 s, Story 20.8 SS3.5).
 # Story 20.1 SS5.4 documents the trap that made this necessary: before
 # Story 20.4 the compile path carried its own hard-coded 25/5 literals and
 # the sole production call site passed neither, so ``decode_window_frames``
-# was pinned at 30 regardless of the streamer's real geometry. That
-# threading is the part of Follow-up B that DID ship, and it is what made
-# this revert a one-line edit.
-DEFAULT_CHUNK_SIZE = 25
+# was pinned at 30 regardless of the streamer's real geometry. Story 20.6
+# verified the threading carries a change in BOTH directions.
+DEFAULT_CHUNK_SIZE = 10
 DEFAULT_LOOKAHEAD = 5
 DEFAULT_QUEUE_MAX_FACTOR = 4  # D-10: maxsize = factor * chunk_size
 

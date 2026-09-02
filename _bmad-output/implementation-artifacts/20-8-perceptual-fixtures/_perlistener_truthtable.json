@@ -1,0 +1,114 @@
+{
+  "_meta": {
+    "story": "20.8",
+    "round": 1,
+    "candidate": "candidate",
+    "reference": "reference",
+    "candidate_desc": "chunk_size = 10 \u2014 the committed retune. Codec state caching, retired lookahead, gated 0-sample consumer crossfade, unchanged.",
+    "reference_desc": "chunk_size = 25 \u2014 what ships today, everything else identical.",
+    "isolates": "chunk_size ONLY. Both arms are decoded from the SAME talker run, captured in a process running AT THE CANDIDATE geometry (Story 20.8 \u00a77 claim (d): decode_window_frames is a compile-cache key, so a capture taken at another chunk size would draw a stream no shipped build produces). Wording, prosody, pauses and duration are identical to the sample; the candidate arm is bit-for-bit what a shipped cs10 build emits. The ONLY difference is how many seams the stream is cut into: 41 on the reference against 116 on the candidate across the A/B trials (2.829x).",
+    "control_trial": "ctl-020",
+    "control_desc": "rendered TWICE THROUGH THE SAME ARM and asserted byte-identical at generation time \u2014 take 1 at the reference geometry, take 2 at the candidate's. Any preference or defect reported here is a property of the listening, not of the change, and it sets the round's noise floor.",
+    "takes_per_utterance": 2,
+    "prediction": "P1 equivalent is modal, >= 10 of 16. P2 (BLOCKING) no chunk-boundary defect on a candidate trial that its paired reference does not also carry. P3 any difference is on the long fixtures, which carry the most seams. P4 (the embarrassing one) if the candidate is preferred on >= 4 trials the diagnosis is wrong in the opposite direction. Recorded in full in 20-8-chunk-size-reopen-evidence.md \u00a79 BEFORE the round.",
+    "variance_note": "Within a pair there is no take-to-take variance to average over \u2014 the two files are one take rendered at two geometries. Story 20.4 \u00a717's warning is sidestepped, not repealed; the second take samples the CONTENT lottery."
+  },
+  "L1": {
+    "ctl-020-t1": {
+      "trial_A_filename": "ctl-020-t1-cand-cs10.wav",
+      "trial_A_arm": "candidate",
+      "trial_B_filename": "ctl-020-t1-ref-cs25.wav",
+      "trial_B_arm": "reference"
+    },
+    "ctl-020-t2": {
+      "trial_A_filename": "ctl-020-t2-cand-cs10.wav",
+      "trial_A_arm": "candidate",
+      "trial_B_filename": "ctl-020-t2-ref-cs25.wav",
+      "trial_B_arm": "reference"
+    },
+    "l-020-t1": {
+      "trial_A_filename": "l-020-t1-ref-cs25.wav",
+      "trial_A_arm": "reference",
+      "trial_B_filename": "l-020-t1-cand-cs10.wav",
+      "trial_B_arm": "candidate"
+    },
+    "l-020-t2": {
+      "trial_A_filename": "l-020-t2-ref-cs25.wav",
+      "trial_A_arm": "reference",
+      "trial_B_filename": "l-020-t2-cand-cs10.wav",
+      "trial_B_arm": "candidate"
+    },
+    "l-021-t1": {
+      "trial_A_filename": "l-021-t1-ref-cs25.wav",
+      "trial_A_arm": "reference",
+      "trial_B_filename": "l-021-t1-cand-cs10.wav",
+      "trial_B_arm": "candidate"
+    },
+    "l-021-t2": {
+      "trial_A_filename": "l-021-t2-cand-cs10.wav",
+      "trial_A_arm": "candidate",
+      "trial_B_filename": "l-021-t2-ref-cs25.wav",
+      "trial_B_arm": "reference"
+    },
+    "m-020-t1": {
+      "trial_A_filename": "m-020-t1-cand-cs10.wav",
+      "trial_A_arm": "candidate",
+      "trial_B_filename": "m-020-t1-ref-cs25.wav",
+      "trial_B_arm": "reference"
+    },
+    "m-020-t2": {
+      "trial_A_filename": "m-020-t2-ref-cs25.wav",
+      "trial_A_arm": "reference",
+      "trial_B_filename": "m-020-t2-cand-cs10.wav",
+      "trial_B_arm": "candidate"
+    },
+    "m-021-t1": {
+      "trial_A_filename": "m-021-t1-ref-cs25.wav",
+      "trial_A_arm": "reference",
+      "trial_B_filename": "m-021-t1-cand-cs10.wav",
+      "trial_B_arm": "candidate"
+    },
+    "m-021-t2": {
+      "trial_A_filename": "m-021-t2-cand-cs10.wav",
+      "trial_A_arm": "candidate",
+      "trial_B_filename": "m-021-t2-ref-cs25.wav",
+      "trial_B_arm": "reference"
+    },
+    "s-020-t1": {
+      "trial_A_filename": "s-020-t1-cand-cs10.wav",
+      "trial_A_arm": "candidate",
+      "trial_B_filename": "s-020-t1-ref-cs25.wav",
+      "trial_B_arm": "reference"
+    },
+    "s-020-t2": {
+      "trial_A_filename": "s-020-t2-ref-cs25.wav",
+      "trial_A_arm": "reference",
+      "trial_B_filename": "s-020-t2-cand-cs10.wav",
+      "trial_B_arm": "candidate"
+    },
+    "s-021-t1": {
+      "trial_A_filename": "s-021-t1-cand-cs10.wav",
+      "trial_A_arm": "candidate",
+      "trial_B_filename": "s-021-t1-ref-cs25.wav",
+      "trial_B_arm": "reference"
+    },
+    "s-021-t2": {
+      "trial_A_filename": "s-021-t2-ref-cs25.wav",
+      "trial_A_arm": "reference",
+      "trial_B_filename": "s-021-t2-cand-cs10.wav",
+      "trial_B_arm": "candidate"
+    },
+    "s-022-t1": {
+      "trial_A_filename": "s-022-t1-ref-cs25.wav",
+      "trial_A_arm": "reference",
+      "trial_B_filename": "s-022-t1-cand-cs10.wav",
+      "trial_B_arm": "candidate"
+    },
+    "s-022-t2": {
+      "trial_A_filename": "s-022-t2-cand-cs10.wav",
+      "trial_A_arm": "candidate",
+      "trial_B_filename": "s-022-t2-ref-cs25.wav",
+      "trial_B_arm": "reference"
+    }
+  }
+}

@@ -97,28 +97,49 @@ def test_default_construction_uses_documented_constants():
 
 
 def test_committed_chunk_geometry_is_25_plus_5_after_the_20_4_revert():
-    """Story 20.4 AC #1 — pin the committed geometry, and why it is 25.
+    """Story 20.8 AC #3 — pin the committed geometry, and why it is 10.
 
-    Story 20.1 SS5.2/SS5.3 measured chunk_size = 10 as the latency optimum
-    and Story 20.4 shipped it as far as the NFR3 gate, where it failed
-    twice: seam artefacts scale with seam count, and 10 has 2.5x the seams
-    of 25. It was reverted. A round-3 audition then showed the SEAM FIX is
-    good on its own at 25, so the two changes are separable and only the
-    stitching fix ships.
+    Story 20.4 measured 10 as the latency optimum and shipped it as far as
+    the NFR3 gate, where it failed twice: seam artefacts scale with seam
+    count and 10 has 2.5x the seams of 25. It was reverted, and Story 20.4
+    SS17 recorded the one thing that would reopen it — removing the seam
+    residual at the cause rather than masking it.
 
-    This row exists so a future retune cannot be done on the latency sweep
-    alone — that sweep already said 10, and the ear disagreed. Moving this
-    number requires an NFR3 audition, and chunk_size = 15 in particular is
-    perceptually untested (1.5x the seams of 25).
+    Story 20.5 did that (head NRMSE 0.406 -> 0.0078, lag jitter 0, edge
+    loss 0), Story 20.6 retired the lookahead so ``chunk_size = N`` means
+    first emit at N frames rather than N + 5, and Story 20.8 re-measured
+    the whole curve in one sitting with cs25 as a same-sitting control:
+    TTFA 1,167 -> 528 ms long, 1,176 -> 516 ms short, producer ratio
+    0.539 -> 0.558.
+
+    This row still exists for the reason it was written: a future retune
+    cannot be done on the latency sweep alone. That sweep said 10 once
+    before and the ear disagreed. Moving this number requires an NFR3
+    audition with the prediction recorded first.
     """
-    assert codec_token_streamer.DEFAULT_CHUNK_SIZE == 25
+    assert codec_token_streamer.DEFAULT_CHUNK_SIZE == 10
     assert codec_token_streamer.DEFAULT_LOOKAHEAD == 5
-    # The consumer's 500 ms static watermark must stay a no-op: a chunk
-    # carries chunk_size/12.5 s of audio at the codec's measured frame
-    # rate, and if that falls under the watermark the consumer holds two
-    # chunks and hands the producer-side gain straight back (Story 20.1
-    # SS5.4 measured exactly that at chunk_size = 5).
-    assert codec_token_streamer.DEFAULT_CHUNK_SIZE / 12.5 >= 0.5
+    # The consumer's 500 ms static watermark must stay a no-op, or the
+    # consumer holds two chunks and hands the producer-side gain straight
+    # back (Story 20.1 SS5.4 measured 316 ms handed back at chunk_size = 5).
+    #
+    # Story 20.8 SS1 derives the floor EXACTLY rather than nominally. The
+    # release rule is ``buffered_bytes >= watermark_bytes``
+    # (streaming_chunk_buffer.py:338-341) and on the state-carrying path the
+    # FIRST chunk of a session is the only one that pays the 555-sample edge
+    # loss (codec_state_cache.py:130-135), so the first chunk alone must
+    # clear the mark:
+    #
+    #     N*1920 - 555 >= 0.5 * 24000   ->   N >= 6.54   ->   N >= 7
+    #
+    # The nominal form ``N / 12.5 >= 0.5`` gives 6.25 and happens to agree
+    # for every integer N, but it agrees by luck: it omits the edge loss.
+    # Asserting the exact form is what makes this row track the real
+    # constants if a pin bump moves any of the three.
+    _first_chunk_samples = (
+        codec_token_streamer.DEFAULT_CHUNK_SIZE * 1920 - 555
+    )
+    assert _first_chunk_samples >= 0.5 * 24000
 
 
 def test_custom_construction_honors_all_parameters():
