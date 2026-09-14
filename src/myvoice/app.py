@@ -1106,11 +1106,21 @@ class MyVoiceApp(QObject):
         runs entirely from the Qt loop with no task on the stack.
 
         Ordering: the idle callback is a ``call_soon`` like any task step, so
-        two sites scheduled through this helper (or one through it and one
-        through ``_run_async_task``) keep their relative order — Qt delivers
-        zero-timers FIFO — with the created task's first step landing one
-        pass later than a plainly-created task's would. Returns ``None``; the
-        future is not available at call time because creation is deferred.
+        Qt delivers it FIFO with its neighbours — but the *task* is created
+        one pass later, when the callback runs. Consequences:
+
+        * two sites scheduled through this helper keep their relative order;
+        * a plain ``_run_async_task`` scheduled *before* an idle hand-off
+          still runs first;
+        * a plain ``_run_async_task`` scheduled *after* an idle hand-off ALSO
+          runs first, because its task exists immediately and the idle one
+          does not yet. Do not sequence an idle-scheduled initialiser ahead of
+          a plainly-scheduled consumer of its state — the consumer wins.
+          (Pinned by ``test_generic_helper_creates_its_task_one_pass_after_a_
+          plain_neighbour``.)
+
+        Returns ``None``; the future is not available at call time because
+        creation is deferred.
         """
         try:
             loop = asyncio.get_event_loop()
