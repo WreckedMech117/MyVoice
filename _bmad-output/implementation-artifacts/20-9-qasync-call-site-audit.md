@@ -1,6 +1,6 @@
 # Story 20.9: qasync Call-Site Audit (Follow-up F7)
 
-Status: in-progress
+Status: done - 2026-09-14. 71 sites classified by call path; 2 moved (profile restore, HTTP API start - the latter surviving by an ~80 ms accident and failing silently); 12 qasync-loop tests; 2,990 passed / 1 xfailed.
 
 <!-- Epic 20 follow-up F7. Source: Story 20.3's residual risk. -->
 <!-- Risk: MEDIUM. Touches scheduling in app.py. The one thing that must not happen is a behaviour change to a path that currently works. -->
