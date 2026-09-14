@@ -1,6 +1,6 @@
 # Story ui-2: No Modal From Inside Settings Dialog Construction
 
-Status: in-progress
+Status: done — 2026-09-14. Load error surfaced in-place; 9 new tests; verified to fail against the old code via the tooling-4 net; 2,978 passed / 1 xfailed.
 
 <!-- Out-of-epic UI story. Source: tooling-4 AC #4 finding. -->
 <!-- Risk: LOW. One error-path change in one widget. -->
