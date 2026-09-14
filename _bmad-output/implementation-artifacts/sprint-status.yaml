@@ -283,4 +283,4 @@ development_status:
   # them a Story ui-1 test that passed per-directory and hangs under whole-suite
   # ordering. This story makes hangs COUNTABLE (pytest-timeout, thread method for
   # Windows, timeout derived from measured durations); it does NOT fix them.
-  tooling-3-pytest-timeout: in-progress
+  tooling-3-pytest-timeout: done

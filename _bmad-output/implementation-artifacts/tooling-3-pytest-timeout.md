@@ -1,6 +1,6 @@
 # Story tooling-3: Make Suite Hangs Countable (pytest-timeout)
 
-Status: review
+Status: done — 2026-09-14. 27 hangs named at 2 stall sites; timeout 60 s derived from 2,875 measured passes; pre-existing failure set unchanged in identity.
 
 <!-- Out-of-epic tooling story, following the tooling-N precedent. -->
 <!-- Source: Story 20.8 AC #4 — `pytest tests/` does not complete on main; an external per-directory guard was needed to produce a regression comparison at all. -->
