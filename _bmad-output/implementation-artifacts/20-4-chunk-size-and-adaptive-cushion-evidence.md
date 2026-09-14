@@ -2139,3 +2139,19 @@ Evidence: `20-5-codec-state-caching.md`, `20-5-codec-state-caching-evidence.md` 
 mechanism), `20-5-phase2-evidence.md` (implementation, both audition rounds, the crossfade
 finding). Raw judgements: `20-5-state-cache-audition.csv`,
 `20-5-state-cache-audition-r2.csv`.
+
+### SECOND AMENDMENT 2026-09-14 — the question is answered: `chunk_size = 10` ships
+
+The first amendment recorded that §17's reopening condition had been met. Story
+20.8 then reopened it properly: a headless one-sitting re-baseline (§10 of its
+evidence), a viability check that found and closed a fourth confound (§7, claim
+(d)), a fixture built so the candidate arm is bit-for-bit what the shipped build
+produces, and a pre-committed rule for when further rounds are earned.
+
+Result: audition **16/16 `equivalent`, zero defects**; GUI, same-sitting control,
+long TTFA **1,626.8 → 767.5 ms (−52.8 %)**, short **−54.0 %**. `cs10` ships.
+
+Nothing above this line changes. The four rounds recorded here were correct for
+the code as it was; what changed is the code. §17's "the binding constraint is
+not geometry" was the right call then, and it is what made Story 20.5 the next
+story rather than a fifth audition round.
