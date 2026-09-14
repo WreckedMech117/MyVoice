@@ -1,6 +1,6 @@
 # Story tooling-4: Fix the Two Suite-Hang Sites
 
-Status: in-progress
+Status: done — 2026-09-14. Single `pytest tests/` completes: 49 failed / 2,924 passed / 5 errors in 84 s, zero timeouts. 47 pre-existing failures identical; the other 2 are former timeouts now failing on a genuine, pre-existing assertion.
 
 <!-- Out-of-epic tooling story. Follow-up to tooling-3, which made the hangs countable and named them. -->
 <!-- Risk: LOW. Test-side fixes plus one defensive fixture. The only way to get this wrong is to weaken a production dialog, which is forbidden below. -->
@@ -104,11 +104,11 @@ not regressed)
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Site A** (AC: #1) — enumerate the widget's construction-time calls, build the shared stub, migrate all four files.
-- [ ] **Task 2 — Site B** (AC: #2) — wire a `tts_service` stub; add a guard test if none exists.
-- [ ] **Task 3 — Defensive fixture** (AC: #3, #4) — audit existing `QMessageBox` uses under `tests/`, then implement or explicitly decline.
-- [ ] **Task 4 — Single-run verification** (AC: #5) — one `pytest tests/`, to completion, failure set diffed against tooling-3's.
-- [ ] **Task 5 — Evidence** — `_bmad-output/implementation-artifacts/tooling-4-fix-suite-hangs-evidence.md`.
+- [x] **Task 1 — Site A** (AC: #1) — enumerate the widget's construction-time calls, build the shared stub, migrate all four files.
+- [x] **Task 2 — Site B** (AC: #2) — wire a `tts_service` stub; add a guard test if none exists.
+- [x] **Task 3 — Defensive fixture** (AC: #3, #4) — audit existing `QMessageBox` uses under `tests/`, then implement or explicitly decline.
+- [x] **Task 4 — Single-run verification** (AC: #5) — one `pytest tests/`, to completion, failure set diffed against tooling-3's.
+- [x] **Task 5 — Evidence** — `_bmad-output/implementation-artifacts/tooling-4-fix-suite-hangs-evidence.md`.
 
 ## Dev Notes
 
@@ -136,8 +136,41 @@ net that has holes nobody knows about.
 
 ## Dev Agent Record
 
-_(to be filled by dev agent)_
+2026-09-14, branch `tooling/4-fix-suite-hangs` off `b2eda6c`. Full evidence:
+`tooling-4-fix-suite-hangs-evidence.md`; raw log + id lists in `tooling-4/`.
+
+- **AC #1** — `quick_speak_service_stub` in `tests/conftest.py`
+  (`MagicMock(spec=QuickSpeakService)`; typed returns for the three
+  construction-time reads `get_profiles/get_current_profile/get_entries` and
+  the reset path `load_entries/_create_default_profile`). All four files
+  migrated; `test_close_to_tray_toggle.py`'s `_make_dialog` helper became a
+  `make_dialog` fixture factory.
+- **AC #2** — `tts_service_stub` (`spec=QwenTTSService`, `is_running() -> True`)
+  + `_capture_async_dispatch` (records and closes the coroutine
+  `_run_async_task` would have handed to `asyncio.ensure_future`, so no
+  pending task survives the test). `test_regenerate_triggers_generate_flow`
+  now asserts the flow started. New `TestGenerateGuardsOnTtsService` (3
+  tests) covers both guards with `QMessageBox.warning` patched.
+- **AC #3** — audited all 33 `QMessageBox` lines in 6 test files: every one
+  patches the modal itself; none relies on a real dialog (none can — it would
+  be a timeout). Shipped: session-scoped autouse raiser on
+  `warning/critical/information/question` **and `exec`** (two production
+  sites use the instance route), raiser is a `BaseException` so production
+  `except Exception` blocks cannot swallow it, opt-out marker
+  `qmessagebox_passthrough` registered in `pytest.ini`. 0 hits in the
+  verification run. Scratch-verified (13 cases) then deleted.
+- **AC #4** — `src/` untouched. UI-story finding recorded in evidence §5:
+  `_load_entries` shows a modal from inside `SettingsDialog.__init__`.
+- **AC #5** — single `pytest tests/ -v -rfE`: **49 failed, 2924 passed, 5
+  errors, 84 s, 0 timeouts**. 47 pre-existing failures identical in identity;
+  the 2 extra are former timeouts #10/#11 failing on their real assertion
+  (`'API Access' == 'Clear Comms'`), which were FAILED in the 20.8 baseline —
+  so the set equals 20.8's 49 exactly. 25 former timeouts pass. 5th error =
+  the intermittent `test_set_audio_file_enables_play` teardown tooling-3
+  documented.
+- Not committed.
 
 ## Change Log
 
 - 2026-09-14 — Drafted by Winston immediately after tooling-3 merged. Both stall sites are test defects; the story fixes them at the root, adds a net against recurrence with an audit-first guard, and forbids touching the production dialogs.
+- 2026-09-14 — Implemented (dev agent). Both sites fixed test-side; net audited and shipped; single run to completion with zero timeouts. Status → review.

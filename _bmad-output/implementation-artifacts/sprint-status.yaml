@@ -292,4 +292,4 @@ development_status:
   # _tts_service=None (3 tests). Both are TEST defects; the production modals stay.
   # Adds an audit-first defensive fixture so an unexpected modal raises instead of
   # hanging. Restores single-invocation `pytest tests/`.
-  tooling-4-fix-suite-hangs: in-progress
+  tooling-4-fix-suite-hangs: done

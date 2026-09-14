@@ -1,0 +1,5 @@
+ERROR tests/unit/ui/dialogs/voice_design_studio/test_audio_player_widget.py::TestAudioFileManagement::test_set_audio_file_enables_play
+ERROR tests/unit/ui/dialogs/voice_design_studio/test_audio_player_widget.py::TestAudioFileManagement::test_set_audio_file_updates_duration
+ERROR tests/unit/ui/dialogs/voice_design_studio/test_audio_player_widget.py::TestAudioFileManagement::test_set_none_disables_play
+ERROR tests/unit/ui/dialogs/voice_design_studio/test_audio_player_widget.py::TestAudioFileManagement::test_get_audio_path
+ERROR tests/unit/ui/dialogs/voice_design_studio/test_audio_player_widget.py::TestPlaybackState::test_get_duration

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import List, Optional, Tuple
-from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -79,13 +78,13 @@ def valid_wav(tmp_path):
 
 
 @pytest.fixture
-def dialog(qapp, default_settings, qtbot):
-    quick_speak_stub = MagicMock()
-    quick_speak_stub.load_entries = MagicMock()
+def dialog(qapp, default_settings, qtbot, quick_speak_service_stub):
+    # tooling-4: shared typed stub (tests/conftest.py) -- a bare MagicMock()
+    # here pops a modal from inside SettingsDialog.__init__.
     dlg = SettingsDialog(
         default_settings,
         parent=None,
-        quick_speak_service=quick_speak_stub,
+        quick_speak_service=quick_speak_service_stub,
     )
     qtbot.addWidget(dlg)
     return dlg

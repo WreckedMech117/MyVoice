@@ -169,7 +169,7 @@ class TestResetVoiceToBundled:
 class TestResetQuickSpeak:
     """Tests for Quick Speak reset functionality."""
 
-    def test_reset_quick_speak_entries(self, qapp):
+    def test_reset_quick_speak_entries(self, qapp, quick_speak_service_stub):
         """Test _reset_quick_speak_entries creates default profile."""
         from myvoice.ui.components.settings_dialog import SettingsDialog
 
@@ -179,7 +179,9 @@ class TestResetQuickSpeak:
         mock_settings.always_on_top = True
         mock_settings.to_dict.return_value = {"_settings_version": "1.0"}
 
-        mock_quick_speak = MagicMock()
+        # tooling-4: shared typed stub (tests/conftest.py) -- a bare
+        # MagicMock() here pops a modal from inside SettingsDialog.__init__.
+        mock_quick_speak = quick_speak_service_stub
 
         dialog = SettingsDialog(mock_settings, quick_speak_service=mock_quick_speak)
 
