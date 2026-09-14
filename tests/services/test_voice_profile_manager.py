@@ -127,7 +127,10 @@ class TestVoiceProfileManagerInit:
         )
         assert manager.voice_directory == temp_voice_dir
         assert manager.cache_file == temp_cache_file
-        assert manager.max_duration == 10.0
+        # tooling-5: was 10.0 (GPT-SoVITS-era clip limit). The V2 migration
+        # (7d36963) raised the default to 300.0 because Qwen3-TTS handles
+        # long reference files.
+        assert manager.max_duration == 300.0
         assert manager.auto_scan is True
         assert len(manager._profiles) == 0
 

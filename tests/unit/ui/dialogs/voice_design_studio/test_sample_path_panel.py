@@ -100,6 +100,18 @@ def panel(qapp):
     panel.deleteLater()
 
 
+def _open_clone_sub_tab(panel):
+    """Switch the panel to its Clone sub-tab, as the user does via Next.
+
+    QA3 split SamplePathPanel into Sample/Clone sub-tabs; the transcript,
+    extract, preview and modified-indicator widgets live on the Clone
+    sub-tab (index 1), which is not the current page after construction.
+    Qt's ``isVisible()`` is False for any widget on a non-current tab page,
+    so the positive visibility assertions below need the Clone page up.
+    """
+    panel.sub_tabs.setCurrentIndex(1)
+
+
 @pytest.fixture
 def sample_wav_file(tmp_path):
     """Create a sample WAV file for testing."""
@@ -496,6 +508,7 @@ class TestTranscriptVisibility:
 
         with patch.object(panel, '_get_audio_duration', return_value=5.0):
             panel._load_audio_file(wav_file)
+        _open_clone_sub_tab(panel)
 
         assert panel.transcript_group.isVisible()
 
@@ -560,6 +573,7 @@ class TestTranscriptionState:
 
         with patch.object(panel, '_get_audio_duration', return_value=5.0):
             panel._load_audio_file(wav_file)
+        _open_clone_sub_tab(panel)
 
         panel.set_transcribing(True, "Transcribing...")
 
@@ -632,6 +646,7 @@ class TestTranscriptionError:
 
         with patch.object(panel, '_get_audio_duration', return_value=5.0):
             panel._load_audio_file(wav_file)
+        _open_clone_sub_tab(panel)
 
         panel.set_transcription_error("Connection failed")
 
@@ -804,6 +819,7 @@ class TestExtractVisibility:
 
         with patch.object(panel, '_get_audio_duration', return_value=5.0):
             panel._load_audio_file(wav_file)
+        _open_clone_sub_tab(panel)
 
         assert panel.extract_group.isVisible()
 
@@ -914,6 +930,7 @@ class TestExtractionState:
 
         with patch.object(panel, '_get_audio_duration', return_value=5.0):
             panel._load_audio_file(wav_file)
+        _open_clone_sub_tab(panel)
 
         panel.set_extracting(True, "Extracting...")
 
@@ -961,6 +978,7 @@ class TestExtractionComplete:
 
         with patch.object(panel, '_get_audio_duration', return_value=5.0):
             panel._load_audio_file(wav_file)
+        _open_clone_sub_tab(panel)
 
         # auto_play=False skips playback
         panel.set_extraction_complete(audio_preview, auto_play=False)
@@ -1052,6 +1070,7 @@ class TestExtractionError:
 
         with patch.object(panel, '_get_audio_duration', return_value=5.0):
             panel._load_audio_file(wav_file)
+        _open_clone_sub_tab(panel)
 
         panel.set_extraction_error("Failed")
 
@@ -1272,6 +1291,7 @@ class TestTranscriptModifiedIndicator:
 
         with patch.object(panel, '_get_audio_duration', return_value=5.0):
             panel._load_audio_file(wav_file)
+        _open_clone_sub_tab(panel)
 
         panel.set_transcript("Original transcript")
         panel.set_extraction_complete(audio_preview, auto_play=False)
@@ -1295,6 +1315,7 @@ class TestTranscriptModifiedIndicator:
 
         with patch.object(panel, '_get_audio_duration', return_value=5.0):
             panel._load_audio_file(wav_file)
+        _open_clone_sub_tab(panel)
 
         panel.set_transcript("Original")
         panel.set_extraction_complete(audio_preview, auto_play=False)
@@ -1319,6 +1340,7 @@ class TestTranscriptModifiedIndicator:
 
         with patch.object(panel, '_get_audio_duration', return_value=5.0):
             panel._load_audio_file(wav_file)
+        _open_clone_sub_tab(panel)
 
         panel.set_transcript("Original transcript")
         panel.set_extraction_complete(audio_preview, auto_play=False)
@@ -1513,6 +1535,7 @@ class TestReExtractionClear:
 
         with patch.object(panel, '_get_audio_duration', return_value=5.0):
             panel._load_audio_file(wav_file)
+        _open_clone_sub_tab(panel)
 
         panel.set_transcript("Original")
         panel.set_extraction_complete(audio_preview, auto_play=False)

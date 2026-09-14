@@ -2,7 +2,9 @@
 Tests for Session Manager
 
 Tests the session_manager module which handles temporary session directory
-lifecycle for Voice Design Studio (Story 4.1).
+lifecycle for Voice Design Studio (Story 4.1; QA4 made the default session
+a single persistent ``current`` directory, with UUID sessions behind
+``use_persistent=False``).
 """
 
 import pytest
@@ -28,22 +30,33 @@ class TestSessionManagerCreation:
         assert manager.session_dir.exists(), "Session directory should be created"
         assert manager.session_dir.is_dir(), "Session directory should be a directory"
 
-    def test_session_directory_has_uuid_in_name(self, tmp_path):
-        """Test that session directory name contains a UUID."""
-        from myvoice.utils.session_manager import SessionManager
+    def test_session_directory_is_persistent_current_by_default(self, tmp_path):
+        """Test that the default session directory is the persistent one.
+
+        tooling-5: was "directory name is session_{uuid}" (Story 4.1). QA4
+        switched the default to a single persistent ``current`` directory so
+        generated variants survive closing and reopening the studio.
+        """
+        from myvoice.utils.session_manager import (
+            PERSISTENT_SESSION_NAME, SessionManager,
+        )
 
         manager = SessionManager(base_dir=tmp_path)
 
-        # Directory name should match pattern: session_{uuid}
-        dir_name = manager.session_dir.name
-        assert dir_name.startswith("session_"), f"Should start with 'session_': {dir_name}"
+        assert manager.session_dir.name == PERSISTENT_SESSION_NAME == "current"
 
-        # Extract UUID part and verify it's valid
-        uuid_part = dir_name[8:]  # Remove "session_" prefix
+    def test_non_persistent_session_directory_is_uuid(self, tmp_path):
+        """Test that ``use_persistent=False`` still yields a UUID-named directory (QA4)."""
+        from myvoice.utils.session_manager import SessionManager
+
+        manager = SessionManager(base_dir=tmp_path, use_persistent=False)
+
+        dir_name = manager.session_dir.name
         try:
-            uuid.UUID(uuid_part)
+            uuid.UUID(dir_name)
         except ValueError:
-            pytest.fail(f"Directory name should contain valid UUID: {dir_name}")
+            pytest.fail(f"Directory name should be a valid UUID: {dir_name}")
+        manager.cleanup()
 
     def test_session_directory_under_design_sessions(self, tmp_path):
         """Test that session directory is created under design_sessions folder."""
@@ -56,19 +69,27 @@ class TestSessionManagerCreation:
             f"Should be under design_sessions: {manager.session_dir}"
 
     def test_session_id_property(self, tmp_path):
-        """Test that session_id property returns the UUID."""
-        from myvoice.utils.session_manager import SessionManager
+        """Test that session_id names the persistent session by default.
+
+        tooling-5: was "session_id is a valid UUID" (Story 4.1); QA4 made the
+        default session id the persistent ``current`` name. The UUID form is
+        kept behind ``use_persistent=False``.
+        """
+        from myvoice.utils.session_manager import (
+            PERSISTENT_SESSION_NAME, SessionManager,
+        )
 
         manager = SessionManager(base_dir=tmp_path)
+        assert isinstance(manager.session_id, str), "session_id should be a string"
+        assert manager.session_id == PERSISTENT_SESSION_NAME
+        assert manager.session_dir.name == manager.session_id
 
-        # session_id should be a valid UUID string
-        session_id = manager.session_id
-        assert isinstance(session_id, str), "session_id should be a string"
-
+        legacy = SessionManager(base_dir=tmp_path, use_persistent=False)
         try:
-            uuid.UUID(session_id)
+            uuid.UUID(legacy.session_id)
         except ValueError:
-            pytest.fail(f"session_id should be valid UUID: {session_id}")
+            pytest.fail(f"session_id should be valid UUID: {legacy.session_id}")
+        legacy.cleanup()
 
     def test_uses_voice_files_by_default(self):
         """Test that SessionManager uses voice_files as default base_dir."""
@@ -185,12 +206,27 @@ class TestSessionManagerCleanup:
 class TestSessionManagerMultipleSessions:
     """Tests for multiple SessionManager instances."""
 
-    def test_multiple_sessions_have_unique_directories(self, tmp_path):
-        """Test that each SessionManager instance has a unique directory."""
+    def test_persistent_sessions_share_one_directory(self, tmp_path):
+        """Test that default instances all open the same persistent session.
+
+        tooling-5: was "each instance has a unique directory" (Story 4.1);
+        QA4 made the default session shared so a reopened studio finds the
+        variants the previous one generated.
+        """
         from myvoice.utils.session_manager import SessionManager
 
         manager1 = SessionManager(base_dir=tmp_path)
         manager2 = SessionManager(base_dir=tmp_path)
+
+        assert manager1.session_dir == manager2.session_dir
+        assert manager1.session_id == manager2.session_id
+
+    def test_multiple_sessions_have_unique_directories(self, tmp_path):
+        """Test that non-persistent instances each get a unique directory (QA4)."""
+        from myvoice.utils.session_manager import SessionManager
+
+        manager1 = SessionManager(base_dir=tmp_path, use_persistent=False)
+        manager2 = SessionManager(base_dir=tmp_path, use_persistent=False)
 
         assert manager1.session_dir != manager2.session_dir, \
             "Each session should have unique directory"
@@ -202,11 +238,15 @@ class TestSessionManagerMultipleSessions:
         manager2.cleanup()
 
     def test_cleanup_one_session_preserves_others(self, tmp_path):
-        """Test that cleaning up one session doesn't affect others."""
+        """Test that cleaning up one session doesn't affect others.
+
+        tooling-5: needs ``use_persistent=False`` since QA4 -- two default
+        instances share ``current`` and cleaning one necessarily empties both.
+        """
         from myvoice.utils.session_manager import SessionManager
 
-        manager1 = SessionManager(base_dir=tmp_path)
-        manager2 = SessionManager(base_dir=tmp_path)
+        manager1 = SessionManager(base_dir=tmp_path, use_persistent=False)
+        manager2 = SessionManager(base_dir=tmp_path, use_persistent=False)
 
         # Create files in both
         (manager1.session_dir / "file1.pt").touch()

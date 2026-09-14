@@ -34,6 +34,12 @@ def _make_app():
     # a missing attr on a __new__'d instance, so pre-set the optional ones the
     # device path reads via getattr.
     app._pending_progressive_text_length = None
+    # Story 20.5 Phase 4: the device path asks the producer whether the
+    # progressive stream is continuous via getattr(self, "_tts_service", None)
+    # (tooling-5: unset, that getattr raised RuntimeError on the __new__'d
+    # instance and the device path fell back to batch, never opening the
+    # streaming session).
+    app._tts_service = None
     app._audio_coordinator = AsyncMock()
     return app
 

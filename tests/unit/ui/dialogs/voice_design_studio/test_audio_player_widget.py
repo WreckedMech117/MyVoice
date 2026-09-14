@@ -7,7 +7,6 @@ Story 1.4: Generate Single Voice Variation
 """
 
 import pytest
-import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -33,13 +32,27 @@ def widget(qapp):
     """Create an AudioPlayerWidget instance."""
     widget = AudioPlayerWidget()
     yield widget
+    # tooling-5: release the QMediaPlayer source before the widget goes away.
+    # set_audio_file() hands the path to QMediaPlayer.setSource(), and the
+    # Windows media backend keeps that file open until the source is cleared;
+    # deleteLater() alone never runs under pytest (no event loop spin), so the
+    # handle outlived the test and the old tempfile teardown hit WinError 32.
+    widget.clear()
     widget.deleteLater()
 
 
 @pytest.fixture
-def temp_audio_file():
-    """Create a temporary audio file for testing."""
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+def temp_audio_file(tmp_path):
+    """Create a temporary audio file for testing.
+
+    tooling-5: written under pytest's ``tmp_path`` instead of a hand-rolled
+    ``NamedTemporaryFile`` with an eager ``unlink()`` in teardown. Fixture
+    teardown runs in reverse setup order, so the old unlink ran while the
+    ``widget`` fixture's QMediaPlayer still held the file open (5 teardown
+    ERRORs, WinError 32). ``tmp_path`` is reclaimed by pytest later, after
+    the widget fixture has released the source.
+    """
+    with open(tmp_path / "player_sample.wav", "wb") as f:
         # Write minimal WAV header (44 bytes) + some data
         # RIFF header
         f.write(b'RIFF')
@@ -60,9 +73,6 @@ def temp_audio_file():
         f.write(b'\x00' * 1000)  # Audio data
         temp_path = Path(f.name)
     yield temp_path
-    # Cleanup
-    if temp_path.exists():
-        temp_path.unlink()
 
 
 class TestAudioPlayerWidgetInit:

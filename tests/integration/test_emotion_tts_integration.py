@@ -71,6 +71,17 @@ class TestQwenTTSRequestInstruct:
             assert len(request.instruct) > 0
 
 
+# tooling-5: word stems that identify each emotion in either phrasing style
+# (UI presets are acted direction, service presets are adverbs -- see
+# test_emotion_preset_instructs_match_qwen_service).
+EMOTION_INSTRUCT_STEMS = {
+    "happy": ("happ", "joy", "cheer"),
+    "sad": ("sad", "sorrow", "melanchol"),
+    "angry": ("angr", "rage"),
+    "flirtatious": ("flirt", "teas"),
+}
+
+
 class TestEmotionPresetInstruct:
     """Tests for EmotionPreset instruct values."""
 
@@ -119,11 +130,26 @@ class TestEmotionPresetInstruct:
                 assert qwen_instruct is None
                 assert "calm" in ui_preset.instruct.lower()
             else:
-                # Other emotions: UI instruct should contain the same meaning
-                # QwenTTSService uses more verbose instructions
+                # Other emotions: both instructs must carry the same emotional
+                # intent. tooling-5: this used to be ``qwen_key in instruct``,
+                # which broke when the V2 Qwen3-TTS migration (7d36963)
+                # rewrote the UI presets as acted direction ("joyful
+                # enthusiasm ... pure happiness", "deep sorrow", "rage",
+                # "teasing allure") and the service presets as adverbs
+                # ("Speak happily", "sadly", "angrily", "flirtatiously"). The
+                # emotion word is inflected or paraphrased on both sides, so
+                # match on the stems each phrasing actually uses.
                 assert ui_preset.instruct is not None
-                # Both should have the same emotional intent
-                assert qwen_key in ui_preset.instruct.lower()
+                assert qwen_instruct is not None
+                stems = EMOTION_INSTRUCT_STEMS[qwen_key]
+                assert any(stem in ui_preset.instruct.lower() for stem in stems), (
+                    f"UI {qwen_key} instruct lost its emotional intent: "
+                    f"{ui_preset.instruct!r}"
+                )
+                assert any(stem in qwen_instruct.lower() for stem in stems), (
+                    f"Service {qwen_key} instruct lost its emotional intent: "
+                    f"{qwen_instruct!r}"
+                )
 
 
 class TestEmotionButtonGroupInstruct:
@@ -318,4 +344,9 @@ class TestQwenTTSServiceEmotionIntegration:
             instruct = QwenTTSService.EMOTION_PRESETS[emotion]
             assert instruct is not None
             assert len(instruct) > 0
-            assert emotion in instruct.lower()
+            # tooling-5: was ``emotion in instruct.lower()``; the service
+            # presets are adverbial since the V2 migration (7d36963) --
+            # "Speak happily" does not contain "happy". Match the stem.
+            assert any(stem in instruct.lower() for stem in EMOTION_INSTRUCT_STEMS[emotion]), (
+                f"{emotion} instruct does not name its emotion: {instruct!r}"
+            )

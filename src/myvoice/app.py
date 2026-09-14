@@ -1045,12 +1045,88 @@ class MyVoiceApp(QObject):
         stack, where the plain path is correct and has shipped for many
         releases; narrowing this change to the one startup hand-off that
         actually hits the hazard keeps the blast radius at one call site.
+
+        Story 20.9: the deferral loop itself now lives in
+        ``_schedule_when_loop_is_idle`` so the two other startup sites the
+        audit moved (voice restoration, the local TTS API start) share one
+        mechanism rather than a copy. This wrapper is the warmup's contract —
+        same signature, same ``_compile_warmup_entrypoint`` body, same log
+        lines (the AC #4 hardware evidence quotes them verbatim) — and the
+        warmup call site in ``_initialize_services_async`` is untouched.
+        """
+        return self._schedule_when_loop_is_idle(
+            lambda: self._compile_warmup_entrypoint(coro_factory),
+            label="torch.compile warmup",
+            on_success=lambda result: self.logger.debug(
+                "torch.compile warmup task completed"
+            ),
+            on_error=on_error,
+            failure_note=(
+                "If the task is destroyed pending, compile priming will not "
+                "run this launch and the first generation pays the inductor "
+                "reload."
+            ),
+        )
+
+    def _schedule_when_loop_is_idle(
+        self,
+        coro_factory,
+        *,
+        label: str,
+        on_success=None,
+        on_error=None,
+        failure_note: str = "",
+    ):
+        """Story 20.9 (F7) — the generic idle-pass scheduler behind
+        ``_run_async_task_when_loop_is_idle``.
+
+        Creates ``coro_factory()`` as a task via ``_run_async_task`` on the
+        first loop pass where ``asyncio.current_task()`` is ``None``, re-arming
+        with ``loop.call_soon`` until then (bounded by ``_MAX_IDLE_DEFERRALS``,
+        after which it schedules anyway and logs a WARNING so the path cannot
+        go silent).
+
+        **When to use it.** A scheduling site is exposed to the qasync
+        task-destruction hazard when the task it creates can still be pending
+        while another task synchronously pumps Qt events. In this app the only
+        task that does that on a live path is ``main.py``'s Task-1 during the
+        startup window (the ``splash.showMessage``/``processEvents``/
+        ``splash.finish`` stretch after ``initialize_async`` returns), so the
+        sites that need this are the ones that schedule *from inside Task-1*
+        with a task that outlives Task-1's last real suspension. Everything
+        scheduled from a Qt signal handler after startup runs with Task-1
+        parked at ``app_close.wait()`` and is safe on the plain path — see
+        ``_bmad-output/implementation-artifacts/20-9-qasync-call-site-audit-evidence.md``
+        for the per-site classification.
+
+        **What it does not do.** It guards *creation*, not every later step:
+        a long-lived task created here is still killed if some task pumps Qt
+        while it is being woken. It is therefore paired with "Task-1 does not
+        pump again until shutdown", which holds because the interactive phase
+        runs entirely from the Qt loop with no task on the stack.
+
+        Ordering: the idle callback is a ``call_soon`` like any task step, so
+        Qt delivers it FIFO with its neighbours — but the *task* is created
+        one pass later, when the callback runs. Consequences:
+
+        * two sites scheduled through this helper keep their relative order;
+        * a plain ``_run_async_task`` scheduled *before* an idle hand-off
+          still runs first;
+        * a plain ``_run_async_task`` scheduled *after* an idle hand-off ALSO
+          runs first, because its task exists immediately and the idle one
+          does not yet. Do not sequence an idle-scheduled initialiser ahead of
+          a plainly-scheduled consumer of its state — the consumer wins.
+          (Pinned by ``test_generic_helper_creates_its_task_one_pass_after_a_
+          plain_neighbour``.)
+
+        Returns ``None``; the future is not available at call time because
+        creation is deferred.
         """
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError as exc:
             self.logger.warning(
-                f"torch.compile warmup could not resolve an event loop: {exc}"
+                f"{label} could not resolve an event loop: {exc}"
             )
             return None
 
@@ -1061,9 +1137,10 @@ class MyVoiceApp(QObject):
             if current is not None and state["deferrals"] < self._MAX_IDLE_DEFERRALS:
                 if state["deferrals"] == 0:
                     self.logger.debug(
-                        "Deferring torch.compile warmup: task %r is mid-step "
+                        "Deferring %s: task %r is mid-step "
                         "(qasync delivers task steps from Qt timerEvent, and "
                         "asyncio refuses to enter a second task re-entrantly)",
+                        label,
                         getattr(current, "get_name", lambda: current)(),
                     )
                 state["deferrals"] += 1
@@ -1072,24 +1149,22 @@ class MyVoiceApp(QObject):
 
             if current is not None:
                 self.logger.warning(
-                    "torch.compile warmup: the event loop never went idle "
-                    "after %d passes; scheduling anyway. If the task is "
-                    "destroyed pending, compile priming will not run this "
-                    "launch and the first generation pays the inductor "
-                    "reload.",
+                    "%s: the event loop never went idle after %d passes; "
+                    "scheduling anyway. %s",
+                    label,
                     state["deferrals"],
+                    failure_note,
                 )
 
             self.logger.info(
-                "torch.compile warmup handed off to the event loop "
+                "%s handed off to the event loop "
                 "(deferred %d loop pass(es) for qasync re-entrancy safety)",
+                label,
                 state["deferrals"],
             )
             self._run_async_task(
-                self._compile_warmup_entrypoint(coro_factory),
-                on_success=lambda result: self.logger.debug(
-                    "torch.compile warmup task completed"
-                ),
+                coro_factory(),
+                on_success=on_success,
                 on_error=on_error,
             )
 
@@ -2578,26 +2653,52 @@ class MyVoiceApp(QObject):
             self._main_window.set_voice_manager(self._voice_manager)
             self.logger.debug("Connected voice manager to main window")
 
-        # Schedule voice restoration as a coroutine to run AFTER initialization completes
-        # This ensures the initialization async task is done before creating a new task
+        # Schedule voice restoration to run once no task is mid-step.
+        #
+        # Story 20.9 (F7). This used to be ``QTimer.singleShot(500, ...)`` ->
+        # ``loop.create_task(delayed_restore())`` with a further
+        # ``asyncio.sleep(0.5)`` inside — a timing guess at "initialization is
+        # done". The guess held on every logged launch only because the model
+        # preload that follows this callback suspends Task-1 for 3-4 s, so the
+        # timer fired and the restore finished while Task-1 was parked. On a
+        # launch where the preload returns fast (no CUDA, missing checkpoint)
+        # the 500 ms timer can fire *inside* ``main.py``'s post-init
+        # ``processEvents()`` stretch; the QTimer slot itself survives that,
+        # but the ``create_task`` it makes arms a Qt zero-timer that is
+        # delivered in the same pump while Task-1 is current, and the restore
+        # task is destroyed by ``asyncio._enter_task`` before its first step.
+        # Reproduced under a real qasync loop in
+        # ``tests/unit/test_app_qasync_call_sites.py`` (control row).
+        #
+        # ``_schedule_when_loop_is_idle`` is the precise form of the same
+        # intent: create the task on the first loop pass with no task
+        # mid-step. Ordering relative to its neighbours is unchanged —
+        # hydration (scheduled a few lines below, first-step zero-timer armed
+        # after this idle callback's) still completes its single synchronous
+        # step before the restore's first step, the restore still lands
+        # inside the preload suspension, before UI construction and before
+        # the compile-warmup hand-off. The 0.5 s sleep is dropped: it was
+        # the guess this helper replaces, and its wake-up was itself an
+        # exposed step.
         if hasattr(self, '_config_manager') and hasattr(self, '_voice_manager'):
-            # Use asyncio.create_task directly from the event loop (not from within a task)
-            # Schedule it to run after a brief delay to ensure initialization is complete
             async def delayed_restore():
-                await asyncio.sleep(0.5)  # Wait half second for init to complete
                 try:
                     await self._restore_voice_selection_on_startup()
                     self._on_voice_restoration_complete(None)
                 except Exception as e:
                     self._on_voice_restoration_failed(e)
 
-            # Schedule the coroutine using QTimer + loop.create_task
-            def schedule_restore():
-                loop = asyncio.get_event_loop()
-                loop.create_task(delayed_restore())
-                self.logger.info("Voice restoration scheduled after initialization delay")
-
-            QTimer.singleShot(500, schedule_restore)
+            self._schedule_when_loop_is_idle(
+                delayed_restore,
+                label="voice restoration",
+                on_success=lambda _result: self.logger.debug(
+                    "Voice restoration task completed"
+                ),
+                failure_note=(
+                    "If the task is destroyed pending, the saved voice "
+                    "selection is not restored this launch."
+                ),
+            )
 
     def _on_voice_service_start_failed(self, error):
         """Handle voice profile service startup failure."""
@@ -4337,13 +4438,53 @@ class MyVoiceApp(QObject):
             )
 
         if getattr(self._app_settings, "enable_http_api", False):
-            try:
-                await self._api_server.start(
-                    host="127.0.0.1",
-                    port=getattr(self._app_settings, "http_api_port", 7778),
-                )
-            except Exception:
-                self.logger.exception("Failed to start local TTS API server")
+            # Story 20.9 (F7). ``ApiServerController.start`` creates uvicorn's
+            # long-lived ``serve()`` task (``server.py`` ``ensure_future``),
+            # whose main loop wakes every 100 ms. At startup this method runs
+            # inside Task-1 immediately before ``main.py``'s post-init
+            # ``processEvents()`` / ``splash.finish`` stretch, so a tick
+            # landing in that pump is delivered while Task-1 is mid-step and
+            # ``asyncio._enter_task`` kills the serve task — silently, because
+            # the controller holds a strong reference (no "destroyed pending"
+            # line, only the loop's "Exception in callback"), leaving a
+            # listening socket with no tick loop and a ``stop()`` that hangs
+            # into main.py's hard-exit timer. Measured margin on this host is
+            # ~80 ms (tick period minus the 20 ms readiness poll), which is a
+            # timing accident, not a design. Deferring the start to the first
+            # idle loop pass creates the task after Task-1 has parked at
+            # ``app_close.wait()``; Task-1 does not pump again until
+            # ``cleanup_async``, which stops this server first.
+            #
+            # Behaviour preserved: the server still starts exactly once, on
+            # the same host/port, with the same exception logging; the only
+            # observable change is that it comes up ~150 ms later, after the
+            # UI stretch instead of before ``initialize_async`` returns. The
+            # toggle is re-read at run time so a Settings change inside that
+            # gap cannot start a server the user just disabled (the reconcile
+            # path handles the enable case itself).
+            async def _start_api_server_if_still_enabled():
+                if not getattr(self._app_settings, "enable_http_api", False):
+                    self.logger.info(
+                        "Local TTS API start skipped: disabled before the "
+                        "deferred start ran"
+                    )
+                    return
+                try:
+                    await self._api_server.start(
+                        host="127.0.0.1",
+                        port=getattr(self._app_settings, "http_api_port", 7778),
+                    )
+                except Exception:
+                    self.logger.exception("Failed to start local TTS API server")
+
+            self._schedule_when_loop_is_idle(
+                _start_api_server_if_still_enabled,
+                label="local TTS API start",
+                failure_note=(
+                    "If the task is destroyed pending, the local TTS API is "
+                    "not started this launch."
+                ),
+            )
 
     async def _reconcile_api_server(self, old_enabled: bool, old_port: int, new_settings):
         """Start/stop/restart the API server on a settings change.

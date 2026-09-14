@@ -80,6 +80,17 @@ class QuickSpeakSettingsWidget(QWidget):
         entries_group = QGroupBox("Quick Speak Entries")
         entries_layout = QVBoxLayout(entries_group)
 
+        # Story ui-2: construction-time load failures are surfaced here,
+        # in-place, instead of via a modal from inside __init__. Same
+        # status-label idiom as the other Settings tabs. Hidden until needed.
+        self.load_error_label = QLabel("")
+        self.load_error_label.setWordWrap(True)
+        self.load_error_label.setProperty("class", "status-label")
+        self.load_error_label.setProperty("status", "error")
+        self.load_error_label.setStyleSheet("color: #dc3545;")
+        self.load_error_label.hide()
+        entries_layout.addWidget(self.load_error_label)
+
         # Table for entries
         self.entries_table = QTableWidget()
         self.entries_table.setColumnCount(2)
@@ -146,14 +157,36 @@ class QuickSpeakSettingsWidget(QWidget):
             # Load entries for current profile
             entries = self.quick_speak_service.get_entries()
             self._populate_table(entries)
+            self._clear_load_error()
             self.logger.debug(f"Loaded {len(entries)} Quick Speak entries from profile: {current_profile}")
         except Exception as e:
+            # Story ui-2 (AC #1): this runs from SettingsDialog.__init__, so
+            # it must never block. Log at the same level as before and show
+            # the error in the tab; the rest of Settings stays usable.
             self.logger.error(f"Error loading Quick Speak entries: {e}")
-            QMessageBox.warning(
-                self,
-                "Load Error",
-                f"Failed to load Quick Speak entries: {e}"
-            )
+            self._show_load_error(f"Failed to load Quick Speak entries: {e}")
+
+    def _show_load_error(self, message: str):
+        """Surface a load failure inside the tab (non-modal).
+
+        The entries table is emptied and disabled so stale or partial data
+        cannot be acted on; the profile controls stay enabled so a profile
+        switch remains available as a recovery path.
+        """
+        self.load_error_label.setText(message)
+        self.load_error_label.show()
+        self.entries_table.setRowCount(0)
+        self.entries_table.setEnabled(False)
+        self.add_button.setEnabled(False)
+        self.edit_button.setEnabled(False)
+        self.delete_button.setEnabled(False)
+
+    def _clear_load_error(self):
+        """Hide the in-place load error and re-enable the entries table."""
+        self.load_error_label.clear()
+        self.load_error_label.hide()
+        self.entries_table.setEnabled(True)
+        self.add_button.setEnabled(True)
 
     def _populate_table(self, entries: List[QuickSpeakEntry]):
         """

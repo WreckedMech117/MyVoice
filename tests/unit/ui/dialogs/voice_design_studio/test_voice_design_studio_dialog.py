@@ -14,6 +14,12 @@ Acceptance Criteria:
 - "From Description" tab is active by default with visual indicator
 - Clicking tabs switches content panels
 - Close button (X) closes dialog and returns to main app
+
+Revisions the tests below track (tooling-5 reconciliation):
+- Emotion Variants feature: tabs are From Description / Emotions / Refinement
+- QA8: "From Sample" tab removed; cloning is the From Description > Clone sub-tab
+- QA5: footer Save button removed; saving happens in Refinement / Clone
+- QA4: SessionManager uses one persistent "current" session, not a UUID per dialog
 """
 
 import pytest
@@ -112,19 +118,34 @@ class TestVoiceDesignStudioTabs:
         assert hasattr(dialog, 'tab_widget')
         assert isinstance(dialog.tab_widget, QTabWidget)
 
-    def test_has_two_tabs(self, dialog):
-        """Test dialog has exactly two tabs."""
-        assert dialog.tab_widget.count() == 2
+    def test_has_three_tabs(self, dialog):
+        """Test dialog has exactly three tabs.
+
+        tooling-5: was "two tabs" (Story 1.2). The Emotion Variants feature
+        added the Emotions and Refinement tabs, and QA8 removed the From
+        Sample tab (cloning moved into the From Description > Clone sub-tab).
+        """
+        assert dialog.tab_widget.count() == 3
 
     def test_first_tab_is_from_description(self, dialog):
         """Test first tab is labeled 'From Description'."""
         tab_text = dialog.tab_widget.tabText(0)
         assert tab_text == "From Description"
 
-    def test_second_tab_is_from_sample(self, dialog):
-        """Test second tab is labeled 'From Sample'."""
-        tab_text = dialog.tab_widget.tabText(1)
-        assert tab_text == "From Sample"
+    def test_second_and_third_tabs_are_emotions_and_refinement(self, dialog):
+        """Test the workflow tabs after From Description.
+
+        tooling-5: was "second tab is From Sample" (Story 1.2); QA8 removed
+        that tab and the Emotion Variants feature owns tabs 1 and 2.
+        """
+        assert dialog.tab_widget.tabText(1) == "Emotions"
+        assert dialog.tab_widget.tabText(2) == "Refinement"
+
+    def test_clone_lives_in_description_sub_tab(self, dialog):
+        """QA8: cloning is the third sub-tab of the From Description panel."""
+        sub_tabs = dialog.description_panel.sub_tabs
+        assert sub_tabs.tabText(2) == "Clone"
+        assert sub_tabs.widget(2) is dialog.description_panel.clone_tab
 
     def test_from_description_tab_active_by_default(self, dialog):
         """Test 'From Description' tab is active by default."""
@@ -162,14 +183,20 @@ class TestVoiceDesignStudioButtons:
         assert hasattr(dialog, 'cancel_button')
         assert dialog.cancel_button is not None
 
-    def test_save_button_exists(self, dialog):
-        """Test save button exists."""
-        assert hasattr(dialog, 'save_button')
-        assert dialog.save_button is not None
+    def test_new_voice_button_exists(self, dialog):
+        """Test the New Voice button exists (QA Round 2 item #6)."""
+        assert hasattr(dialog, 'new_voice_button')
+        assert dialog.new_voice_button is not None
 
-    def test_save_button_initially_disabled(self, dialog):
-        """Test save button is disabled initially (no voice ready)."""
-        assert not dialog.save_button.isEnabled()
+    def test_footer_has_no_save_button(self, dialog):
+        """Test the footer carries no Save button.
+
+        tooling-5: was "save button exists / initially disabled" (Story 1.2 /
+        1.5). QA5 removed the footer Save button; saving now happens in the
+        Refinement tab (``refinement_panel.save_requested``) and the From
+        Description > Clone sub-tab, so the footer is New Voice + Cancel only.
+        """
+        assert not hasattr(dialog, 'save_button')
 
 
 class TestVoiceDesignStudioSignals:
@@ -205,16 +232,25 @@ class TestVoiceDesignStudioAccessibility:
         assert dialog.accessibleName() == "Voice Design Studio"
 
     def test_tab_widget_has_accessible_name(self, dialog):
-        """Test tab widget has accessible name set."""
-        assert dialog.tab_widget.accessibleName() == "Voice creation method"
+        """Test tab widget has accessible name set.
+
+        tooling-5: was "Voice creation method" (Story 1.2, a choice between
+        two creation paths). QA8 turned the tabs into a workflow (From
+        Description -> Emotions -> Refinement), renamed accordingly.
+        """
+        assert dialog.tab_widget.accessibleName() == "Voice creation workflow"
 
     def test_cancel_button_has_accessible_name(self, dialog):
         """Test cancel button has accessible name set."""
         assert dialog.cancel_button.accessibleName() == "Cancel"
 
-    def test_save_button_has_accessible_name(self, dialog):
-        """Test save button has accessible name set."""
-        assert dialog.save_button.accessibleName() == "Save Voice"
+    def test_new_voice_button_has_accessible_name(self, dialog):
+        """Test New Voice button has accessible name set.
+
+        tooling-5: was the Save button's "Save Voice"; QA5 removed the footer
+        Save button (see TestVoiceDesignStudioButtons).
+        """
+        assert dialog.new_voice_button.accessibleName() == "New Voice"
 
 
 class TestVoiceDesignStudioUnsavedWorkTracking:
@@ -252,32 +288,27 @@ class TestVoiceDesignStudioUnsavedWorkTracking:
 # Story 1.5 Tests
 
 class TestSaveButtonState:
-    """Tests for Save button state management (Story 1.5)."""
+    """Tests for save-readiness handling (Story 1.5, revised by QA5).
 
-    def test_save_button_initially_disabled(self, dialog):
-        """Test save button is disabled when no voice is ready."""
-        assert not dialog.save_button.isEnabled()
+    tooling-5: the five original tests drove ``_on_save_ready_changed`` and
+    asserted the footer Save button's enabled state. QA5 removed that button
+    and made the handler an explicit no-op (saving moved to the Refinement
+    tab and the Clone sub-tab). The description panel still emits
+    ``save_ready_changed``; what must hold now is that the signal stays wired
+    and reaching the dialog is harmless in either direction and across tab
+    switches.
+    """
 
-    def test_save_button_enabled_when_save_ready(self, dialog):
-        """Test save button enables when save_ready_changed emits True."""
+    def test_save_ready_changed_is_wired_and_a_no_op(self, dialog):
+        """The panel's signal reaches the dialog and changes nothing."""
+        dialog.description_panel.save_ready_changed.emit(True)
+        dialog.description_panel.save_ready_changed.emit(False)
         dialog._on_save_ready_changed(True)
-        assert dialog.save_button.isEnabled()
+        assert not hasattr(dialog, 'save_button')
+        assert dialog._has_unsaved_work is False
 
-    def test_save_button_disabled_when_save_not_ready(self, dialog):
-        """Test save button disables when save_ready_changed emits False."""
-        dialog._on_save_ready_changed(True)
-        dialog._on_save_ready_changed(False)
-        assert not dialog.save_button.isEnabled()
-
-    def test_tab_switch_disables_save_on_sample_tab(self, dialog):
-        """Test save button is disabled when switching to sample tab."""
-        dialog._on_save_ready_changed(True)  # Enable on description tab
-        dialog.tab_widget.setCurrentIndex(1)  # Switch to sample tab
-        assert not dialog.save_button.isEnabled()
-
-    def test_tab_switch_restores_save_state_on_description_tab(self, dialog, tmp_path):
-        """Test save button state restored when returning to description tab."""
-        # Setup: create fake embedding and set name
+    def test_tab_switch_after_save_ready_does_not_raise(self, dialog, tmp_path):
+        """A ready description panel survives a round trip through the tabs."""
         embedding_file = tmp_path / "embedding.pt"
         embedding_file.write_bytes(b"PK")
         audio_file = tmp_path / "preview.wav"
@@ -286,12 +317,10 @@ class TestSaveButtonState:
         dialog.description_panel.set_generation_complete(audio_file, embedding_file)
         dialog.description_panel.set_voice_name("Test Voice")
 
-        # Switch to sample tab then back
-        dialog.tab_widget.setCurrentIndex(1)
-        assert not dialog.save_button.isEnabled()
-
+        dialog.tab_widget.setCurrentIndex(1)  # Emotions
+        dialog.tab_widget.setCurrentIndex(2)  # Refinement
         dialog.tab_widget.setCurrentIndex(0)
-        assert dialog.save_button.isEnabled()
+        assert dialog.tab_widget.currentIndex() == 0
 
 
 class TestGetEmbeddingsSaveDir:
@@ -605,102 +634,61 @@ class TestGenerateGuardsOnTtsService:
 # Story 2.1 Tests
 
 class TestSampleTab:
-    """Tests for the 'From Sample' tab (Story 2.1)."""
+    """Tests for the clone path (Story 2.1, relocated by QA8).
 
-    def test_sample_panel_exists(self, dialog):
-        """Test sample panel exists."""
-        assert hasattr(dialog, 'sample_panel')
-        assert dialog.sample_panel is not None
+    tooling-5: Story 2.1 gave the dialog a ``sample_panel`` (SamplePathPanel)
+    on a "From Sample" tab. QA8 removed that tab; the clone flow now lives on
+    the From Description panel's Clone sub-tab, and the dialog wires that
+    panel's ``clone_transcribe_requested`` / ``clone_proceed_requested``
+    signals instead. SamplePathPanel is no longer instantiated by the dialog.
+    The two ``TestSampleTabSaveReady`` tests that drove the footer Save button
+    from the sample panel have no counterpart (no footer Save button, QA5) and
+    were dropped rather than rewritten against a removed control.
+    """
 
-    def test_sample_panel_is_sample_path_panel(self, dialog):
-        """Test sample panel is SamplePathPanel instance."""
-        from myvoice.ui.dialogs.voice_design_studio.sample_path_panel import SamplePathPanel
-        assert isinstance(dialog.sample_panel, SamplePathPanel)
+    def test_dialog_has_no_sample_panel(self, dialog):
+        """QA8: the dialog no longer owns a SamplePathPanel."""
+        assert not hasattr(dialog, 'sample_panel')
 
-    def test_sample_tab_has_browse_button(self, dialog):
-        """Test sample tab has browse button."""
-        assert hasattr(dialog.sample_panel, 'browse_button')
-        assert dialog.sample_panel.browse_button is not None
+    def test_clone_sub_tab_has_browse_button(self, dialog):
+        """Test the Clone sub-tab has a browse button (was sample_panel.browse_button)."""
+        assert hasattr(dialog.description_panel, 'clone_browse_button')
+        assert dialog.description_panel.clone_browse_button is not None
 
-    def test_switch_to_sample_tab(self, dialog):
-        """Test can switch to sample tab."""
+    def test_switch_to_second_tab(self, dialog):
+        """Test can switch to the second tab (now Emotions)."""
         dialog.tab_widget.setCurrentIndex(1)
         assert dialog.tab_widget.currentIndex() == 1
 
-    def test_save_button_disabled_on_sample_tab_initially(self, dialog):
-        """Test save button is disabled on sample tab initially."""
-        dialog.tab_widget.setCurrentIndex(1)
-        assert not dialog.save_button.isEnabled()
-
-
-class TestSampleTabSaveReady:
-    """Tests for save button state on sample tab."""
-
-    def test_save_button_enabled_when_sample_ready(self, dialog, tmp_path):
-        """Test save button enables when sample loaded, extraction complete, and name entered."""
-        from unittest.mock import patch
-
-        dialog.tab_widget.setCurrentIndex(1)
-
-        # Create a fake file
-        wav_file = tmp_path / "test.wav"
-        wav_file.write_bytes(b"RIFF" + b"\x00" * 40)
-
-        # Create a fake preview audio
-        preview_audio = tmp_path / "preview.wav"
-        preview_audio.write_bytes(b"RIFF" + b"\x00" * 40)
-
-        # Load file (mock duration)
-        with patch.object(dialog.sample_panel, '_get_audio_duration', return_value=5.0):
-            dialog.sample_panel._load_audio_file(wav_file)
-
-        # Story 2.3: Extraction must complete before save is available
-        dialog.sample_panel.set_extraction_complete(preview_audio, auto_play=False)
-
-        dialog.sample_panel.set_voice_name("Test Voice")
-
-        assert dialog.save_button.isEnabled()
-
-    def test_tab_switch_updates_save_button(self, dialog, tmp_path):
-        """Test switching tabs updates save button state."""
-        from unittest.mock import patch
-
-        # Setup sample panel with file, extraction, and name
-        wav_file = tmp_path / "test.wav"
-        wav_file.write_bytes(b"RIFF" + b"\x00" * 40)
-
-        preview_audio = tmp_path / "preview.wav"
-        preview_audio.write_bytes(b"RIFF" + b"\x00" * 40)
-
-        with patch.object(dialog.sample_panel, '_get_audio_duration', return_value=5.0):
-            dialog.sample_panel._load_audio_file(wav_file)
-
-        # Story 2.3: Extraction must complete before save is available
-        dialog.sample_panel.set_extraction_complete(preview_audio, auto_play=False)
-
-        dialog.sample_panel.set_voice_name("Test Voice")
-
-        # Switch to sample tab
-        dialog.tab_widget.setCurrentIndex(1)
-        assert dialog.save_button.isEnabled()
-
-        # Switch back to description tab
-        dialog.tab_widget.setCurrentIndex(0)
-        assert not dialog.save_button.isEnabled()  # Description tab not ready
+    def test_clone_signals_are_wired_to_dialog_handlers(self, dialog):
+        """QA8: the dialog handles the Clone sub-tab's requests."""
+        assert callable(dialog._on_clone_transcribe_requested)
+        assert callable(dialog._on_clone_proceed_requested)
 
 
 class TestSampleTabSignals:
-    """Tests for sample tab signal handling."""
+    """Tests for clone-path signal handling."""
 
-    def test_file_loaded_sets_unsaved_work(self, dialog, tmp_path):
-        """Test loading file sets unsaved work flag."""
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "Defect (tooling-5, for a product story): QA8 moved the clone "
+            "flow into DescriptionPathPanel but the dialog never connects "
+            "clone_file_loaded to set_has_unsaved_work. Story 2.1's sample "
+            "panel flagged unsaved work on file load; the Clone sub-tab does "
+            "not, so dialog_closing/New Voice see a loaded sample as no work."
+        ),
+    )
+    def test_clone_file_loaded_sets_unsaved_work(self, dialog, tmp_path):
+        """Test loading a clone sample sets the unsaved work flag."""
         from unittest.mock import patch
 
         wav_file = tmp_path / "test.wav"
         wav_file.write_bytes(b"RIFF" + b"\x00" * 40)
 
-        with patch.object(dialog.sample_panel, '_get_audio_duration', return_value=5.0):
-            dialog.sample_panel._load_audio_file(wav_file)
+        panel = dialog.description_panel
+        with patch.object(panel, '_get_clone_audio_duration', return_value=5.0):
+            panel._load_clone_audio_file(wav_file)
 
         assert dialog._has_unsaved_work is True
 
@@ -723,14 +711,23 @@ class TestSessionManagement:
         assert isinstance(session_dir, Path)
         assert session_dir.exists()
 
-    def test_session_dir_is_unique(self, qapp):
-        """Test each dialog instance has unique session directory."""
+    def test_session_dir_is_shared_persistent(self, qapp):
+        """Test every dialog instance reopens the same persistent session.
+
+        tooling-5: was "each dialog has a unique session directory" (Story
+        4.1). QA4 replaced per-instance UUID sessions with a single persistent
+        ``design_sessions/current`` so generated variants survive closing and
+        reopening the studio (see ``SessionManager.PERSISTENT_SESSION_NAME``).
+        """
+        from myvoice.utils.session_manager import PERSISTENT_SESSION_NAME
+
         dialog1 = VoiceDesignStudioDialog()
         dialog2 = VoiceDesignStudioDialog()
 
         try:
-            assert dialog1.session_dir != dialog2.session_dir
-            assert dialog1._session_manager.session_id != dialog2._session_manager.session_id
+            assert dialog1.session_dir == dialog2.session_dir
+            assert dialog1._session_manager.session_id == PERSISTENT_SESSION_NAME
+            assert dialog2._session_manager.session_id == PERSISTENT_SESSION_NAME
         finally:
             dialog1.deleteLater()
             dialog2.deleteLater()
