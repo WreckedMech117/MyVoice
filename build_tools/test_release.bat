@@ -166,10 +166,10 @@ for %%F in (installer_output\*.md5.txt) do (
 )
 
 if !CHECKSUM_COUNT! GEQ 2 (
-    echo + PASS: Checksums generated (!CHECKSUM_COUNT! files)
+    echo + PASS: Checksums generated ^(!CHECKSUM_COUNT! files^)
     set /a TESTS_PASSED+=1
 ) else (
-    echo - FAIL: Missing checksums (found !CHECKSUM_COUNT!, expected >= 2)
+    echo - FAIL: Missing checksums ^(found !CHECKSUM_COUNT!, expected ^>= 2^)
     set /a TESTS_FAILED+=1
 )
 
