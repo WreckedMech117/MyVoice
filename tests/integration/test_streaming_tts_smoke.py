@@ -1466,10 +1466,11 @@ def _make_streamer_aware_fake_model(
     defaults (chunk_size=25, lookahead=5) ``step_count=100`` produced 3
     chunks during generation (push points at 30 / 55 / 80 steps; slide
     forward by 25 each time keeps the last 5 as overlap) plus 1 residual
-    chunk on flush. Story 20.4 attempted 10 + 5 (denser push points) and
-    reverted it; the committed geometry is 25 + 5 again.
-    ``_expected_chunk_count`` is the arithmetic; no test in this file
-    restates the number.
+    chunk on flush. Story 20.4 attempted 10 + 5 and reverted it; Story 20.8
+    re-measured and committed it, so the geometry is 10 + 5 (denser push
+    points, more chunks). ``_expected_chunk_count`` is the arithmetic and
+    it reads the live constants; no test in this file restates the number,
+    which is why the retune needed no edit here beyond this paragraph.
 
     Returns ``(mock_model, hits)`` where ``hits`` is a dict captured by
     the fake methods so tests can assert on call counts.

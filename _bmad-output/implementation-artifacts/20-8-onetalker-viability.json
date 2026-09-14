@@ -1,0 +1,190 @@
+{
+  "host": {
+    "device": "NVIDIA GeForce RTX 5090",
+    "torch": "2.10.0+cu128",
+    "capability": "12.0",
+    "tf32_matmul": false,
+    "cudnn_benchmark": false,
+    "cudnn_deterministic": false
+  },
+  "seeds": {
+    "1234": {
+      "tokens": {
+        "c_seeded_determinism_cs25_vs_cs25": {
+          "identical": true,
+          "shape": [
+            244,
+            16
+          ]
+        },
+        "b_invariance_cs25_vs_cs7": {
+          "identical": true,
+          "shape": [
+            244,
+            16
+          ]
+        },
+        "b_invariance_cs25_vs_cs10": {
+          "identical": true,
+          "shape": [
+            244,
+            16
+          ]
+        },
+        "resplit_reproduces_capture": true
+      },
+      "audio": {
+        "a_control_decode_determinism_cs25": {
+          "len_a": 467925,
+          "len_b": 467925,
+          "bit_exact": true
+        },
+        "a_control_decode_determinism_cs7": {
+          "len_a": 467925,
+          "len_b": 467925,
+          "bit_exact": true
+        },
+        "a_control_decode_determinism_cs10": {
+          "len_a": 467925,
+          "len_b": 467925,
+          "bit_exact": true
+        },
+        "consumer_crossfade_samples_used": 0,
+        "a_same_geometry_pcm_cs25": {
+          "len_a": 467925,
+          "len_b": 467925,
+          "bit_exact": true
+        },
+        "a_same_geometry_buffer_bytes_cs25": {
+          "len_a": 467925,
+          "len_b": 467925,
+          "bit_exact": true
+        },
+        "a_cross_geometry_pcm_cs7": {
+          "len_a": 467925,
+          "len_b": 467925,
+          "bit_exact": true
+        },
+        "a_cross_geometry_buffer_bytes_cs7": {
+          "len_a": 467925,
+          "len_b": 467925,
+          "bit_exact": true
+        },
+        "a_cross_geometry_pcm_cs10": {
+          "len_a": 467925,
+          "len_b": 467925,
+          "bit_exact": true
+        },
+        "a_cross_geometry_buffer_bytes_cs10": {
+          "len_a": 467925,
+          "len_b": 467925,
+          "bit_exact": true
+        }
+      }
+    },
+    "99991": {
+      "tokens": {
+        "c_seeded_determinism_cs25_vs_cs25": {
+          "identical": true,
+          "shape": [
+            252,
+            16
+          ]
+        },
+        "b_invariance_cs25_vs_cs7": {
+          "identical": true,
+          "shape": [
+            252,
+            16
+          ]
+        },
+        "b_invariance_cs25_vs_cs10": {
+          "identical": true,
+          "shape": [
+            252,
+            16
+          ]
+        },
+        "resplit_reproduces_capture": true
+      },
+      "audio": {
+        "a_control_decode_determinism_cs25": {
+          "len_a": 483285,
+          "len_b": 483285,
+          "bit_exact": false,
+          "differing_samples": 529,
+          "differing_pct": 0.1095,
+          "first_differing_sample": 479832,
+          "max_abs_diff": 0.00048828125,
+          "nrmse": 3.2728752796360285e-05
+        },
+        "a_control_decode_determinism_cs7": {
+          "len_a": 483285,
+          "len_b": 483285,
+          "bit_exact": true
+        },
+        "a_control_decode_determinism_cs10": {
+          "len_a": 483285,
+          "len_b": 483285,
+          "bit_exact": false,
+          "differing_samples": 787,
+          "differing_pct": 0.1628,
+          "first_differing_sample": 479829,
+          "max_abs_diff": 0.0006103515625,
+          "nrmse": 5.313501069791082e-05
+        },
+        "consumer_crossfade_samples_used": 0,
+        "a_same_geometry_pcm_cs25": {
+          "len_a": 483285,
+          "len_b": 483285,
+          "bit_exact": false,
+          "differing_samples": 544,
+          "differing_pct": 0.1126,
+          "first_differing_sample": 479836,
+          "max_abs_diff": 0.00048828125,
+          "nrmse": 3.377551107205782e-05
+        },
+        "a_same_geometry_buffer_bytes_cs25": {
+          "len_a": 483285,
+          "len_b": 483285,
+          "bit_exact": false,
+          "differing_samples": 229,
+          "differing_pct": 0.0474,
+          "first_differing_sample": 479836,
+          "max_abs_diff": 16.0,
+          "nrmse": 3.3627958666906996e-05
+        },
+        "a_cross_geometry_pcm_cs7": {
+          "len_a": 483285,
+          "len_b": 483285,
+          "bit_exact": true
+        },
+        "a_cross_geometry_buffer_bytes_cs7": {
+          "len_a": 483285,
+          "len_b": 483285,
+          "bit_exact": true
+        },
+        "a_cross_geometry_pcm_cs10": {
+          "len_a": 483285,
+          "len_b": 483285,
+          "bit_exact": false,
+          "differing_samples": 572,
+          "differing_pct": 0.1184,
+          "first_differing_sample": 479829,
+          "max_abs_diff": 0.00048828125,
+          "nrmse": 3.761740572279967e-05
+        },
+        "a_cross_geometry_buffer_bytes_cs10": {
+          "len_a": 483285,
+          "len_b": 483285,
+          "bit_exact": false,
+          "differing_samples": 252,
+          "differing_pct": 0.0521,
+          "first_differing_sample": 479829,
+          "max_abs_diff": 16.0,
+          "nrmse": 3.760622842456167e-05
+        }
+      }
+    }
+  }
+}

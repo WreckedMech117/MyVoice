@@ -1,0 +1,79 @@
+================================================================================================
+Story 20.8 Phase 1 — chunk-size re-baseline (one sitting, one machine)
+================================================================================================
+
+TASK 1 — WATERMARK FLOOR, DERIVED
+  static watermark 500 ms = 12000 samples (>=16 GiB hosts; audio_coordinator.py:62)
+  first chunk = N*1920 - 555 samples; later chunks = N*1920 (state-carrying path)
+  N*1920 - 555 >= 12000  ->  N >= 6.5391  ->  N >= 7
+  chunk_size    1st chunk ms steady chunk ms  chunks held by w/mark
+  1                     56.9            80.0                      7
+  2                    136.9           160.0                      4
+  3                    216.9           240.0                      3
+  4                    296.9           320.0                      2
+  5                    376.9           400.0                      2
+  6                    456.9           480.0                      2
+  7                    536.9           560.0                      1  <- FLOOR
+  8                    616.9           640.0                      1
+  9                    696.9           720.0                      1
+  10                   776.9           800.0                      1
+  11                   856.9           880.0                      1
+  12                   936.9           960.0                      1
+  13                  1016.9          1040.0                      1
+  14                  1096.9          1120.0                      1
+  15                  1176.9          1200.0                      1
+  16                  1256.9          1280.0                      1
+  25                  1976.9          2000.0                      1
+  => minimum viable chunk_size = 7. Points below it hand back a cushion penalty
+     and their TTFA is not a geometry result.
+
+================================================================================================
+TASK 2 — LONG class
+================================================================================================
+  point          n  frames      seg2  ms/frame  TTFA post   TTFA rel   cushion   ratio  chunks   dec ms  aud ms
+  cs25[A]       10      25    1035.9     41.43     1166.9     1167.5       0.3   0.539      10     36.6  2000.0
+  cs25[B]       10      25    1049.3     41.97     1180.7     1181.5       0.0   0.547      10     32.2  2000.0
+  cs15[P]       10      15     605.6     40.37      740.8      740.9       0.0   0.547      17     34.0  1200.0
+  cs10[P]       10      10     390.7     39.07      528.1      528.4       0.0   0.558      25     33.6   800.0
+  cs7[P]        10       7     261.2     37.31      391.1      391.6       0.0   0.567      35     32.0   560.0
+
+  CONTROL cs25 measured twice in the sitting:
+    pass A median TTFA(release) = 1167.5 ms [1140.3-1206.0, n=10]
+    pass B median TTFA(release) = 1181.5 ms [1153.1-1202.0, n=10]
+    within-sitting drift (B - A) = +14.0 ms
+    pooled control within-arm spread (max-min) = 65.7 ms (n=20)
+
+================================================================================================
+TASK 2 — SHORT class
+================================================================================================
+  point          n  frames      seg2  ms/frame  TTFA post   TTFA rel   cushion   ratio  chunks   dec ms  aud ms
+  cs25[A]       10      25    1036.5         -     1175.5     1176.5       1.0       -       2        -       -
+  cs25[B]       10      25    1050.5         -     1186.4     1186.9       0.5       -       2     41.1       -
+      first-emit paths seen: ['residual_flush', 'threshold']  frames: ['20.0', '24.0', '25.0']
+  cs15[P]       10      15     603.5         -      737.6      737.9       0.5   0.316       2     41.6  1188.0
+  cs10[P]       10      10     390.4         -      515.4      516.4       0.8   0.538       4     41.0   800.0
+  cs7[P]        10       7     259.4         -      392.5      393.0       0.0   0.551       4     37.6   560.0
+
+  CONTROL cs25 measured twice in the sitting:
+    pass A median TTFA(release) = 1176.5 ms [1140.0-1195.0, n=10]
+    pass B median TTFA(release) = 1186.9 ms [933.4-1206.9, n=10]
+    within-sitting drift (B - A) = +10.4 ms
+    pooled control within-arm spread (max-min) = 273.5 ms (n=20)
+
+================================================================================================
+GO / NO-GO (thresholds fixed in the story before the work)
+================================================================================================
+
+  LONG class — control cs25 pooled median 1173.7 ms; margin bar = 83.0 ms
+    (bar = max(this sitting's control spread, Story 20.6's ~83 ms within-arm spread))
+    cs15  TTFA(release)    740.9 ms   delta   -432.8 ms   ratio  0.547   viable=True  -> GO-candidate
+    cs10  TTFA(release)    528.4 ms   delta   -645.3 ms   ratio  0.558   viable=True  -> GO-candidate
+    cs7   TTFA(release)    391.6 ms   delta   -782.1 ms   ratio  0.567   viable=True  -> GO-candidate
+
+  SHORT class — control cs25 pooled median 1179.0 ms; margin bar = 273.5 ms
+    (bar = max(this sitting's control spread, Story 20.6's ~83 ms within-arm spread))
+    cs15  TTFA(release)    737.9 ms   delta   -441.1 ms   ratio  0.316   viable=True  -> GO-candidate
+    cs10  TTFA(release)    516.4 ms   delta   -662.6 ms   ratio  0.538   viable=True  -> GO-candidate
+    cs7   TTFA(release)    393.0 ms   delta   -786.0 ms   ratio  0.551   viable=True  -> GO-candidate
+
+wrote 20-8-sweep-summary.json

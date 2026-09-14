@@ -109,9 +109,11 @@ def test_the_module_constant_is_not_globally_retired():
         "effective_lookahead() / apply_codec_state_geometry(), never by "
         "changing this constant."
     )
-    assert codec_token_streamer.DEFAULT_CHUNK_SIZE == 25, (
-        "AC #5: this story does not touch geometry beyond the lookahead; the "
-        "chunk-size reopen is a separate story with its own audition."
+    assert codec_token_streamer.DEFAULT_CHUNK_SIZE == 10, (
+        "Story 20.6 AC #5 did not touch chunk size; Story 20.8 retuned it "
+        "25 -> 10 with its own audition. This row is kept pointing at the "
+        "COMMITTED value so that retiring the lookahead and retuning the "
+        "chunk size can never be confused for one another again."
     )
 
 
@@ -463,7 +465,10 @@ def test_compile_geometry_follows_the_retirement():
     from myvoice.services.tts_streaming import resolve_streamer_geometry
 
     assert resolve_streamer_geometry() == (DEFAULT_CHUNK_SIZE, 0)
-    assert sum(resolve_streamer_geometry()) == 25
+    # Story 20.8: the committed window is 10 (chunk size 10, lookahead
+    # retired). The literal is deliberate alongside the derived form above —
+    # a purely derived assertion says only that the key equals itself.
+    assert sum(resolve_streamer_geometry()) == 10
 
 
 def test_compile_geometry_reverts_under_the_kill_switch(monkeypatch):
@@ -471,4 +476,7 @@ def test_compile_geometry_reverts_under_the_kill_switch(monkeypatch):
 
     monkeypatch.setenv("MYVOICE_CODEC_STATE_CACHE", "off")
     assert resolve_streamer_geometry() == (DEFAULT_CHUNK_SIZE, DEFAULT_LOOKAHEAD)
-    assert sum(resolve_streamer_geometry()) == 30
+    # Story 20.8: 10 + 5. Under the kill switch the stateless path keeps its
+    # 5-frame lookahead, so the window is the committed chunk size PLUS the
+    # lookahead — 15 now, 30 before the retune.
+    assert sum(resolve_streamer_geometry()) == 15

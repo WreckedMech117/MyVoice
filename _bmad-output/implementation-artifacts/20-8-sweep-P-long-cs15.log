@@ -1,0 +1,190 @@
+$ I:\MyVoiceV2\python310\python.exe I:\MyVoiceV2\tools\ttfa_spike_harness.py --utterance long --chunk-size 15 --runs 10 --warmup 1 --prime --out I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-P-long-cs15.csv
+
+== stdout ==
+TTFA harness: utterance=long chunk_size=15 lookahead=0 (retired) precision=auto compile=auto runs=10 (+1 warmup)
+  device=NVIDIA GeForce RTX 5090 vram=31.8GiB cap=12.0 torch=2.10.0+cu128
+
+********
+Warning: flash-attn is not installed. Will only run the manual PyTorch version. Please install flash-attn for faster inference.
+********
+ 
+[Tokenizer] Enabling streaming optimizations...
+  use_compile=True, compile_mode=reduce-overhead
+  use_cuda_graphs=True (manual)
+[Decoder] Compiling forward with mode=reduce-overhead, backend=inductor...
+[Decoder] Note: mode='reduce-overhead' includes CUDA graphs automatically
+[Decoder] Compilation complete
+[Tokenizer] Note: compile_mode='reduce-overhead' already includes CUDA graphs
+[Tokenizer] Manual CUDA graph capture skipped (not needed)
+[CodePredictor] Compiling model with mode=reduce-overhead...
+  startup priming: ok in 9382ms; consumer chunks seen during priming = 0
+  warmup: TTFA(post)=742ms [s1=79 s2=609 s3=54 s4=1 res=0] bracket=743 path=threshold ratio=0.558 chunks=17 gen=11009ms
+  run 1: TTFA(post)=734ms [s1=77 s2=590 s3=67 s4=0 res=0] bracket=734 path=threshold ratio=0.55 chunks=16 gen=10426ms
+  run 2: TTFA(post)=739ms [s1=79 s2=613 s3=47 s4=1 res=0] bracket=740 path=threshold ratio=0.544 chunks=17 gen=10865ms
+  run 3: TTFA(post)=726ms [s1=78 s2=601 s3=47 s4=0 res=0] bracket=726 path=threshold ratio=0.544 chunks=17 gen=10862ms
+  run 4: TTFA(post)=742ms [s1=78 s2=617 s3=46 s4=1 res=0] bracket=743 path=threshold ratio=0.552 chunks=17 gen=11246ms
+  run 5: TTFA(post)=743ms [s1=78 s2=603 s3=62 s4=1 res=0] bracket=744 path=threshold ratio=0.545 chunks=18 gen=11571ms
+  run 6: TTFA(post)=758ms [s1=78 s2=613 s3=67 s4=1 res=0] bracket=758 path=threshold ratio=0.55 chunks=16 gen=10476ms
+  run 7: TTFA(post)=742ms [s1=83 s2=608 s3=50 s4=0 res=0] bracket=742 path=threshold ratio=0.549 chunks=16 gen=10625ms
+  run 8: TTFA(post)=740ms [s1=78 s2=600 s3=62 s4=0 res=0] bracket=741 path=threshold ratio=0.544 chunks=16 gen=10563ms
+  run 9: TTFA(post)=725ms [s1=80 s2=601 s3=45 s4=0 res=0] bracket=726 path=threshold ratio=0.545 chunks=17 gen=10968ms
+  run 10: TTFA(post)=742ms [s1=81 s2=612 s3=49 s4=0 res=0] bracket=742 path=threshold ratio=0.555 chunks=17 gen=11107ms
+
+Wrote 11 rows -> I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-P-long-cs15.csv
+{
+  "seg1_prefill_ms": {
+    "n": 10,
+    "median": 78.3304443359375,
+    "p95_interpolated": 82.1003662109375,
+    "min": 77.22265625,
+    "max": 83.368408203125
+  },
+  "seg1a_dispatch_overhead_ms": {
+    "n": 10,
+    "median": 0.5059814453125,
+    "p95_interpolated": 1.50660400390625,
+    "min": 0.5029296875,
+    "max": 1.5078125
+  },
+  "seg1b_prompt_encode_ms": {
+    "n": 10,
+    "median": 77.5966796875,
+    "p95_interpolated": 81.37216796874999,
+    "min": 76.211669921875,
+    "max": 82.864990234375
+  },
+  "seg2_talker_to_first_chunk_ms": {
+    "n": 10,
+    "median": 605.5872802734375,
+    "p95_interpolated": 615.4884521484375,
+    "min": 590.466796875,
+    "max": 617.151123046875
+  },
+  "seg3_first_decode_ms": {
+    "n": 10,
+    "median": 49.6092529296875,
+    "p95_interpolated": 66.64129638671875,
+    "min": 44.73876953125,
+    "max": 66.74072265625
+  },
+  "seg4_consumer_cushion_ms": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 1.00411376953125,
+    "min": 0.0,
+    "max": 1.0048828125
+  },
+  "residual_post_ms": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 0.0,
+    "min": 0.0,
+    "max": 0.0
+  },
+  "measured_t0_to_post_ms": {
+    "n": 10,
+    "median": 740.822998046875,
+    "p95_interpolated": 751.218359375,
+    "min": 725.471923828125,
+    "max": 757.79345703125
+  },
+  "first_chunk_latency_ms": {
+    "n": 10,
+    "median": 740.8229112625122,
+    "p95_interpolated": 751.2183666229248,
+    "min": 725.4719734191895,
+    "max": 757.7934265136719
+  },
+  "reconcile_error_pct": {
+    "n": 10,
+    "median": 0.0,
+    "p95_interpolated": 0.0,
+    "min": 0.0,
+    "max": 0.0
+  },
+  "independent_ttfa_bracket_ms": {
+    "n": 10,
+    "median": 741.0606000339612,
+    "p95_interpolated": 751.853865024168,
+    "min": 725.7399000227451,
+    "max": 758.3906999789178
+  },
+  "bracket_slack_ms": {
+    "n": 10,
+    "median": 0.360020135063678,
+    "p95_interpolated": 0.7980917065404355,
+    "min": -0.06092775706201792,
+    "max": 0.8134468728676438
+  },
+  "producer_ratio": {
+    "n": 10,
+    "median": 0.547066396077474,
+    "p95_interpolated": 0.5537336730957031,
+    "min": 0.5438174438476563,
+    "max": 0.5552291870117188
+  },
+  "producer_rate_P": {
+    "n": 10,
+    "median": 1.8279544130631502,
+    "p95_interpolated": 1.838768027909238,
+    "min": 1.801058055650979,
+    "max": 1.8388523783362447
+  },
+  "median_decode_chunk_ms": {
+    "n": 10,
+    "median": 33.95402504247613,
+    "p95_interpolated": 38.569122485932894,
+    "min": 30.91049997601658,
+    "max": 39.23689998919144
+  },
+  "median_chunk_audio_ms": {
+    "n": 10,
+    "median": 1200.0,
+    "p95_interpolated": 1200.0,
+    "min": 1200.0,
+    "max": 1200.0
+  },
+  "total_audio_ms": {
+    "n": 10,
+    "median": 19736.875,
+    "p95_interpolated": 20444.875,
+    "min": 18616.875,
+    "max": 20696.875
+  },
+  "generation_wall_ms": {
+    "n": 10,
+    "median": 10863.685131072998,
+    "p95_interpolated": 11424.321007728577,
+    "min": 10426.053762435913,
+    "max": 11570.504188537598
+  }
+}
+
+== stderr ==
+'sox' is not recognized as an internal or external command,
+operable program or batch file.
+WARNING:sox:SoX could not be found!
+
+    If you do not have SoX, proceed here:
+     - - - http://sox.sourceforge.net/ - - -
+
+    If you do (or think that you should) have SoX, double-check your
+    path variables.
+    
+`torch_dtype` is deprecated! Use `dtype` instead!
+
+Fetching 4 files:   0%|          | 0/4 [00:00<?, ?it/s]
+Fetching 4 files: 100%|##########| 4/4 [00:00<?, ?it/s]
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+CUDAGraph supports dynamic shapes by recording a new graph for each distinct input size. Recording too many CUDAGraphs may lead to extra overhead. We have observed 9 distinct sizes. Please consider the following options for better performance: a) padding inputs to a few fixed number of shapes; or b) set torch._inductor.config.triton.cudagraph_skip_dynamic_graphs=True. Set torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit=None to silence this warning.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.

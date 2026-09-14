@@ -1,0 +1,7 @@
+{
+  "arm": "candidate",
+  "resolved_chunk_size": 10,
+  "resolved_lookahead": 0,
+  "decode_window_frames": 10,
+  "mechanism": "committed constant"
+}

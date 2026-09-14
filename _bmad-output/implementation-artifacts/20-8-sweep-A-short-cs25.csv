@@ -1,0 +1,12 @@
+run_index,seg1_prefill_ms,seg1a_dispatch_overhead_ms,seg1b_prompt_encode_ms,seg2_talker_to_first_chunk_ms,seg3_first_decode_ms,seg4_consumer_cushion_ms,residual_post_ms,first_chunk_latency_ms,measured_t0_to_post_ms,chunks,median_decode_chunk_ms,n_decode_samples,consumer_chunks_held,first_emit_path,first_emit_frames,independent_ttfa_bracket_ms,bracket_slack_ms,median_inter_emit_ms,median_chunk_audio_ms,producer_ratio,producer_rate_P,segment_sum_to_post_ms,reconcile_error_pct,total_audio_ms,generation_wall_ms,is_warmup,chunk_size,utterance,precision,compile
+-1,78,,,1031,27,0,0,,1136,1,,,,threshold,25,1137,,,,,,,,,1142,True,25,short,auto,auto
+0,75,,,1016,49,0,0,,1140,2,,,,threshold,25,1140,,,,,,,,,1271,False,25,short,auto,auto
+1,76,,,1037,45,1,0,,1159,2,,,,threshold,25,1159,,,,,,,,,1432,False,25,short,auto,auto
+2,80,,,1028,47,1,0,,1155,2,,,,threshold,25,1156,,,,,,,,,1250,False,25,short,auto,auto
+3,78,,,1055,56,1,0,,1189,2,,,,threshold,25,1190,,,,,,,,,1277,False,25,short,auto,auto
+4,82,,,1048,54,1,0,,1185,2,,,,threshold,25,1185,,,,,,,,,1406,False,25,short,auto,auto
+5,78,,,1036,49,0,0,,1164,2,,,,threshold,25,1163,,,,,,,,,1300,False,25,short,auto,auto
+6,79,,,1033,65,1,0,,1177,2,,,,threshold,25,1178,,,,,,,,,1481,False,25,short,auto,auto
+7,77,,,1030,67,1,0,,1174,2,,,,threshold,25,1175,,,,,,,,,1296,False,25,short,auto,auto
+8,88,,,1045,62,1,0,,1194,2,,,,threshold,25,1194,,,,,,,,,1365,False,25,short,auto,auto
+9,77,,,1042,60,0,0,,1180,2,,,,threshold,25,1180,,,,,,,,,1349,False,25,short,auto,auto

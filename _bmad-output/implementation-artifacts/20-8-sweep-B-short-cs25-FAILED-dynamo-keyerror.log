@@ -1,0 +1,123 @@
+$ I:\MyVoiceV2\python310\python.exe I:\MyVoiceV2\tools\ttfa_spike_harness.py --utterance short --chunk-size 25 --runs 10 --warmup 1 --prime --out I:\MyVoiceV2\_bmad-output\implementation-artifacts\20-8-sweep-B-short-cs25.csv
+
+== stdout ==
+TTFA harness: utterance=short chunk_size=25 lookahead=0 (retired) precision=auto compile=auto runs=10 (+1 warmup)
+  device=NVIDIA GeForce RTX 5090 vram=31.8GiB cap=12.0 torch=2.10.0+cu128
+
+********
+Warning: flash-attn is not installed. Will only run the manual PyTorch version. Please install flash-attn for faster inference.
+********
+ 
+[Tokenizer] Enabling streaming optimizations...
+  use_compile=True, compile_mode=reduce-overhead
+  use_cuda_graphs=True (manual)
+[Decoder] Compiling forward with mode=reduce-overhead, backend=inductor...
+[Decoder] Note: mode='reduce-overhead' includes CUDA graphs automatically
+[Decoder] Compilation complete
+[Tokenizer] Note: compile_mode='reduce-overhead' already includes CUDA graphs
+[Tokenizer] Manual CUDA graph capture skipped (not needed)
+[CodePredictor] Compiling model with mode=reduce-overhead...
+  startup priming: ok in 8966ms; consumer chunks seen during priming = 0
+
+== stderr ==
+'sox' is not recognized as an internal or external command,
+operable program or batch file.
+WARNING:sox:SoX could not be found!
+
+    If you do not have SoX, proceed here:
+     - - - http://sox.sourceforge.net/ - - -
+
+    If you do (or think that you should) have SoX, double-check your
+    path variables.
+    
+`torch_dtype` is deprecated! Use `dtype` instead!
+
+Fetching 4 files:   0%|          | 0/4 [00:00<?, ?it/s]
+Fetching 4 files: 100%|##########| 4/4 [00:00<?, ?it/s]
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+CUDAGraph supports dynamic shapes by recording a new graph for each distinct input size. Recording too many CUDAGraphs may lead to extra overhead. We have observed 9 distinct sizes. Please consider the following options for better performance: a) padding inputs to a few fixed number of shapes; or b) set torch._inductor.config.triton.cudagraph_skip_dynamic_graphs=True. Set torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit=None to silence this warning.
+Setting `pad_token_id` to `eos_token_id`:2150 for open-end generation.
+ERROR:QwenTTSService:[QwenTTS] TRUE_STREAM dispatch failed
+Traceback (most recent call last):
+  File "I:\MyVoiceV2\src\myvoice\services\qwen_tts_service.py", line 5565, in _generate_true_stream
+    raise RuntimeError(
+RuntimeError: TRUE_STREAM talker/worker did not complete within 60.0s
+Traceback (most recent call last):
+  File "I:\MyVoiceV2\tools\ttfa_spike_harness.py", line 723, in <module>
+    raise SystemExit(main())
+  File "I:\MyVoiceV2\tools\ttfa_spike_harness.py", line 719, in main
+    return asyncio.run(_run(args))
+  File "asyncio\runners.py", line 44, in run
+  File "asyncio\base_events.py", line 649, in run_until_complete
+  File "I:\MyVoiceV2\tools\ttfa_spike_harness.py", line 512, in _run
+    rows = await _run_cells(service, consumer, prompt, text, args, total_runs)
+  File "I:\MyVoiceV2\tools\ttfa_spike_harness.py", line 558, in _run_cells
+    resp = await service._generate_true_stream(request)
+  File "I:\MyVoiceV2\src\myvoice\services\qwen_tts_service.py", line 5565, in _generate_true_stream
+    raise RuntimeError(
+RuntimeError: TRUE_STREAM talker/worker did not complete within 60.0s
+ERROR:QwenTTSService:[QwenTTS] TRUE_STREAM talker error: 140734344898552
+Traceback (most recent call last):
+  File "I:\MyVoiceV2\src\myvoice\services\qwen_tts_service.py", line 4990, in _run_talker
+    model.generate_voice_clone(
+  File "I:\MyVoiceV2\python310\Lib\site-packages\torch\utils\_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\qwen_tts\inference\qwen3_tts_model.py", line 659, in generate_voice_clone
+    talker_codes_list, _ = self.model.generate(
+  File "I:\MyVoiceV2\python310\Lib\site-packages\torch\utils\_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\qwen_tts\core\models\modeling_qwen3_tts.py", line 2591, in generate
+    talker_result = self.talker.generate(
+  File "I:\MyVoiceV2\src\myvoice\services\qwen_tts_service.py", line 4896, in _patched_talker_generate
+    real_talker_generate(*args, **kwargs)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\torch\utils\_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\transformers\generation\utils.py", line 2564, in generate
+    result = decoding_method(
+  File "I:\MyVoiceV2\python310\Lib\site-packages\transformers\generation\utils.py", line 2787, in _sample
+    outputs = model_forward(**model_inputs, return_dict=True)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "I:\MyVoiceV2\src\myvoice\services\qwen_tts_service.py", line 4787, in _streaming_forward
+    output = real_talker_forward(*args, **kwargs)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\transformers\utils\generic.py", line 918, in wrapper
+    output = func(self, *args, **kwargs)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\qwen_tts\core\models\modeling_qwen3_tts.py", line 1913, in forward
+    predictor_result = self.code_predictor.generate(
+  File "I:\MyVoiceV2\python310\Lib\site-packages\torch\utils\_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\transformers\generation\utils.py", line 2564, in generate
+    result = decoding_method(
+  File "I:\MyVoiceV2\python310\Lib\site-packages\transformers\generation\utils.py", line 2787, in _sample
+    outputs = model_forward(**model_inputs, return_dict=True)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\transformers\utils\generic.py", line 918, in wrapper
+    output = func(self, *args, **kwargs)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\qwen_tts\core\models\modeling_qwen3_tts.py", line 1359, in forward
+    outputs: BaseModelOutputWithPast = self.model(
+  File "I:\MyVoiceV2\python310\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\torch\_dynamo\eval_frame.py", line 953, in compile_wrapper
+    return fn(*args, **kwargs)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\torch\_dynamo\convert_frame.py", line 2202, in __call__
+    result = self._torchdynamo_orig_backend(
+  File "I:\MyVoiceV2\python310\Lib\site-packages\torch\_dynamo\convert_frame.py", line 1945, in __call__
+    result = self._inner_convert(
+  File "I:\MyVoiceV2\python310\Lib\site-packages\torch\_dynamo\convert_frame.py", line 707, in __call__
+    result = _compile(
+  File "I:\MyVoiceV2\python310\Lib\site-packages\torch\_dynamo\convert_frame.py", line 1627, in _compile
+    reasons = get_and_maybe_log_recompilation_reasons(
+  File "I:\MyVoiceV2\python310\Lib\site-packages\torch\_dynamo\guards.py", line 4476, in get_and_maybe_log_recompilation_reasons
+    reason = get_guard_fail_reason(
+  File "I:\MyVoiceV2\python310\Lib\site-packages\torch\_dynamo\guards.py", line 4448, in get_guard_fail_reason
+    guard_failures[orig_code_map[code]].append(reason_str)
+  File "I:\MyVoiceV2\python310\Lib\site-packages\torch\_dynamo\utils.py", line 1014, in __getitem__
+    return self.values[id(key)]
+KeyError: 140734344898552

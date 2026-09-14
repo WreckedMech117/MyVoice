@@ -1,6 +1,6 @@
 # Story 20.8: Re-baseline and Reopen the Chunk-Size Question (Phase ⊥-Polish-3)
 
-Status: ready-for-dev
+Status: done — 2026-09-14. Phase 1 GO; viability check closed claim (d); Phase 2 shipped chunk_size=10. Audition 16/16 equivalent, zero defects. GUI, same-sitting control: long TTFA 1,626.8 → 767.5 ms (−52.8 %), short 1,828.3 → 840.7 ms (−54.0 %). P3 falsifier did not fire (residual −47.4 ms). cs7 has earned one round per §8.3 and it is deliberately unspent — see evidence §10.3.
 
 <!-- Phase tag: Phase ⊥-Polish-3. Eighth story of Epic 20. Follow-up F2 from Story 20.5. -->
 <!-- Story class: PHASE-GATED. Phase 1 is a headless re-baseline with a hard go/no-go. Phase 2 does not start until Commander approves it. -->
@@ -103,6 +103,40 @@ whether Story 20.5's one-talker-run-per-pair trick is available here (it is
 **not**: chunk size perturbs the talker, so the arms are necessarily different
 takes, and Story 20.4 §17's take-to-take variance warning is live again)
 
+### AC #3a — Phase 2 fixture design, fixed by the §7 viability findings
+
+**Given** claim (d) failed — `decode_window_frames` is a `compile_cache` key
+dimension, so a shipped `cs7` build reads a different inductor cache directory and
+draws a *different but equally valid* token stream (cs25 → 244 frames,
+cs7 → 256, each reproducible across processes)
+**When** the fixture is generated
+**Then** the talker run is captured in a process running **at the candidate
+geometry**, and that one stream is re-chunked for **both** arms
+**And** the candidate arm is therefore bit-for-bit what a shipped build produces —
+it is the arm that has to be real — while the reference arm is `cs25` geometry
+over the same content, which is the correct content-constant control
+**And** the generator **starts the decoder worker before filling the streamer
+queue**. The queue is bounded at `4 × chunk_size`, so at `cs7` that is 28 against
+~35 chunks and the naive order deadlocks. `20-5-regen-audition-fixture.py` has
+this exact shape and escaped only because `cs25` gives 100 against 10
+**And** no arm is allowed to end on a **2-frame terminal residual**, which is the
+one configuration where the decoder is not bit-reproducible against itself
+(−66 dBFS on 0.1 % of samples). Choosing utterance lengths around it makes the
+§7 (a) caveat moot rather than argued away
+
+### AC #3b — Narrow the field before spending trials
+
+**Given** three viable points (`cs7` −782 ms, `cs10` −645 ms, `cs15` −433 ms, all
+with producer ratio ~0.55)
+**When** Phase 2 begins
+**Then** **one** primary candidate is chosen and the choice justified on
+**non-perceptual** grounds — seam count, headroom above the watermark floor,
+marginal gain per added seam, and robustness if the floor moves again (`cs7` sits
+*exactly* on it)
+**And** what would make a second candidate worth testing is stated up front, so
+the decision to spend more of Commander's time is made deliberately rather than
+by drift
+
 ### AC #3 — Phase 2 (gated): implement and audition
 
 **Given** a GO verdict and Commander's approval
@@ -122,12 +156,12 @@ pre-existing failure set unchanged in count and identity
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Watermark floor** (AC: #1) — derive the minimum viable `chunk_size`; report it before sweeping.
-- [ ] **Task 2 — Sweep** (AC: #1) — one sitting, one machine, `cs25` control included, warm measurements, cold-compile cost stated.
-- [ ] **Task 3 — Audition cost estimate** (AC: #2).
-- [ ] **Task 4 — GATE.** Report to Commander. Stop.
-- [ ] **Task 5 — Phase 2** (AC: #3), gated.
-- [ ] **Task 6 — Regression** (AC: #4).
+- [x] **Task 1 — Watermark floor** (AC: #1) — derive the minimum viable `chunk_size`; report it before sweeping. → **floor = 7** (not Story 20.1's 6); evidence §1.
+- [x] **Task 2 — Sweep** (AC: #1) — one sitting, one machine, `cs25` control included, warm measurements, cold-compile cost stated. → evidence §2–§3.
+- [x] **Task 3 — Audition cost estimate** (AC: #2). → evidence §5.
+- [x] **Task 4 — GATE.** Report to Commander. Stop. → **verdict GO on latency**; evidence §0 / §4. STOPPED HERE.
+- [x] **Task 5 — Phase 2** (AC: #3, #3a, #3b) — candidate chosen (`cs10`, evidence §8), constant committed through the threading and verified at all three sites in both directions (§9.2), fixture generated with AC #3a's four fixes observable in its output (§9.5). **Audition itself is operator work — hand-off §9.6.**
+- [x] **Task 6 — Regression** (AC: #4) — exact bars hold (§9.3); suite compared BEFORE/AFTER with an identical guarded runner, nothing removed, every addition attributed to one pre-existing non-terminating UI file (§9.4).
 
 ## Dev Notes
 
@@ -155,8 +189,155 @@ pre-existing failure set unchanged in count and identity
 
 ## Dev Agent Record
 
-_(to be filled by dev agent)_
+**Phase 1 complete, 2026-09-02. Stopped at the Task 4 gate. Zero operator
+listening time spent. Phase 2 NOT started and NOT self-authorised.**
+
+Evidence: `20-8-chunk-size-reopen-evidence.md`.
+
+**Verdict: GO on latency, at every viable point, by 5.2×–9.4× the stated bar.**
+
+| point | long TTFA(release) | Δ vs same-sitting `cs25` | producer ratio |
+|---:|---:|---:|---:|
+| cs25 (control, pooled A+B, n=20) | 1,173.7 ms | — | 0.54 |
+| cs15 | 740.9 ms | −432.8 ms | 0.547 |
+| cs10 | 528.4 ms | −645.3 ms | 0.558 |
+| cs7 (the floor) | 391.6 ms | −782.1 ms | 0.567 |
+
+Short class agrees: −441.1 / −662.6 / −786.0 ms.
+
+Findings that change what the story assumed:
+
+- **The watermark floor is 7, not Story 20.1 §5.4's 6.** `N·1920 − 555 ≥ 12000
+  → N ≥ 6.54`. The old 6 came from a pre-20.5 measured 83.3 ms/frame; current
+  code measures **exactly `N × 80 ms` per chunk at every point**. `cs5` and
+  `cs6` are not viable; `cs7` was added and is.
+- **The cushion is a no-op at every measured point** (`seg4` 0.0–1.0 ms,
+  1 chunk held), so no point's TTFA is a cushion artefact.
+- **Cold compile is real but `cs15` was free by coincidence** — its
+  `decode_window_frames = 15` key collides with the one Story 20.4 warmed when
+  it briefly shipped `cs10` + lookahead 5. `cs10` and `cs7` each created a new
+  key and paid **+19.2 s / +18.2 s**, all inside priming, all measurements warm.
+- **Per-chunk decode in situ is 32–37 ms and FLAT in chunk size**, not the
+  11.8 ms in Dev Notes (which is a decoder-only synchronised bench with no
+  talker running). Throughput cost `cs25 → cs7` is ~5 % of generation wall.
+- **`cs25` short degenerates to `residual_flush` on 2 of 20 control runs**;
+  every point at 15 and below is `threshold` 10/10. Story 20.1 §5.3's B1
+  finding, reproducing on current code.
+
+AC #2 — what is still UNKNOWN: everything perceptual. Seam count still rises as
+chunk size falls; "the cause of the old harm is removed" is a mechanism
+argument, not an audition result; Story 20.4's four rounds and 28 judgements
+stand. Story 20.5's one-talker-run-per-pair trick is not available as-is, so a
+take-different audition is sized at **~50–170 trials / 1.5–3.5 h of listening
+across 3–5 rounds** (evidence §5.3). Evidence §5.4 records a lead that could
+collapse that to one ~20-minute round via offline re-chunking of one captured
+token stream, together with the single bit-exactness check that would confirm
+or kill it — that check should be Phase 2's first task.
+
+### Viability check for the one-talker-per-pair audition design (2026-09-02, at Commander's direction, post-gate)
+
+Run before any candidate selection or fixture building. Nothing built, no
+geometry chosen, no production source touched. Evidence §7.
+
+| claim | result |
+|---|---|
+| **(c)** seeded determinism (control for b) | **PASS** — two live `cs25` runs at one seed give bit-identical token streams, both seeds |
+| **(b)** token invariance vs `chunk_size` | **PASS, exactly, 4/4** — live cs25 vs cs7 and vs cs10, two seeds, bit-identical tensors |
+| **(a-ctl)** decode determinism (control for a) | mixed, and diagnostic — see below |
+| **(a)** offline re-chunk render == live render | **PASS at the strongest bar the pipeline supports** — bit-exact in 9/12 comparisons *including the cross-geometry ones*; every miss is a cell where the decoder also differs from itself, same magnitude, same location |
+| **(d)** cross-compile-key invariance *(newly named — the in-process design cannot reach it)* | **FAILS** — a `cs7`-keyed build draws a different (but stable) token stream |
+
+- (a)'s misses are confined to a **2-frame terminal residual chunk**, at
+  −66 dBFS on 0.1 % of samples, and are present **between two live runs**, so
+  they are not a cost of the offline design. Six configurations separate
+  perfectly on residual size (2 frames non-deterministic; 0/4/6/19 exact).
+- (d) is **not** chunk size reaching the talker — (b) proves it does not within
+  a compiled state. It is `decode_window_frames` selecting a different inductor
+  cache directory, hence different compiled kernels and a different draw. Two
+  cross-process controls (same key → identical, twice) rule out process/seed.
+- **(d) is closed by a design choice, not more measurement:** capture the
+  talker run in a process running **at the candidate geometry**, then re-chunk
+  that one stream for both arms. The candidate arm is then bit-for-bit what a
+  shipped build produces, and the reference arm is the correct
+  content-constant control.
+
+**Verdict: the one-talker trick IS valid for chunk size.** The audition
+collapses to **one round, ~14–16 trials, ~20–25 min** instead of ~50–170 trials
+and 1.5–3.5 h — and being cheap, testing more than one candidate becomes
+affordable. Residual risks are stated in evidence §7.7, including an `n = 1`
+observation that the `cs7`-keyed draw ran 4.9 % longer (not a claim in either
+direction yet) and a bounded-queue deadlock that **any Phase 2 fixture
+generator derived from `20-5-regen-audition-fixture.py` will hit at small chunk
+sizes** unless it starts the worker before filling the queue.
+
+### Phase 2 — implemented and verified, 2026-09-02 (evidence §8–§9)
+
+**`DEFAULT_CHUNK_SIZE` 25 → 10 is committed.** One production constant; nothing
+else in `src/`. `DEFAULT_LOOKAHEAD` untouched at 5.
+
+**AC #3b — `cs10` chosen, on non-perceptual grounds (§8.1).** The marginal rate
+collapses across the curve — each step buys 60.9, then 26.6, then **13.0** ms
+per added seam — so `cs10` already takes **82.5 %** of the whole available win
+(645 of 782 ms) for 24 of 34 seams. `cs7` clears the watermark floor by **0.46
+of a frame** against `cs10`'s 3.5, and that floor **moved during this story**
+(Story 20.1 said 6; the exact solve on current code gives 7). `cs7` also costs
+35 % more decoder work, on the tier we have measured — the sub-16 GiB tier is
+unmeasured and has least OFR-E room. §8.3 fixes **in advance** what would earn a
+second candidate a round: only a *clean* pass buys `cs7` one; a mediocre pass
+buys none; a fail falls back to `cs15`.
+
+**AC #3 — threading verified at all three D-25 sites, both directions (§9.2).**
+`resolve_streamer_geometry()` → `(10, 0)` → window 10, and `(10, 5)` → 15 under
+the kill switch. `engage_compile_optimizations` points the inductor cache at the
+cs10 key; `warmup_compile_async` returns `primed_cold` and writes `meta.json`
+into **that same** directory, leaving the cs25 key untouched — the "priming
+warms the NEW key" check, confirmed rather than assumed. Three earlier
+"failures" were probe-ordering artefacts and are recorded as such.
+
+**AC #3a — fixture generated, all four fixes observable (§9.5).** 14 A/B trials
++ 2 byte-identical controls (−312 dB, 0.000 dB level); seams 41 → 116 (2.83×);
+every pair identical in length; worst level delta 0.061 dB, unnormalised. The
+1-/2-frame-residual redraw rule **fired 8 times** — without it, four of the
+fourteen trials would have carried the one chunk shape where the decoder is not
+bit-reproducible against itself.
+
+**AC #4 (§9.3–§9.4).** All four exact bars pass at the retuned geometry.
+Suite: nothing removed; the only additions are the 19 failures of one UI file
+that **hung in the BEFORE run** and hangs identically on the pre-change tree —
+demonstrated by stashing the change and re-running it. AFTER's 49 failures
+reproduce exactly the pre-existing count Story 20.6 recorded. Stated plainly in
+§9.4.5: this is *not* a bare "identical count and identity" and is not claimed
+as one.
+
+**A pre-existing problem worth raising separately:** a plain `pytest tests/`
+does not complete on current `main` — it stalls indefinitely at varying points.
+All the hangs are dialog/UI tests, none related to streaming. The regression
+runs use an external per-directory guard because `pytest-timeout` is not
+installed in the portable interpreter; installing it would turn these hangs into
+countable failures for every story after this one.
+
+**Outstanding: operator work only, one hand-off at evidence §9.6** — the NFR3
+audition (`18_`, ~25 min, the blocking gate) and the two-arm GUI TTFA capture
+(`16_` then `17_`, ~40 min, both arms in one sitting because Story 20.6 §12
+forbids a cross-session control).
 
 ## Change Log
 
+- 2026-09-02 — Phase 2 implemented and verified: candidate narrowed to `cs10`
+  on non-perceptual grounds, constant committed through the threading, fixture
+  generated with the prediction recorded first, exact bars and suite checked.
+  Audition and GUI capture handed off as one operator package.
+- 2026-09-02 — Viability check run at Commander's direction after the gate.
+  Four claims tested, two of them controls added because a claim of identity is
+  unreadable without knowing whether the thing is identical to itself; a fourth
+  (cross-compile-key) named and tested because the in-process design cannot
+  reach it. Trick validated subject to one design constraint. Still stopped:
+  no fixture, no candidate geometry, no production source touched.
+- 2026-09-02 — Phase 1 executed (Tasks 1–4). Headless re-baseline on one
+  machine in one sitting with `cs25` measured as the control twice, first and
+  last. Verdict **GO on latency**; stopped at the gate for Commander. Evidence
+  in `20-8-chunk-size-reopen-evidence.md`. Two cells failed on first attempt
+  (one native access violation, one torch-dynamo `KeyError`) and were retried
+  clean inside the sitting; both are recorded in evidence §4.4 rather than
+  dropped.
 - 2026-09-02 — Drafted by Winston at Commander's direction to re-baseline before reopening. Phase-gated because every number justifying F2 predates three stories that changed the system underneath it, and because Story 20.6 §12 showed cross-session comparison has already produced one false conclusion in this epic.

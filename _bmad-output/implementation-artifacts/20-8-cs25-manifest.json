@@ -1,0 +1,8 @@
+{
+  "arm": "reference",
+  "resolved_chunk_size": 25,
+  "resolved_lookahead": 0,
+  "decode_window_frames": 25,
+  "streamer_probe_chunk_size": 25,
+  "mechanism": "in-process __defaults__ rebind; no source-tree edit"
+}

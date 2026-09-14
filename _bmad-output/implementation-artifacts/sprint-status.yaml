@@ -253,7 +253,7 @@ development_status:
   # launcher banner, so making it louder was considered and rejected.
   # AC #2 is load-bearing: a Generate button that never comes back is strictly worse
   # than the silent queue being fixed.
-  20-7-guard-generate-during-priming: ready-for-dev
+  20-7-guard-generate-during-priming: done
   # Story 20.8 added 2026-09-02 as follow-up F2, PHASE-GATED. Story 20.5 met the
   # reopening condition 20.4 section 17 named, but every LATENCY number justifying
   # F2 is stale for three separate reasons: 20.1's sweep predates codec state
@@ -265,7 +265,7 @@ development_status:
   # audition time. Note the lever is now larger than the old curve implied -- with
   # the lookahead retired, chunk_size=N first-emits at N frames, not N+5 -- but the
   # sweep is no longer free: each point is a distinct compile-cache key.
-  20-8-chunk-size-reopen: ready-for-dev
+  20-8-chunk-size-reopen: done
 
   # Out-of-epic UI work, following the tooling-N precedent for non-epic stories.
   # Commander 2026-09-01: the X minimizes to tray and Settings/Interface has no

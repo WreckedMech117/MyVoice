@@ -175,25 +175,32 @@ async def test_warmup_cache_key_moves_with_a_streamer_retune(
 
 
 @pytest.mark.asyncio
-async def test_warmup_cache_key_follows_the_lookahead_retirement(
+async def test_warmup_cache_key_follows_the_committed_geometry(
     monkeypatch, _restore_warm_priming_env
 ):
-    """Story 20.6 AC #1 — the committed 30 → 25 move, at the priming site.
+    """The committed window, at the priming site — 30 → 25 → 10.
 
     The site Story 20.3's warm-path priming depends on: if this key kept
     summing the raw module constants it would prime a 30-frame directory
-    while the engage path moved to 25, and the ~4 s first-generation win
-    would silently stop working — the same failure Story 20.4 §5.4 closed,
+    while the engage path moved, and the ~4 s first-generation win would
+    silently stop working — the same failure Story 20.4 §5.4 closed,
     re-opened from the Story 20.6 side.
+
+    Story 20.8 moves it again, 25 → 10, and that is the point of the row:
+    it has now tracked the geometry through a retirement AND a retune,
+    in both directions, without being edited except for the literal.
+    The literal is deliberate — asserting only the derived form would make
+    this row say that the key equals itself.
     """
     key = await _capture_warmup_key(monkeypatch)
     assert key == _expected_key(codec_token_streamer.DEFAULT_CHUNK_SIZE)
-    assert key == _expected_key(25)
+    assert key == _expected_key(10)
+    assert key != _expected_key(25)
     assert key != _expected_key(30)
 
 
 @pytest.mark.asyncio
-async def test_warmup_cache_key_reverts_to_30_under_the_kill_switch(
+async def test_warmup_cache_key_reverts_to_the_lookahead_window_under_the_kill_switch(
     monkeypatch, _restore_warm_priming_env
 ):
     """Story 20.6 AC #2 — the retirement is conditional at this site too.
@@ -201,13 +208,19 @@ async def test_warmup_cache_key_reverts_to_30_under_the_kill_switch(
     With ``MYVOICE_CODEC_STATE_CACHE`` set to a disabling value, dispatch
     falls back to the stateless adapter and the streamer keeps its 5-frame
     lookahead, so the compile geometry the priming key describes has to be
-    the 30-frame one again. A global constant change could not produce this
-    row: it would read 25 both ways.
+    ``chunk_size + 5`` again — 15 after Story 20.8's retune, 30 before it.
+    A global constant change could not produce this row: it would read the
+    same value both ways.
+
+    The name no longer says "30" on purpose. A row asserting 15 under a
+    name promising 30 is exactly the drift this file exists to catch.
     """
     monkeypatch.setenv("MYVOICE_CODEC_STATE_CACHE", "0")
     key = await _capture_warmup_key(monkeypatch)
-    assert key == _expected_key(30)
-    assert key != _expected_key(25)
+    assert key == _expected_key(codec_token_streamer.DEFAULT_CHUNK_SIZE
+                                + codec_token_streamer.DEFAULT_LOOKAHEAD)
+    assert key == _expected_key(15)
+    assert key != _expected_key(10)
 
 
 @pytest.mark.asyncio

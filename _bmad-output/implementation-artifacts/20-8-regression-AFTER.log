@@ -1,0 +1,944 @@
+=== Story 20.8 regression run: AFTER ===
+started 2026-09-02T16:03:24-06:00  dir timeout 900s  file timeout 300s
+--- dir: tests ---
+..................                                                       [100%]
+18 passed in 2.83s
+--- dir: tests/integration ---
+.........................F.........F.............F...................... [ 42%]
+............................................F........................... [ 84%]
+..........................                                               [100%]
+================================== FAILURES ===================================
+_ TestEmotionPresetInstruct.test_emotion_preset_instructs_match_qwen_service __
+
+self = <tests.integration.test_emotion_tts_integration.TestEmotionPresetInstruct object at 0x00000267F356F610>
+
+>   ???
+E   AssertionError: assert 'happy' in 'speak with bright, joyful enthusiasm and warmth, voice lifted with genuine delight, occasional light laughter in the breath, upbeat tempo with melodic rises expressing pure happiness'
+E    +  where 'speak with bright, joyful enthusiasm and warmth, voice lifted with genuine delight, occasional light laughter in the breath, upbeat tempo with melodic rises expressing pure happiness' = <built-in method lower of str object at 0x00000267B9A55E30>()
+E    +    where <built-in method lower of str object at 0x00000267B9A55E30> = 'Speak with bright, joyful enthusiasm and warmth, voice lifted with genuine delight, occasional light laughter in the breath, upbeat tempo with melodic rises expressing pure happiness'.lower
+E    +      where 'Speak with bright, joyful enthusiasm and warmth, voice lifted with genuine delight, occasional light laughter in the breath, upbeat tempo with melodic rises expressing pure happiness' = <EmotionPreset.HAPPY: ('happy', '\U0001f604', 'Happy', 'F2', 'Speak with bright, joyful enthusiasm and warmth, voice lifted with genuine delight, occasional light laughter in the breath, upbeat tempo with melodic rises expressing pure happiness')>.instruct
+
+G:\MyVoicePublicInst\tests\integration\test_emotion_tts_integration.py:126: AssertionError
+_ TestQwenTTSServiceEmotionIntegration.test_qwen_service_emotions_have_instructs _
+
+self = <tests.integration.test_emotion_tts_integration.TestQwenTTSServiceEmotionIntegration object at 0x00000267F35887C0>
+
+>   ???
+E   AssertionError: assert 'happy' in 'speak happily and cheerfully'
+E    +  where 'speak happily and cheerfully' = <built-in method lower of str object at 0x00000267E9403410>()
+E    +    where <built-in method lower of str object at 0x00000267E9403410> = 'Speak happily and cheerfully'.lower
+
+G:\MyVoicePublicInst\tests\integration\test_emotion_tts_integration.py:321: AssertionError
+______________ TestMetadataVersioning.test_generate_v2_metadata _______________
+
+self = <tests.integration.test_emotion_variants_workflow.TestMetadataVersioning object at 0x00000267F358B610>
+tmp_path = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6695/test_generate_v2_metadata0')
+
+>   ???
+E   AssertionError: assert '3.0' == '2.0'
+E     
+E     - 2.0
+E     + 3.0
+
+G:\MyVoicePublicInst\tests\integration\test_emotion_variants_workflow.py:317: AssertionError
+_____ TestAudioChunkPayloadStability.test_audio_chunk_field_set_unchanged _____
+
+self = <tests.integration.test_session_lifecycle.TestAudioChunkPayloadStability object at 0x00000267F364AAA0>
+
+    def test_audio_chunk_field_set_unchanged(self):
+        """AC #7 — AudioChunk's field set must match the V2 baseline."""
+        expected_fields = {
+            "audio_data",
+            "sample_rate",
+            "chunk_index",
+            "is_final",
+            "text_segment",
+        }
+        actual_fields = {f.name for f in dataclasses.fields(AudioChunk)}
+>       assert actual_fields == expected_fields, (
+            f"AudioChunk field set drifted: extra={actual_fields - expected_fields}, "
+            f"missing={expected_fields - actual_fields}"
+        )
+E       AssertionError: AudioChunk field set drifted: extra={'session_id'}, missing=set()
+E       assert {'audio_data'...text_segment'} == {'audio_data'...text_segment'}
+E         
+E         Extra items in the left set:
+E         'session_id'
+E         Use -v to get more diff
+
+tests\integration\test_session_lifecycle.py:801: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/integration/test_emotion_tts_integration.py::TestEmotionPresetInstruct::test_emotion_preset_instructs_match_qwen_service
+FAILED tests/integration/test_emotion_tts_integration.py::TestQwenTTSServiceEmotionIntegration::test_qwen_service_emotions_have_instructs
+FAILED tests/integration/test_emotion_variants_workflow.py::TestMetadataVersioning::test_generate_v2_metadata
+FAILED tests/integration/test_session_lifecycle.py::TestAudioChunkPayloadStability::test_audio_chunk_field_set_unchanged
+4 failed, 166 passed in 8.13s
+--- dir: tests/services ---
+............................................................F........... [ 66%]
+.F............F......................                                    [100%]
+================================== FAILURES ===================================
+______________ TestVoiceTypeOptimized.test_optimized_sort_order _______________
+
+self = <tests.services.test_optimized_voice.TestVoiceTypeOptimized object at 0x00000216EFECE6B0>
+
+    def test_optimized_sort_order(self):
+        """Test OPTIMIZED sort order is between DESIGNED and CLONED."""
+        # Sort orders: BUNDLED=0, DESIGNED=1, OPTIMIZED=2, CLONED=3
+>       assert VoiceType.OPTIMIZED.sort_order == 2
+E       AssertionError: assert 3 == 2
+E        +  where 3 = <VoiceType.OPTIMIZED: 'optimized'>.sort_order
+E        +    where <VoiceType.OPTIMIZED: 'optimized'> = VoiceType.OPTIMIZED
+
+tests\services\test_optimized_voice.py:55: AssertionError
+_______ TestModelRegistryCheckpointLoading.test_checkpoint_path_tracked _______
+
+self = <tests.services.test_optimized_voice.TestModelRegistryCheckpointLoading object at 0x00000216EFEB1AE0>
+mock_model_registry = <myvoice.services.model_registry.ModelRegistry object at 0x00000216A9B941F0>
+tmp_path = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6696/test_checkpoint_path_tracked0')
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_path_tracked(self, mock_model_registry, tmp_path):
+        """Test that current checkpoint path is tracked."""
+        checkpoint_path = tmp_path / "my_checkpoint"
+        checkpoint_path.mkdir()
+    
+        with patch.object(mock_model_registry, '_load_model', new_callable=AsyncMock) as mock_load:
+            mock_load.return_value = (True, None)
+    
+            # Manually simulate what _load_model does
+            async def fake_load(model_type, checkpoint_path=None):
+                mock_model_registry._current_checkpoint_path = checkpoint_path
+                mock_model_registry._current_model_type = model_type
+                return (True, None)
+    
+            mock_load.side_effect = fake_load
+    
+>           await mock_model_registry.ensure_model_loaded(
+                QwenModelType.CUSTOM_VOICE,
+                checkpoint_path=str(checkpoint_path)
+            )
+
+tests\services\test_optimized_voice.py:280: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+src\myvoice\services\model_registry.py:368: in ensure_model_loaded
+    return await self._load_model(model_type, checkpoint_path=checkpoint_path, tier_override=tier_override)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <AsyncMock name='_load_model' id='2296360028336'>
+args = (<QwenModelType.CUSTOM_VOICE: 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice'>,)
+kwargs = {'checkpoint_path': 'C:\\Users\\AL301\\AppData\\Local\\Temp\\pytest-of-AL301\\pytest-6696\\test_checkpoint_path_tracked0\\my_checkpoint', 'tier_override': None}
+_call = call(<QwenModelType.CUSTOM_VOICE: 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice'>, checkpoint_path='C:\\Users\\AL301\\AppData\\Local\\Temp\\pytest-of-AL301\\pytest-6696\\test_checkpoint_path_tracked0\\my_checkpoint', tier_override=None)
+effect = <function TestModelRegistryCheckpointLoading.test_checkpoint_path_tracked.<locals>.fake_load at 0x00000216A999E830>
+
+>   ???
+E   TypeError: TestModelRegistryCheckpointLoading.test_checkpoint_path_tracked.<locals>.fake_load() got an unexpected keyword argument 'tier_override'
+
+unittest\mock.py:2245: TypeError
+_____________ TestVoiceProfileManagerInit.test_init_with_defaults _____________
+
+self = <tests.services.test_voice_profile_manager.TestVoiceProfileManagerInit object at 0x00000216EFEFBE50>
+temp_voice_dir = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6696/test_init_with_defaults0/voice_files')
+temp_cache_file = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6696/test_init_with_defaults0/config/.voice_cache.json')
+
+>   ???
+E   assert 300.0 == 10.0
+E    +  where 300.0 = VoiceProfileManager(name=VoiceProfileManager, status=stopped).max_duration
+
+G:\MyVoicePublicInst\tests\services\test_voice_profile_manager.py:130: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/services/test_optimized_voice.py::TestVoiceTypeOptimized::test_optimized_sort_order
+FAILED tests/services/test_optimized_voice.py::TestModelRegistryCheckpointLoading::test_checkpoint_path_tracked
+FAILED tests/services/test_voice_profile_manager.py::TestVoiceProfileManagerInit::test_init_with_defaults
+3 failed, 106 passed in 4.74s
+--- dir: tests/services/api_server ---
+.........F........................................................       [100%]
+================================== FAILURES ===================================
+____________ test_gui_session_reaches_device_and_is_not_published _____________
+
+    @pytest.mark.asyncio
+    async def test_gui_session_reaches_device_and_is_not_published():
+        app = _make_app()
+        app._audio_coordinator.start_streaming_session.return_value = {
+            "monitor": "m",
+            "virtual": "v",
+        }
+        sid = "gui-1"  # NOT registered as API-origin
+        queue = app._stream_hub.subscribe(sid)
+    
+        await app._handle_progressive_chunk_async(
+            _chunk(sid, chunk_index=0, is_final=False, size=10), epoch=None
+        )
+    
+        # Gate not taken -> nothing published to the hub.
+        assert queue.empty()
+        # Device path reached.
+>       app._audio_coordinator.start_streaming_session.assert_called_once()
+
+tests\services\api_server\test_origin_gating.py:92: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <AsyncMock name='mock.start_streaming_session' id='2385310490560'>
+
+>   ???
+E   AssertionError: Expected 'start_streaming_session' to have been called once. Called 0 times.
+
+unittest\mock.py:908: AssertionError
+------------------------------ Captured log call ------------------------------
+WARNING  test_origin_gating:app.py:3252 Progressive playback session open raised; falling back to batch playback
+Traceback (most recent call last):
+  File "I:\MyVoiceV2\src\myvoice\app.py", line 3244, in _handle_progressive_chunk_async
+    getattr(self, "_tts_service", None),
+RuntimeError: super-class __init__() of type MyVoiceApp was never called
+=========================== short test summary info ===========================
+FAILED tests/services/api_server/test_origin_gating.py::test_gui_session_reaches_device_and_is_not_published
+1 failed, 65 passed in 3.16s
+--- dir: tests/settings ---
+................................................................         [100%]
+64 passed in 813.04s (0:13:33)
+--- dir: tests/ui ---
+........................................................................ [ 10%]
+........................................................................ [ 20%]
+........................................................................ [ 30%]
+........................................................................ [ 40%]
+........................................................................ [ 50%]
+........................................................................ [ 60%]
+...............................FF....................................... [ 70%]
+........................................................................ [ 80%]
+....F................................................................... [ 91%]
+.........F.................F.FF.................................         [100%]
+================================== FAILURES ===================================
+___________ TestClearCommsTabPresence.test_clear_comms_tab_is_last ____________
+
+self = <tests.ui.test_settings_dialog_clear_comms_tab.TestClearCommsTabPresence object at 0x0000020F51D24C40>
+dialog = <myvoice.ui.components.settings_dialog.SettingsDialog object at 0x0000020F51EEC4C0>
+
+    def test_clear_comms_tab_is_last(self, dialog):
+        tab_widget: QTabWidget = dialog.tab_widget
+        assert tab_widget.count() >= 6  # Audio, Voices, TTS, Interface, Quick Speak, Clear Comms
+        last_idx = tab_widget.count() - 1
+>       assert tab_widget.tabText(last_idx) == "Clear Comms"
+E       AssertionError: assert 'API Access' == 'Clear Comms'
+E         
+E         - Clear Comms
+E         + API Access
+
+tests\ui\test_settings_dialog_clear_comms_tab.py:104: AssertionError
+----------------------------- Captured log setup ------------------------------
+ERROR    QuickSpeakSettingsWidget:quick_speak_settings_widget.py:151 Error loading Quick Speak entries: setCurrentText(self, text: Optional[str]): argument 1 has unexpected type 'MagicMock'
+___ TestClearCommsTabPresence.test_clear_comms_tab_widget_is_panel_instance ___
+
+self = <tests.ui.test_settings_dialog_clear_comms_tab.TestClearCommsTabPresence object at 0x0000020F51D25060>
+dialog = <myvoice.ui.components.settings_dialog.SettingsDialog object at 0x0000020F992D4310>
+
+    def test_clear_comms_tab_widget_is_panel_instance(self, dialog):
+        tab_widget: QTabWidget = dialog.tab_widget
+        last_idx = tab_widget.count() - 1
+        widget = tab_widget.widget(last_idx)
+>       assert isinstance(widget, ClearCommsSettingsPanel)
+E       assert False
+E        +  where False = isinstance(<myvoice.ui.dialogs.settings.api_access_settings_panel.APIAccessSettingsPanel object at 0x0000020F991F2680>, ClearCommsSettingsPanel)
+
+tests\ui\test_settings_dialog_clear_comms_tab.py:110: AssertionError
+----------------------------- Captured log setup ------------------------------
+ERROR    QuickSpeakSettingsWidget:quick_speak_settings_widget.py:151 Error loading Quick Speak entries: setCurrentText(self, text: Optional[str]): argument 1 has unexpected type 'MagicMock'
+_______ TestAppSettingsTrayFields.test_minimize_to_tray_default_is_true _______
+
+self = <tests.ui.test_system_tray_integration.TestAppSettingsTrayFields object at 0x0000020F51DB1EA0>
+
+    def test_minimize_to_tray_default_is_true(self):
+        """Test minimize_to_tray defaults to True."""
+        settings = AppSettings()
+>       assert settings.minimize_to_tray == True
+E       AssertionError: assert False == True
+E        +  where False = AppSettings(selected_voice_profile='Sarira-F', voice_files_directory='voice_files', ui_theme='dark', log_level='INFO').minimize_to_tray
+
+tests\ui\test_system_tray_integration.py:85: AssertionError
+_____________ TestVoiceLibraryWidgetInit.test_clone_button_exists _____________
+
+self = <tests.ui.test_voice_library_widget.TestVoiceLibraryWidgetInit object at 0x0000020F51E3C280>
+widget = <myvoice.ui.components.voice_library_widget.VoiceLibraryWidget object at 0x0000020F9944ADD0>
+
+>   ???
+E   AttributeError: 'VoiceLibraryWidget' object has no attribute 'clone_button'. Did you mean: 'delete_button'?
+
+G:\MyVoicePublicInst\tests\ui\test_voice_library_widget.py:116: AttributeError
+___ TestVoiceLibraryWidgetSignals.test_clone_voice_requested_signal_exists ____
+
+self = <tests.ui.test_voice_library_widget.TestVoiceLibraryWidgetSignals object at 0x0000020F51E3EF20>
+widget = <myvoice.ui.components.voice_library_widget.VoiceLibraryWidget object at 0x0000020F9944B130>
+
+>   ???
+E   AssertionError: assert False
+E    +  where False = hasattr(<myvoice.ui.components.voice_library_widget.VoiceLibraryWidget object at 0x0000020F9944B130>, 'clone_voice_requested')
+
+G:\MyVoicePublicInst\tests\ui\test_voice_library_widget.py:266: AssertionError
+________ TestVoiceLibraryWidgetSignals.test_design_button_emits_signal ________
+
+self = <tests.ui.test_voice_library_widget.TestVoiceLibraryWidgetSignals object at 0x0000020F51E3F6A0>
+widget = <myvoice.ui.components.voice_library_widget.VoiceLibraryWidget object at 0x0000020F9944BB50>
+
+>   ???
+
+G:\MyVoicePublicInst\tests\ui\test_voice_library_widget.py:279: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <Mock id='2265625604976'>
+
+>   ???
+E   AssertionError: Expected 'mock' to have been called once. Called 0 times.
+
+unittest\mock.py:908: AssertionError
+________ TestVoiceLibraryWidgetSignals.test_clone_button_emits_signal _________
+
+self = <tests.ui.test_voice_library_widget.TestVoiceLibraryWidgetSignals object at 0x0000020F51E3FA60>
+widget = <myvoice.ui.components.voice_library_widget.VoiceLibraryWidget object at 0x0000020F9944A170>
+
+>   ???
+E   AttributeError: 'VoiceLibraryWidget' object has no attribute 'clone_voice_requested'. Did you mean: 'design_voice_requested'?
+
+G:\MyVoicePublicInst\tests\ui\test_voice_library_widget.py:284: AttributeError
+=========================== short test summary info ===========================
+FAILED tests/ui/test_settings_dialog_clear_comms_tab.py::TestClearCommsTabPresence::test_clear_comms_tab_is_last
+FAILED tests/ui/test_settings_dialog_clear_comms_tab.py::TestClearCommsTabPresence::test_clear_comms_tab_widget_is_panel_instance
+FAILED tests/ui/test_system_tray_integration.py::TestAppSettingsTrayFields::test_minimize_to_tray_default_is_true
+FAILED tests/ui/test_voice_library_widget.py::TestVoiceLibraryWidgetInit::test_clone_button_exists
+FAILED tests/ui/test_voice_library_widget.py::TestVoiceLibraryWidgetSignals::test_clone_voice_requested_signal_exists
+FAILED tests/ui/test_voice_library_widget.py::TestVoiceLibraryWidgetSignals::test_design_button_emits_signal
+FAILED tests/ui/test_voice_library_widget.py::TestVoiceLibraryWidgetSignals::test_clone_button_emits_signal
+7 failed, 705 passed in 33.59s
+--- dir: tests/ui/dialogs/settings ---
+..........................................                               [100%]
+42 passed in 2.89s
+--- dir: tests/unit ---
+.................................................                        [100%]
+49 passed in 17.33s
+--- dir: tests/unit/build_tools ---
+....................                                                     [100%]
+20 passed in 2.88s
+--- dir: tests/unit/models ---
+........................................................................ [ 80%]
+.................                                                        [100%]
+89 passed in 2.89s
+--- dir: tests/unit/observability ---
+............................................................             [100%]
+60 passed in 2.75s
+--- dir: tests/unit/services ---
+........................................................................ [ 18%]
+........................................................................ [ 36%]
+........................................................................ [ 54%]
+........................................................................ [ 72%]
+........................................................................ [ 90%]
+.....................................                                    [100%]
+397 passed in 33.85s
+--- dir: tests/unit/services/sessions ---
+........................................................................ [ 23%]
+........................................................................ [ 46%]
+........................................................................ [ 69%]
+........................................................................ [ 92%]
+........................                                                 [100%]
+312 passed in 3.08s
+--- dir: tests/unit/services/tts_streaming ---
+........................................................................ [ 32%]
+........................................................................ [ 64%]
+........................................................................ [ 96%]
+........                                                                 [100%]
+224 passed in 3.81s
+--- dir: tests/unit/ui ---
+.....                                                                    [100%]
+5 passed in 2.73s
+--- dir: tests/unit/ui/dialogs/settings ---
+....................                                                     [100%]
+20 passed in 2.77s
+--- dir: tests/unit/ui/dialogs/voice_design_studio ---
+......................................................................Input #0, wav, from 'C:/Users/AL301/AppData/Local/Temp/tmplin1r58v.wav':
+  Duration: 00:00:00.01, bitrate: 1473 kb/s
+  Stream #0:0: Audio: pcm_s16le ([1][0][0][0] / 0x0001), 44100 Hz, 2 channels, s16, 1411 kb/s
+E.Input #0, wav, from 'C:/Users/AL301/AppData/Local/Temp/tmp6umgsuvx.wav':
+  Duration:  [ 13%]
+00:00:00.01, bitrate: 1473 kb/s
+  Stream #0:0: Audio: pcm_s16le ([1][0][0][0] / 0x0001), 44100 Hz, 2 channels, s16, 1411 kb/s
+E..Input #0, wav, from 'C:/Users/AL301/AppData/Local/Temp/tmpqz0aaftb.wav':
+  Duration: 00:00:00.01, bitrate: 1473 kb/s
+E.Input #0, wav, from 'C:/Users/AL301/AppData/Local/Temp/tmplpyetu_k.wav':
+E....E............................................................. [ 25%]
+........................................................................ [ 39%]
+........................................................................ [ 52%]
+........................................F.....F......F.................. [ 65%]
+.......F........F..F.....F.......................FFF..........F......F.F [ 78%]
+.....FF....F.F...FFFFF...........FFF.FFFF..F............................ [ 92%]
+..........................................                               [100%]
+=================================== ERRORS ====================================
+_ ERROR at teardown of TestAudioFileManagement.test_set_audio_file_enables_play _
+
+>   ???
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_audio_player_widget.py:65: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('C:/Users/AL301/AppData/Local/Temp/tmplin1r58v.wav')
+missing_ok = False
+
+>   ???
+E   PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: 'C:\\Users\\AL301\\AppData\\Local\\Temp\\tmplin1r58v.wav'
+
+pathlib.py:1206: PermissionError
+_ ERROR at teardown of TestAudioFileManagement.test_set_audio_file_updates_duration _
+
+>   ???
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_audio_player_widget.py:65: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('C:/Users/AL301/AppData/Local/Temp/tmp6umgsuvx.wav')
+missing_ok = False
+
+>   ???
+E   PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: 'C:\\Users\\AL301\\AppData\\Local\\Temp\\tmp6umgsuvx.wav'
+
+pathlib.py:1206: PermissionError
+__ ERROR at teardown of TestAudioFileManagement.test_set_none_disables_play ___
+
+>   ???
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_audio_player_widget.py:65: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('C:/Users/AL301/AppData/Local/Temp/tmpqz0aaftb.wav')
+missing_ok = False
+
+>   ???
+E   PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: 'C:\\Users\\AL301\\AppData\\Local\\Temp\\tmpqz0aaftb.wav'
+
+pathlib.py:1206: PermissionError
+______ ERROR at teardown of TestAudioFileManagement.test_get_audio_path _______
+
+>   ???
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_audio_player_widget.py:65: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('C:/Users/AL301/AppData/Local/Temp/tmplpyetu_k.wav')
+missing_ok = False
+
+>   ???
+E   PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: 'C:\\Users\\AL301\\AppData\\Local\\Temp\\tmplpyetu_k.wav'
+
+pathlib.py:1206: PermissionError
+__________ ERROR at teardown of TestPlaybackState.test_get_duration ___________
+
+>   ???
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_audio_player_widget.py:65: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('C:/Users/AL301/AppData/Local/Temp/tmpumdtw9nx.wav')
+missing_ok = False
+
+>   ???
+E   PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: 'C:\\Users\\AL301\\AppData\\Local\\Temp\\tmpumdtw9nx.wav'
+
+pathlib.py:1206: PermissionError
+================================== FAILURES ===================================
+______ TestTranscriptVisibility.test_transcript_visible_after_file_load _______
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_sample_path_panel.TestTranscriptVisibility object at 0x0000016359448AF0>
+panel = <myvoice.ui.dialogs.voice_design_studio.sample_path_panel.SamplePathPanel object at 0x000001635AAB6560>
+tmp_path = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6705/test_transcript_visible_after_0')
+
+>   ???
+E   assert False
+E    +  where False = <built-in method isVisible of QGroupBox object at 0x000001635AAB4A60>()
+E    +    where <built-in method isVisible of QGroupBox object at 0x000001635AAB4A60> = <PyQt6.QtWidgets.QGroupBox object at 0x000001635AAB4A60>.isVisible
+E    +      where <PyQt6.QtWidgets.QGroupBox object at 0x000001635AAB4A60> = <myvoice.ui.dialogs.voice_design_studio.sample_path_panel.SamplePathPanel object at 0x000001635AAB6560>.transcript_group
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_sample_path_panel.py:500: AssertionError
+---------------------------- Captured Qt messages -----------------------------
+QtWarningMsg: Could not open media. FFmpeg error description: Invalid data found when processing input
+---------------------------- Captured log teardown ----------------------------
+ERROR    AudioPlayerWidget:audio_player_widget.py:293 Media player error: Error.FormatError - Could not open file
+_________ TestTranscriptionState.test_set_transcribing_shows_progress _________
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_sample_path_panel.TestTranscriptionState object at 0x0000016359431FF0>
+panel = <myvoice.ui.dialogs.voice_design_studio.sample_path_panel.SamplePathPanel object at 0x000001635AAB67A0>
+tmp_path = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6705/test_set_transcribing_shows_pr0')
+
+>   ???
+E   assert False
+E    +  where False = <built-in method isVisible of QProgressBar object at 0x000001635AB46710>()
+E    +    where <built-in method isVisible of QProgressBar object at 0x000001635AB46710> = <PyQt6.QtWidgets.QProgressBar object at 0x000001635AB46710>.isVisible
+E    +      where <PyQt6.QtWidgets.QProgressBar object at 0x000001635AB46710> = <myvoice.ui.dialogs.voice_design_studio.sample_path_panel.SamplePathPanel object at 0x000001635AAB67A0>.transcribe_progress
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_sample_path_panel.py:566: AssertionError
+---------------------------- Captured Qt messages -----------------------------
+QtWarningMsg: Could not open media. FFmpeg error description: Invalid data found when processing input
+---------------------------- Captured log teardown ----------------------------
+ERROR    AudioPlayerWidget:audio_player_widget.py:293 Media player error: Error.FormatError - Could not open file
+_______ TestTranscriptionError.test_set_transcription_error_shows_retry _______
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_sample_path_panel.TestTranscriptionError object at 0x000001635944A170>
+panel = <myvoice.ui.dialogs.voice_design_studio.sample_path_panel.SamplePathPanel object at 0x000001635AAB7D90>
+tmp_path = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6705/test_set_transcription_error_s0')
+
+>   ???
+E   assert False
+E    +  where False = <built-in method isVisible of QPushButton object at 0x000001635AB44AF0>()
+E    +    where <built-in method isVisible of QPushButton object at 0x000001635AB44AF0> = <PyQt6.QtWidgets.QPushButton object at 0x000001635AB44AF0>.isVisible
+E    +      where <PyQt6.QtWidgets.QPushButton object at 0x000001635AB44AF0> = <myvoice.ui.dialogs.voice_design_studio.sample_path_panel.SamplePathPanel object at 0x000001635AAB7D90>.transcribe_retry_button
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_sample_path_panel.py:638: AssertionError
+---------------------------- Captured Qt messages -----------------------------
+QtWarningMsg: Could not open media. FFmpeg error description: Invalid data found when processing input
+------------------------------ Captured log call ------------------------------
+ERROR    SamplePathPanel:sample_path_panel.py:1205 Transcription error: Connection failed
+---------------------------- Captured log teardown ----------------------------
+ERROR    AudioPlayerWidget:audio_player_widget.py:293 Media player error: Error.FormatError - Could not open file
+_________ TestExtractVisibility.test_extract_visible_after_file_load __________
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_sample_path_panel.TestExtractVisibility object at 0x0000016359460730>
+panel = <myvoice.ui.dialogs.voice_design_studio.sample_path_panel.SamplePathPanel object at 0x000001635AAB6680>
+tmp_path = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6705/test_extract_visible_after_fil0')
+
+>   ???
+E   assert False
+E    +  where False = <built-in method isVisible of QGroupBox object at 0x000001635AB471C0>()
+E    +    where <built-in method isVisible of QGroupBox object at 0x000001635AB471C0> = <PyQt6.QtWidgets.QGroupBox object at 0x000001635AB471C0>.isVisible
+E    +      where <PyQt6.QtWidgets.QGroupBox object at 0x000001635AB471C0> = <myvoice.ui.dialogs.voice_design_studio.sample_path_panel.SamplePathPanel object at 0x000001635AAB6680>.extract_group
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_sample_path_panel.py:808: AssertionError
+---------------------------- Captured Qt messages -----------------------------
+QtWarningMsg: Could not open media. FFmpeg error description: Invalid data found when processing input
+---------------------------- Captured log teardown ----------------------------
+ERROR    AudioPlayerWidget:audio_player_widget.py:293 Media player error: Error.FormatError - Could not open file
+___________ TestExtractionState.test_set_extracting_shows_progress ____________
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_sample_path_panel.TestExtractionState object at 0x0000016359449000>
+panel = <myvoice.ui.dialogs.voice_design_studio.sample_path_panel.SamplePathPanel object at 0x000001635AAB5C60>
+tmp_path = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6705/test_set_extracting_shows_prog0')
+
+>   ???
+E   assert False
+E    +  where False = <built-in method isVisible of QProgressBar object at 0x000001635AB46440>()
+E    +    where <built-in method isVisible of QProgressBar object at 0x000001635AB46440> = <PyQt6.QtWidgets.QProgressBar object at 0x000001635AB46440>.isVisible
+E    +      where <PyQt6.QtWidgets.QProgressBar object at 0x000001635AB46440> = <myvoice.ui.dialogs.voice_design_studio.sample_path_panel.SamplePathPanel object at 0x000001635AAB5C60>.extract_progress
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_sample_path_panel.py:920: AssertionError
+---------------------------- Captured Qt messages -----------------------------
+QtWarningMsg: Could not open media. FFmpeg error description: Invalid data found when processing input
+---------------------------- Captured log teardown ----------------------------
+ERROR    AudioPlayerWidget:audio_player_widget.py:293 Media player error: Error.FormatError - Could not open file
+______ TestExtractionComplete.test_set_extraction_complete_shows_preview ______
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_sample_path_panel.TestExtractionComplete object at 0x0000016359462260>
+panel = <myvoice.ui.dialogs.voice_design_studio.sample_path_panel.SamplePathPanel object at 0x000001635AAB7E20>
+tmp_path = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6705/test_set_extraction_complete_s0')
+
+>   ???
+E   assert False
+E    +  where False = <built-in method isVisible of QGroupBox object at 0x000001635AB46950>()
+E    +    where <built-in method isVisible of QGroupBox object at 0x000001635AB46950> = <PyQt6.QtWidgets.QGroupBox object at 0x000001635AB46950>.isVisible
+E    +      where <PyQt6.QtWidgets.QGroupBox object at 0x000001635AB46950> = <myvoice.ui.dialogs.voice_design_studio.sample_path_panel.SamplePathPanel object at 0x000001635AAB7E20>.preview_audio_group
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_sample_path_panel.py:968: AssertionError
+---------------------------- Captured Qt messages -----------------------------
+QtWarningMsg: Could not open media. FFmpeg error description: Invalid data found when processing input
+QtWarningMsg: Could not open media. FFmpeg error description: Invalid data found when processing input
+---------------------------- Captured log teardown ----------------------------
+ERROR    AudioPlayerWidget:audio_player_widget.py:293 Media player error: Error.FormatError - Could not open file
+ERROR    AudioPlayerWidget:audio_player_widget.py:293 Media player error: Error.FormatError - Could not open file
+__________ TestExtractionError.test_set_extraction_error_shows_retry __________
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_sample_path_panel.TestExtractionError object at 0x0000016359463BE0>
+panel = <myvoice.ui.dialogs.voice_design_studio.sample_path_panel.SamplePathPanel object at 0x000001635AB444C0>
+tmp_path = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6705/test_set_extraction_error_show2')
+
+>   ???
+E   assert False
+E    +  where False = <built-in method isVisible of QPushButton object at 0x000001635AB47BE0>()
+E    +    where <built-in method isVisible of QPushButton object at 0x000001635AB47BE0> = <PyQt6.QtWidgets.QPushButton object at 0x000001635AB47BE0>.isVisible
+E    +      where <PyQt6.QtWidgets.QPushButton object at 0x000001635AB47BE0> = <myvoice.ui.dialogs.voice_design_studio.sample_path_panel.SamplePathPanel object at 0x000001635AB444C0>.extract_retry_button
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_sample_path_panel.py:1058: AssertionError
+---------------------------- Captured Qt messages -----------------------------
+QtWarningMsg: Could not open media. FFmpeg error description: Invalid data found when processing input
+------------------------------ Captured log call ------------------------------
+ERROR    SamplePathPanel:sample_path_panel.py:1394 Extraction error: Failed
+---------------------------- Captured log teardown ----------------------------
+ERROR    AudioPlayerWidget:audio_player_widget.py:293 Media player error: Error.FormatError - Could not open file
+_ TestTranscriptModifiedIndicator.test_modified_indicator_after_transcript_change _
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_sample_path_panel.TestTranscriptModifiedIndicator object at 0x0000016359481030>
+panel = <myvoice.ui.dialogs.voice_design_studio.sample_path_panel.SamplePathPanel object at 0x000001635AB45990>
+tmp_path = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6705/test_modified_indicator_after_0')
+
+>   ???
+E   assert False
+E    +  where False = <built-in method isVisible of QLabel object at 0x000001635AAB4550>()
+E    +    where <built-in method isVisible of QLabel object at 0x000001635AAB4550> = <PyQt6.QtWidgets.QLabel object at 0x000001635AAB4550>.isVisible
+E    +      where <PyQt6.QtWidgets.QLabel object at 0x000001635AAB4550> = <myvoice.ui.dialogs.voice_design_studio.sample_path_panel.SamplePathPanel object at 0x000001635AB45990>.transcript_modified_label
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_sample_path_panel.py:1287: AssertionError
+---------------------------- Captured Qt messages -----------------------------
+QtWarningMsg: Could not open media. FFmpeg error description: Invalid data found when processing input
+QtWarningMsg: Could not open media. FFmpeg error description: Invalid data found when processing input
+---------------------------- Captured log teardown ----------------------------
+ERROR    AudioPlayerWidget:audio_player_widget.py:293 Media player error: Error.FormatError - Could not open file
+ERROR    AudioPlayerWidget:audio_player_widget.py:293 Media player error: Error.FormatError - Could not open file
+_ TestTranscriptModifiedIndicator.test_modified_indicator_hidden_after_re_extraction _
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_sample_path_panel.TestTranscriptModifiedIndicator object at 0x0000016359480190>
+panel = <myvoice.ui.dialogs.voice_design_studio.sample_path_panel.SamplePathPanel object at 0x000001635AAB65F0>
+tmp_path = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6705/test_modified_indicator_hidden0')
+
+>   ???
+E   assert False
+E    +  where False = <built-in method isVisible of QLabel object at 0x000001635FC6EDD0>()
+E    +    where <built-in method isVisible of QLabel object at 0x000001635FC6EDD0> = <PyQt6.QtWidgets.QLabel object at 0x000001635FC6EDD0>.isVisible
+E    +      where <PyQt6.QtWidgets.QLabel object at 0x000001635FC6EDD0> = <myvoice.ui.dialogs.voice_design_studio.sample_path_panel.SamplePathPanel object at 0x000001635AAB65F0>.transcript_modified_label
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_sample_path_panel.py:1304: AssertionError
+---------------------------- Captured Qt messages -----------------------------
+QtWarningMsg: Could not open media. FFmpeg error description: Invalid data found when processing input
+QtWarningMsg: Could not open media. FFmpeg error description: Invalid data found when processing input
+---------------------------- Captured log teardown ----------------------------
+ERROR    AudioPlayerWidget:audio_player_widget.py:293 Media player error: Error.FormatError - Could not open file
+ERROR    AudioPlayerWidget:audio_player_widget.py:293 Media player error: Error.FormatError - Could not open file
+_ TestTranscriptModifiedIndicator.test_modified_indicator_false_when_reverted _
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_sample_path_panel.TestTranscriptModifiedIndicator object at 0x0000016359482080>
+panel = <myvoice.ui.dialogs.voice_design_studio.sample_path_panel.SamplePathPanel object at 0x000001635FC6C670>
+tmp_path = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6705/test_modified_indicator_false_0')
+
+>   ???
+E   assert False
+E    +  where False = <built-in method isVisible of QLabel object at 0x000001635FC6D120>()
+E    +    where <built-in method isVisible of QLabel object at 0x000001635FC6D120> = <PyQt6.QtWidgets.QLabel object at 0x000001635FC6D120>.isVisible
+E    +      where <PyQt6.QtWidgets.QLabel object at 0x000001635FC6D120> = <myvoice.ui.dialogs.voice_design_studio.sample_path_panel.SamplePathPanel object at 0x000001635FC6C670>.transcript_modified_label
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_sample_path_panel.py:1328: AssertionError
+---------------------------- Captured Qt messages -----------------------------
+QtWarningMsg: Could not open media. FFmpeg error description: Invalid data found when processing input
+QtWarningMsg: Could not open media. FFmpeg error description: Invalid data found when processing input
+---------------------------- Captured log teardown ----------------------------
+ERROR    AudioPlayerWidget:audio_player_widget.py:293 Media player error: Error.FormatError - Could not open file
+ERROR    AudioPlayerWidget:audio_player_widget.py:293 Media player error: Error.FormatError - Could not open file
+__________ TestReExtractionClear.test_clear_hides_modified_indicator __________
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_sample_path_panel.TestReExtractionClear object at 0x00000163594822C0>
+panel = <myvoice.ui.dialogs.voice_design_studio.sample_path_panel.SamplePathPanel object at 0x000001635FC6E7A0>
+tmp_path = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6705/test_clear_hides_modified_indi0')
+
+>   ???
+E   assert False
+E    +  where False = <built-in method isVisible of QLabel object at 0x000001635AAB7250>()
+E    +    where <built-in method isVisible of QLabel object at 0x000001635AAB7250> = <PyQt6.QtWidgets.QLabel object at 0x000001635AAB7250>.isVisible
+E    +      where <PyQt6.QtWidgets.QLabel object at 0x000001635AAB7250> = <myvoice.ui.dialogs.voice_design_studio.sample_path_panel.SamplePathPanel object at 0x000001635FC6E7A0>.transcript_modified_label
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_sample_path_panel.py:1520: AssertionError
+---------------------------- Captured Qt messages -----------------------------
+QtWarningMsg: Could not open media. FFmpeg error description: Invalid data found when processing input
+QtWarningMsg: Could not open media. FFmpeg error description: Invalid data found when processing input
+---------------------------- Captured log teardown ----------------------------
+ERROR    AudioPlayerWidget:audio_player_widget.py:293 Media player error: Error.FormatError - Could not open file
+ERROR    AudioPlayerWidget:audio_player_widget.py:293 Media player error: Error.FormatError - Could not open file
+_________________ TestVoiceDesignStudioTabs.test_has_two_tabs _________________
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_voice_design_studio_dialog.TestVoiceDesignStudioTabs object at 0x00000163594A3490>
+dialog = <myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x00000163A028B7F0>
+
+>   ???
+E   assert 3 == 2
+E    +  where 3 = <built-in method count of QTabWidget object at 0x00000163A028BA30>()
+E    +    where <built-in method count of QTabWidget object at 0x00000163A028BA30> = <PyQt6.QtWidgets.QTabWidget object at 0x00000163A028BA30>.count
+E    +      where <PyQt6.QtWidgets.QTabWidget object at 0x00000163A028BA30> = <myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x00000163A028B7F0>.tab_widget
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_voice_design_studio_dialog.py:80: AssertionError
+__________ TestVoiceDesignStudioTabs.test_second_tab_is_from_sample ___________
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_voice_design_studio_dialog.TestVoiceDesignStudioTabs object at 0x00000163594A3BB0>
+dialog = <myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x00000163A02B7520>
+
+>   ???
+E   AssertionError: assert 'Emotions' == 'From Sample'
+E     
+E     - From Sample
+E     + Emotions
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_voice_design_studio_dialog.py:90: AssertionError
+____________ TestVoiceDesignStudioButtons.test_save_button_exists _____________
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_voice_design_studio_dialog.TestVoiceDesignStudioButtons object at 0x00000163594A32E0>
+dialog = <myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x00000163A031DCF0>
+
+>   ???
+E   AssertionError: assert False
+E    +  where False = hasattr(<myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x00000163A031DCF0>, 'save_button')
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_voice_design_studio_dialog.py:130: AssertionError
+______ TestVoiceDesignStudioButtons.test_save_button_initially_disabled _______
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_voice_design_studio_dialog.TestVoiceDesignStudioButtons object at 0x00000163594A2B00>
+dialog = <myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x00000163A02B4670>
+
+>   ???
+E   AttributeError: 'VoiceDesignStudioDialog' object has no attribute 'save_button'. Did you mean: 'cancel_button'?
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_voice_design_studio_dialog.py:135: AttributeError
+___ TestVoiceDesignStudioAccessibility.test_tab_widget_has_accessible_name ____
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_voice_design_studio_dialog.TestVoiceDesignStudioAccessibility object at 0x00000163594B91E0>
+dialog = <myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x00000163A02A6290>
+
+>   ???
+E   AssertionError: assert 'Voice creation workflow' == 'Voice creation method'
+E     
+E     - Voice creation method
+E     + Voice creation workflow
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_voice_design_studio_dialog.py:172: AssertionError
+___ TestVoiceDesignStudioAccessibility.test_save_button_has_accessible_name ___
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_voice_design_studio_dialog.TestVoiceDesignStudioAccessibility object at 0x00000163594B9900>
+dialog = <myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x00000163A026F760>
+
+>   ???
+E   AttributeError: 'VoiceDesignStudioDialog' object has no attribute 'save_button'. Did you mean: 'cancel_button'?
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_voice_design_studio_dialog.py:180: AttributeError
+___________ TestSaveButtonState.test_save_button_initially_disabled ___________
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_voice_design_studio_dialog.TestSaveButtonState object at 0x00000163594BA860>
+dialog = <myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x00000163A034EDD0>
+
+>   ???
+E   AttributeError: 'VoiceDesignStudioDialog' object has no attribute 'save_button'. Did you mean: 'cancel_button'?
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_voice_design_studio_dialog.py:222: AttributeError
+________ TestSaveButtonState.test_save_button_enabled_when_save_ready _________
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_voice_design_studio_dialog.TestSaveButtonState object at 0x00000163594A2590>
+dialog = <myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x00000163A02776D0>
+
+>   ???
+E   AttributeError: 'VoiceDesignStudioDialog' object has no attribute 'save_button'. Did you mean: 'cancel_button'?
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_voice_design_studio_dialog.py:227: AttributeError
+______ TestSaveButtonState.test_save_button_disabled_when_save_not_ready ______
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_voice_design_studio_dialog.TestSaveButtonState object at 0x00000163594A3D90>
+dialog = <myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x00000163A02D2D40>
+
+>   ???
+E   AttributeError: 'VoiceDesignStudioDialog' object has no attribute 'save_button'. Did you mean: 'cancel_button'?
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_voice_design_studio_dialog.py:233: AttributeError
+_______ TestSaveButtonState.test_tab_switch_disables_save_on_sample_tab _______
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_voice_design_studio_dialog.TestSaveButtonState object at 0x00000163594BA710>
+dialog = <myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x00000163A02AD120>
+
+>   ???
+E   AttributeError: 'VoiceDesignStudioDialog' object has no attribute 'save_button'. Did you mean: 'cancel_button'?
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_voice_design_studio_dialog.py:239: AttributeError
+_ TestSaveButtonState.test_tab_switch_restores_save_state_on_description_tab __
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_voice_design_studio_dialog.TestSaveButtonState object at 0x00000163594B9F90>
+dialog = <myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x00000163A02C6710>
+tmp_path = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6705/test_tab_switch_restores_save_0')
+
+>   ???
+E   AttributeError: 'VoiceDesignStudioDialog' object has no attribute 'save_button'. Did you mean: 'cancel_button'?
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_voice_design_studio_dialog.py:254: AttributeError
+---------------------------- Captured Qt messages -----------------------------
+QtWarningMsg: Could not open media. FFmpeg error description: Invalid data found when processing input
+---------------------------- Captured log teardown ----------------------------
+ERROR    AudioPlayerWidget:audio_player_widget.py:293 Media player error: Error.FormatError - Could not open file
+___________________ TestSampleTab.test_sample_panel_exists ____________________
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_voice_design_studio_dialog.TestSampleTab object at 0x00000163594BB2E0>
+dialog = <myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x00000163A42A8DC0>
+
+>   ???
+E   AssertionError: assert False
+E    +  where False = hasattr(<myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x00000163A42A8DC0>, 'sample_panel')
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_voice_design_studio_dialog.py:493: AssertionError
+____________ TestSampleTab.test_sample_panel_is_sample_path_panel _____________
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_voice_design_studio_dialog.TestSampleTab object at 0x00000163594BAE30>
+dialog = <myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x00000163A02EFB50>
+
+>   ???
+E   AttributeError: 'VoiceDesignStudioDialog' object has no attribute 'sample_panel'
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_voice_design_studio_dialog.py:499: AttributeError
+_______________ TestSampleTab.test_sample_tab_has_browse_button _______________
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_voice_design_studio_dialog.TestSampleTab object at 0x00000163594B87F0>
+dialog = <myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x00000163A026D1B0>
+
+>   ???
+E   AttributeError: 'VoiceDesignStudioDialog' object has no attribute 'sample_panel'
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_voice_design_studio_dialog.py:503: AttributeError
+_______ TestSampleTab.test_save_button_disabled_on_sample_tab_initially _______
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_voice_design_studio_dialog.TestSampleTab object at 0x00000163594BA6E0>
+dialog = <myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x00000163A42E6D40>
+
+>   ???
+E   AttributeError: 'VoiceDesignStudioDialog' object has no attribute 'save_button'. Did you mean: 'cancel_button'?
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_voice_design_studio_dialog.py:514: AttributeError
+______ TestSampleTabSaveReady.test_save_button_enabled_when_sample_ready ______
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_voice_design_studio_dialog.TestSampleTabSaveReady object at 0x00000163594DC0A0>
+dialog = <myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x000001635AAB69E0>
+tmp_path = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6705/test_save_button_enabled_when_0')
+
+>   ???
+E   AttributeError: 'VoiceDesignStudioDialog' object has no attribute 'sample_panel'
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_voice_design_studio_dialog.py:535: AttributeError
+_________ TestSampleTabSaveReady.test_tab_switch_updates_save_button __________
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_voice_design_studio_dialog.TestSampleTabSaveReady object at 0x00000163594DC8E0>
+dialog = <myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x00000163A02A40D0>
+tmp_path = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6705/test_tab_switch_updates_save_b0')
+
+>   ???
+E   AttributeError: 'VoiceDesignStudioDialog' object has no attribute 'sample_panel'
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_voice_design_studio_dialog.py:556: AttributeError
+___________ TestSampleTabSignals.test_file_loaded_sets_unsaved_work ___________
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_voice_design_studio_dialog.TestSampleTabSignals object at 0x00000163594DCD30>
+dialog = <myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x00000163A02AC8B0>
+tmp_path = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6705/test_file_loaded_sets_unsaved_0')
+
+>   ???
+E   AttributeError: 'VoiceDesignStudioDialog' object has no attribute 'sample_panel'
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_voice_design_studio_dialog.py:583: AttributeError
+______________ TestSessionManagement.test_session_dir_is_unique _______________
+
+self = <tests.unit.ui.dialogs.voice_design_studio.test_voice_design_studio_dialog.TestSessionManagement object at 0x00000163594DD7E0>
+qapp = <PyQt6.QtWidgets.QApplication object at 0x000001635FC6F760>
+
+>   ???
+E   AssertionError: assert WindowsPath('I:/MyVoiceV2/voice_files/design_sessions/current') != WindowsPath('I:/MyVoiceV2/voice_files/design_sessions/current')
+E    +  where WindowsPath('I:/MyVoiceV2/voice_files/design_sessions/current') = <myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x00000163A028BA30>.session_dir
+E    +  and   WindowsPath('I:/MyVoiceV2/voice_files/design_sessions/current') = <myvoice.ui.dialogs.voice_design_studio.voice_design_studio_dialog.VoiceDesignStudioDialog object at 0x00000163A0285360>.session_dir
+
+G:\MyVoicePublicInst\tests\unit\ui\dialogs\voice_design_studio\test_voice_design_studio_dialog.py:613: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_sample_path_panel.py::TestTranscriptVisibility::test_transcript_visible_after_file_load
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_sample_path_panel.py::TestTranscriptionState::test_set_transcribing_shows_progress
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_sample_path_panel.py::TestTranscriptionError::test_set_transcription_error_shows_retry
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_sample_path_panel.py::TestExtractVisibility::test_extract_visible_after_file_load
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_sample_path_panel.py::TestExtractionState::test_set_extracting_shows_progress
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_sample_path_panel.py::TestExtractionComplete::test_set_extraction_complete_shows_preview
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_sample_path_panel.py::TestExtractionError::test_set_extraction_error_shows_retry
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_sample_path_panel.py::TestTranscriptModifiedIndicator::test_modified_indicator_after_transcript_change
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_sample_path_panel.py::TestTranscriptModifiedIndicator::test_modified_indicator_hidden_after_re_extraction
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_sample_path_panel.py::TestTranscriptModifiedIndicator::test_modified_indicator_false_when_reverted
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_sample_path_panel.py::TestReExtractionClear::test_clear_hides_modified_indicator
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_voice_design_studio_dialog.py::TestVoiceDesignStudioTabs::test_has_two_tabs
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_voice_design_studio_dialog.py::TestVoiceDesignStudioTabs::test_second_tab_is_from_sample
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_voice_design_studio_dialog.py::TestVoiceDesignStudioButtons::test_save_button_exists
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_voice_design_studio_dialog.py::TestVoiceDesignStudioButtons::test_save_button_initially_disabled
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_voice_design_studio_dialog.py::TestVoiceDesignStudioAccessibility::test_tab_widget_has_accessible_name
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_voice_design_studio_dialog.py::TestVoiceDesignStudioAccessibility::test_save_button_has_accessible_name
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_voice_design_studio_dialog.py::TestSaveButtonState::test_save_button_initially_disabled
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_voice_design_studio_dialog.py::TestSaveButtonState::test_save_button_enabled_when_save_ready
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_voice_design_studio_dialog.py::TestSaveButtonState::test_save_button_disabled_when_save_not_ready
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_voice_design_studio_dialog.py::TestSaveButtonState::test_tab_switch_disables_save_on_sample_tab
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_voice_design_studio_dialog.py::TestSaveButtonState::test_tab_switch_restores_save_state_on_description_tab
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_voice_design_studio_dialog.py::TestSampleTab::test_sample_panel_exists
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_voice_design_studio_dialog.py::TestSampleTab::test_sample_panel_is_sample_path_panel
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_voice_design_studio_dialog.py::TestSampleTab::test_sample_tab_has_browse_button
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_voice_design_studio_dialog.py::TestSampleTab::test_save_button_disabled_on_sample_tab_initially
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_voice_design_studio_dialog.py::TestSampleTabSaveReady::test_save_button_enabled_when_sample_ready
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_voice_design_studio_dialog.py::TestSampleTabSaveReady::test_tab_switch_updates_save_button
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_voice_design_studio_dialog.py::TestSampleTabSignals::test_file_loaded_sets_unsaved_work
+FAILED tests/unit/ui/dialogs/voice_design_studio/test_voice_design_studio_dialog.py::TestSessionManagement::test_session_dir_is_unique
+30 failed, 511 passed, 5 errors in 538.37s (0:08:58)
+--- dir: tests/unit/utils ---
+................                                                         [100%]
+16 passed in 2.65s
+--- dir: tests/utils ---
+.........................F.F.......FF...................                 [100%]
+================================== FAILURES ===================================
+_____ TestSessionManagerCreation.test_session_directory_has_uuid_in_name ______
+
+self = <tests.utils.test_session_manager.TestSessionManagerCreation object at 0x000001723A45E1A0>
+tmp_path = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6706/test_session_directory_has_uui0')
+
+>   ???
+E   AssertionError: Should start with 'session_': current
+E   assert False
+E    +  where False = <built-in method startswith of str object at 0x000001727C972BB0>('session_')
+E    +    where <built-in method startswith of str object at 0x000001727C972BB0> = 'current'.startswith
+
+G:\MyVoicePublicInst\tests\utils\test_session_manager.py:39: AssertionError
+_____________ TestSessionManagerCreation.test_session_id_property _____________
+
+self = <tests.utils.test_session_manager.TestSessionManagerCreation object at 0x000001723A45C4F0>
+tmp_path = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6706/test_session_id_property0')
+
+>   ???
+
+G:\MyVoicePublicInst\tests\utils\test_session_manager.py:69: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <[AttributeError("'UUID' object has no attribute 'int'") raised in repr()] UUID object at 0x1727421f640>
+hex = 'current', bytes = None, bytes_le = None, fields = None, int = None
+version = None
+
+>   ???
+E   ValueError: badly formed hexadecimal UUID string
+
+uuid.py:177: ValueError
+
+During handling of the above exception, another exception occurred:
+
+self = <tests.utils.test_session_manager.TestSessionManagerCreation object at 0x000001723A45C4F0>
+tmp_path = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6706/test_session_id_property0')
+
+>   ???
+E   Failed: session_id should be valid UUID: current
+
+G:\MyVoicePublicInst\tests\utils\test_session_manager.py:71: Failed
+_ TestSessionManagerMultipleSessions.test_multiple_sessions_have_unique_directories _
+
+self = <tests.utils.test_session_manager.TestSessionManagerMultipleSessions object at 0x000001723A590A30>
+tmp_path = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6706/test_multiple_sessions_have_un0')
+
+>   ???
+E   AssertionError: Each session should have unique directory
+E   assert WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6706/test_multiple_sessions_have_un0/design_sessions/current') != WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6706/test_multiple_sessions_have_un0/design_sessions/current')
+E    +  where WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6706/test_multiple_sessions_have_un0/design_sessions/current') = SessionManager(session_id=current, cleaned=False).session_dir
+E    +  and   WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6706/test_multiple_sessions_have_un0/design_sessions/current') = SessionManager(session_id=current, cleaned=False).session_dir
+
+G:\MyVoicePublicInst\tests\utils\test_session_manager.py:195: AssertionError
+_ TestSessionManagerMultipleSessions.test_cleanup_one_session_preserves_others _
+
+self = <tests.utils.test_session_manager.TestSessionManagerMultipleSessions object at 0x000001723A590DF0>
+tmp_path = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6706/test_cleanup_one_session_prese0')
+
+>   ???
+E   AssertionError: Session 2 should be preserved
+E   assert False
+E    +  where False = exists()
+E    +    where exists = WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6706/test_cleanup_one_session_prese0/design_sessions/current').exists
+E    +      where WindowsPath('C:/Users/AL301/AppData/Local/Temp/pytest-of-AL301/pytest-6706/test_cleanup_one_session_prese0/design_sessions/current') = SessionManager(session_id=current, cleaned=False).session_dir
+
+G:\MyVoicePublicInst\tests\utils\test_session_manager.py:218: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/utils/test_session_manager.py::TestSessionManagerCreation::test_session_directory_has_uuid_in_name
+FAILED tests/utils/test_session_manager.py::TestSessionManagerCreation::test_session_id_property
+FAILED tests/utils/test_session_manager.py::TestSessionManagerMultipleSessions::test_multiple_sessions_have_unique_directories
+FAILED tests/utils/test_session_manager.py::TestSessionManagerMultipleSessions::test_cleanup_one_session_preserves_others
+4 failed, 52 passed in 3.01s
+finished 2026-09-02T16:28:56-06:00
