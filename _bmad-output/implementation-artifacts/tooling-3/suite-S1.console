@@ -1,0 +1,27 @@
+=== iteration 1 start 2026-09-14T12:38:27-06:00 deselected=0 ===
+=== iteration 1 end 2026-09-14T12:39:40-06:00 rc=1 wall=73s ===
+TIMEOUT: tests/settings/test_reset_to_defaults.py::TestResetQuickSpeak::test_reset_quick_speak_entries (iteration 1)
+=== iteration 2 start 2026-09-14T12:39:40-06:00 deselected=1 ===
+=== iteration 2 end 2026-09-14T12:40:55-06:00 rc=1 wall=75s ===
+TIMEOUT: tests/ui/test_close_to_tray_toggle.py::TestInterfaceTabCloseBehaviorControl::test_control_exists_and_is_a_two_option_combo (iteration 2)
+=== iteration 3 start 2026-09-14T12:40:55-06:00 deselected=2 ===
+=== iteration 3 end 2026-09-14T12:42:10-06:00 rc=1 wall=74s ===
+TIMEOUT: tests/ui/test_close_to_tray_toggle.py::TestInterfaceTabCloseBehaviorControl::test_control_lives_on_the_interface_tab (iteration 3)
+=== iteration 4 start 2026-09-14T12:42:10-06:00 deselected=3 ===
+=== iteration 4 end 2026-09-14T12:43:25-06:00 rc=1 wall=75s ===
+TIMEOUT: tests/ui/test_close_to_tray_toggle.py::TestInterfaceTabCloseBehaviorControl::test_option_labels_are_user_facing (iteration 4)
+=== iteration 5 start 2026-09-14T12:43:25-06:00 deselected=4 ===
+=== iteration 5 end 2026-09-14T12:44:40-06:00 rc=1 wall=75s ===
+TIMEOUT: tests/ui/test_close_to_tray_toggle.py::TestInterfaceTabCloseBehaviorControl::test_reflects_persisted_value_on_open[True] (iteration 5)
+=== iteration 6 start 2026-09-14T12:44:40-06:00 deselected=5 ===
+=== iteration 6 end 2026-09-14T12:45:55-06:00 rc=1 wall=75s ===
+TIMEOUT: tests/ui/test_close_to_tray_toggle.py::TestInterfaceTabCloseBehaviorControl::test_reflects_persisted_value_on_open[False] (iteration 6)
+=== iteration 7 start 2026-09-14T12:45:55-06:00 deselected=6 ===
+=== iteration 7 end 2026-09-14T12:47:10-06:00 rc=1 wall=75s ===
+TIMEOUT: tests/ui/test_close_to_tray_toggle.py::TestInterfaceTabCloseBehaviorControl::test_selection_saves_through_existing_path[True] (iteration 7)
+=== iteration 8 start 2026-09-14T12:47:10-06:00 deselected=7 ===
+=== iteration 8 end 2026-09-14T12:48:25-06:00 rc=1 wall=75s ===
+TIMEOUT: tests/ui/test_close_to_tray_toggle.py::TestInterfaceTabCloseBehaviorControl::test_selection_saves_through_existing_path[False] (iteration 8)
+=== iteration 9 start 2026-09-14T12:48:25-06:00 deselected=8 ===
+=== iteration 9 end 2026-09-14T12:49:09-06:00 rc=127 wall=44s ===
+completed normally on iteration 9

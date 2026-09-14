@@ -276,3 +276,11 @@ development_status:
   # showMinimized() branch is dead code. Shipping the toggle without that fix
   # would give the user a control that appears not to work.
   ui-1-close-to-tray-toggle: done
+  # tooling-3 added 2026-09-14. `pytest tests/` does not complete on main -- CPU pins
+  # and the run never returns. Story 20.8 needed an external per-directory guard
+  # just to produce a regression comparison, and its result was therefore not the
+  # clean count-and-identity every earlier story had. Two hangs named so far, one of
+  # them a Story ui-1 test that passed per-directory and hangs under whole-suite
+  # ordering. This story makes hangs COUNTABLE (pytest-timeout, thread method for
+  # Windows, timeout derived from measured durations); it does NOT fix them.
+  tooling-3-pytest-timeout: done
