@@ -1248,3 +1248,67 @@ AC #3 and AC #3b. Nothing else is outstanding.
 | `20-8-l1-audition-helper.py` | the blinded audition helper |
 | `20-8-run-myvoice-at-cs25.py`, `20-8-compare-gui-arms.py` | §9.6 — the reference-arm launcher and the two-arm scorer |
 | `16_` / `17_` / `18_Story_20.8_*.bat` (repo root) | the three operator launchers |
+
+---
+
+## §10. Phase 2 operator results — AUDITION CLEAN, GUI CONFIRMS. 2026-09-14
+
+### AC #3 audition — 16/16 `equivalent`, zero defects on either arm
+
+Every trial, including both byte-identical controls, returned `equivalent` with
+`none` on both arms. Zero blocking, zero shared, reference preferred **0** times.
+Retuning `chunk_size` 25 → 10 is perceptually inert on this fixture — the fixture
+built to the §7 (d) design, so the candidate arm is bit-for-bit what the shipped
+build produces.
+
+Against the pre-committed rule (§8.3): **clean pass** — 0 blocking, reference
+preferred ≤ 1 of 14. Per that rule, `cs7` earns one round. See §10.3.
+
+### AC #3 GUI — same sitting, `cs25` control forced in-process by `17_`
+
+| long class | cs25 (arm A) | cs10 (arm B) | delta |
+|---|---:|---:|---:|
+| 1b prefill | 149.0 ms | 122.7 ms | −26.2 |
+| **2 talker → first emit** | **1,298.4 ms** | **471.9 ms** | **−826.5 ms (−63.7 %)** |
+| 3 decode | 135.6 ms | 133.7 ms | −1.9 |
+| 4 cushion | 20.2 ms | 21.9 ms | +1.7 |
+| **TOTAL** | **1,626.8 ms** | **767.5 ms** | **−859.3 ms (−52.8 %)** |
+| producer ratio | 0.65 | 0.675 | still ≪ 1.0× |
+| chunks | 10 | 24 | — |
+
+| short class | cs25 | cs10 | delta |
+|---|---:|---:|---:|
+| 2 talker | 1,453.8 ms | 509.0 ms | −944.8 |
+| **TOTAL** | **1,828.3 ms** | **840.7 ms** | **−987.5 ms (−54.0 %)** |
+
+### The P3 falsifier did not fire — the mechanism holds
+
+Arm A per-frame talker cost: **51.94 ms**. Fifteen fewer frames predicts
+−779.1 ms on segment 2; observed −826.5 ms; **residual −47.4 ms**. Near zero and
+marginally better than predicted. First emit is gated on the frame threshold, by
+the route the story claimed.
+
+### Session drift, again, and why the same-sitting control mattered
+
+This sitting's `cs25` reads 1,626.8 ms long against Story 20.6 §12's 1,362.4 ms
+twelve days earlier — a 19 % drift for the *same* geometry on the *same* machine.
+Had the delta been scored against 20.6's control it would have read −595 ms
+instead of −859 ms. The number that is real is the within-sitting delta, and it
+is the one reported.
+
+### §10.3 — On the round `cs7` has earned
+
+The §8.3 rule was set before any trials to stop this becoming Story 20.4. It says
+a clean pass earns `cs7` **one** round. It does not say that round must be spent.
+
+For spending it: the headless curve puts `cs7` at −137 ms below `cs10`, and a
+one-talker audition costs ~25 minutes.
+
+Against: `cs7` sits **0.46 frames** above the watermark floor — it survives the
+watermark rising to 536 ms or the edge loss growing 1.6×, where `cs10` survives
+776 ms and 12×. The floor is a function of three constants that have all moved
+within this epic, once inside this story. `cs7` buys the last slice of the win at
+the worst marginal rate, in the one currency this story already had to revalue.
+
+**`cs10` ships on this evidence regardless.** Whether to spend `cs7`'s earned
+round is Commander's call, made with the fragility stated.

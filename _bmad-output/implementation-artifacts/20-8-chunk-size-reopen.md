@@ -1,6 +1,6 @@
 # Story 20.8: Re-baseline and Reopen the Chunk-Size Question (Phase ⊥-Polish-3)
 
-Status: **Phase 2 IMPLEMENTED AND VERIFIED.** `chunk_size` committed at 10; threading verified at all three sites in both directions; exact bars hold; suite unchanged. **Outstanding: the NFR3 audition (blocking) and the two-arm GUI capture — one operator hand-off at evidence §9.6.**
+Status: done — 2026-09-14. Phase 1 GO; viability check closed claim (d); Phase 2 shipped chunk_size=10. Audition 16/16 equivalent, zero defects. GUI, same-sitting control: long TTFA 1,626.8 → 767.5 ms (−52.8 %), short 1,828.3 → 840.7 ms (−54.0 %). P3 falsifier did not fire (residual −47.4 ms). cs7 has earned one round per §8.3 and it is deliberately unspent — see evidence §10.3.
 
 <!-- Phase tag: Phase ⊥-Polish-3. Eighth story of Epic 20. Follow-up F2 from Story 20.5. -->
 <!-- Story class: PHASE-GATED. Phase 1 is a headless re-baseline with a hard go/no-go. Phase 2 does not start until Commander approves it. -->

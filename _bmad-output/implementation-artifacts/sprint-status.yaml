@@ -265,7 +265,7 @@ development_status:
   # audition time. Note the lever is now larger than the old curve implied -- with
   # the lookahead retired, chunk_size=N first-emits at N frames, not N+5 -- but the
   # sweep is no longer free: each point is a distinct compile-cache key.
-  20-8-chunk-size-reopen: in-progress
+  20-8-chunk-size-reopen: done
 
   # Out-of-epic UI work, following the tooling-N precedent for non-epic stories.
   # Commander 2026-09-01: the X minimizes to tray and Settings/Interface has no
