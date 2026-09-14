@@ -284,3 +284,12 @@ development_status:
   # ordering. This story makes hangs COUNTABLE (pytest-timeout, thread method for
   # Windows, timeout derived from measured durations); it does NOT fix them.
   tooling-3-pytest-timeout: done
+  # tooling-4 added 2026-09-14, immediately after tooling-3 named 27 hangs at exactly
+  # 2 stall sites -- both a blocking QMessageBox.warning() on an error path a test
+  # stub trips. Site A: a bare MagicMock() quick-speak stub reaches setCurrentText
+  # and the except pops a modal from inside SettingsDialog.__init__ (24 tests incl.
+  # ui-1's). Site B: regenerate tests route into _on_generate_requested with
+  # _tts_service=None (3 tests). Both are TEST defects; the production modals stay.
+  # Adds an audit-first defensive fixture so an unexpected modal raises instead of
+  # hanging. Restores single-invocation `pytest tests/`.
+  tooling-4-fix-suite-hangs: in-progress
