@@ -191,21 +191,29 @@ def settings_factory(tmp_path):
     return _make
 
 
-def _make_dialog(settings, qtbot) -> SettingsDialog:
-    quick_speak_stub = MagicMock()
-    quick_speak_stub.load_entries = MagicMock()
-    dlg = SettingsDialog(settings, parent=None, quick_speak_service=quick_speak_stub)
-    qtbot.addWidget(dlg)
-    return dlg
+@pytest.fixture
+def make_dialog(qtbot, quick_speak_service_stub):
+    """SettingsDialog factory. Uses the shared typed quick-speak stub from
+    tests/conftest.py (tooling-4) -- a bare MagicMock() here pops a modal
+    from inside SettingsDialog.__init__."""
+
+    def _make(settings) -> SettingsDialog:
+        dlg = SettingsDialog(
+            settings, parent=None, quick_speak_service=quick_speak_service_stub
+        )
+        qtbot.addWidget(dlg)
+        return dlg
+
+    return _make
 
 
 class TestInterfaceTabCloseBehaviorControl:
     """AC #1 — visible, labelled, hydrated, and saved."""
 
     def test_control_exists_and_is_a_two_option_combo(
-        self, qapp, qtbot, settings_factory
+        self, qapp, settings_factory, make_dialog
     ):
-        dialog = _make_dialog(settings_factory(), qtbot)
+        dialog = make_dialog(settings_factory())
 
         assert hasattr(dialog, "close_behavior_combo"), (
             "No close-behavior control on the Settings dialog — "
@@ -215,8 +223,8 @@ class TestInterfaceTabCloseBehaviorControl:
         assert combo.count() == 2
         assert {combo.itemData(0), combo.itemData(1)} == {True, False}
 
-    def test_control_lives_on_the_interface_tab(self, qapp, qtbot, settings_factory):
-        dialog = _make_dialog(settings_factory(), qtbot)
+    def test_control_lives_on_the_interface_tab(self, qapp, settings_factory, make_dialog):
+        dialog = make_dialog(settings_factory())
 
         tab_widget: QTabWidget = dialog.tab_widget
         interface_index = -1
@@ -230,9 +238,9 @@ class TestInterfaceTabCloseBehaviorControl:
         combos = interface_tab.findChildren(QComboBox)
         assert dialog.close_behavior_combo in combos
 
-    def test_option_labels_are_user_facing(self, qapp, qtbot, settings_factory):
+    def test_option_labels_are_user_facing(self, qapp, settings_factory, make_dialog):
         """Worded from the user's point of view, not after the field name."""
-        dialog = _make_dialog(settings_factory(), qtbot)
+        dialog = make_dialog(settings_factory())
         combo = dialog.close_behavior_combo
         labels = [combo.itemText(i).lower() for i in range(combo.count())]
 
@@ -242,17 +250,17 @@ class TestInterfaceTabCloseBehaviorControl:
 
     @pytest.mark.parametrize("persisted", [True, False])
     def test_reflects_persisted_value_on_open(
-        self, qapp, qtbot, settings_factory, persisted
+        self, qapp, settings_factory, make_dialog, persisted
     ):
-        dialog = _make_dialog(settings_factory(minimize_to_tray=persisted), qtbot)
+        dialog = make_dialog(settings_factory(minimize_to_tray=persisted))
 
         assert dialog.close_behavior_combo.currentData() is persisted
 
     @pytest.mark.parametrize("chosen", [True, False])
     def test_selection_saves_through_existing_path(
-        self, qapp, qtbot, settings_factory, chosen
+        self, qapp, settings_factory, make_dialog, chosen
     ):
-        dialog = _make_dialog(settings_factory(minimize_to_tray=not chosen), qtbot)
+        dialog = make_dialog(settings_factory(minimize_to_tray=not chosen))
 
         index = dialog.close_behavior_combo.findData(chosen)
         assert index >= 0
@@ -263,10 +271,10 @@ class TestInterfaceTabCloseBehaviorControl:
         assert dialog.current_settings.minimize_to_tray is chosen
 
     def test_saved_value_round_trips_through_persistence(
-        self, qapp, qtbot, settings_factory
+        self, qapp, settings_factory, make_dialog
     ):
         """No new persistence mechanism — the existing dict round-trip carries it."""
-        dialog = _make_dialog(settings_factory(minimize_to_tray=True), qtbot)
+        dialog = make_dialog(settings_factory(minimize_to_tray=True))
 
         dialog.close_behavior_combo.setCurrentIndex(
             dialog.close_behavior_combo.findData(False)

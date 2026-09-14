@@ -45,6 +45,43 @@ def dialog(qapp):
     dialog.deleteLater()
 
 
+@pytest.fixture
+def tts_service_stub():
+    """A TTS service stub that passes _on_generate_requested's two guards
+    (tooling-4, Site B).
+
+    The regenerate tests exist to assert that regenerate routes into the
+    generate flow. That flow guards on ``self._tts_service`` and
+    ``self._tts_service.is_running()`` and pops a *modal* QMessageBox.warning
+    when either fails -- which is what happened when the tests constructed
+    the dialog with no service at all (3 of tooling-3's 27 timeouts).
+    """
+    from myvoice.services.qwen_tts_service import QwenTTSService
+
+    stub = MagicMock(spec=QwenTTSService)
+    stub.is_running.return_value = True
+    return stub
+
+
+def _capture_async_dispatch(dialog):
+    """Replace ``dialog._run_async_task`` so the generate flow's per-variant
+    coroutine is recorded and closed instead of being scheduled with
+    ``asyncio.ensure_future`` on whatever loop is current under pytest.
+
+    Without this a pending task carrying a MagicMock TTS call is left on the
+    main-thread loop and can run inside a later test after the dialog is gone.
+    Returns the list the dispatched coroutines are appended to.
+    """
+    dispatched = []
+
+    def _record(coro, on_success=None, on_error=None):
+        dispatched.append(coro)
+        coro.close()
+
+    dialog._run_async_task = _record
+    return dispatched
+
+
 class TestVoiceDesignStudioDialogInit:
     """Tests for VoiceDesignStudioDialog initialization (FR1)."""
 
@@ -429,8 +466,14 @@ class TestRegenerateAllVariations:
         assert hasattr(dialog, '_on_regenerate_requested')
         assert callable(dialog._on_regenerate_requested)
 
-    def test_regenerate_triggers_generate_flow(self, dialog):
+    def test_regenerate_triggers_generate_flow(self, qapp, tts_service_stub):
         """Test regenerate calls the same flow as initial generate."""
+        # tooling-4: the real generate flow is reached here, so the dialog
+        # needs a service that passes the guards, and the async dispatch is
+        # captured rather than scheduled.
+        dialog = VoiceDesignStudioDialog(tts_service=tts_service_stub)
+        dispatched = _capture_async_dispatch(dialog)
+
         # Setup description and preview text
         dialog.description_panel.set_description("A warm friendly voice")
         dialog.description_panel.set_preview_text("Hello world")
@@ -450,6 +493,16 @@ class TestRegenerateAllVariations:
 
         assert len(generate_calls) == 1
         assert generate_calls[0][:2] == ("A warm friendly voice", "Hello world")
+
+        # The generate flow actually started (it got past both guards and
+        # dispatched the first variant), rather than bouncing off a modal.
+        assert dialog._is_generating is True
+        assert dialog._last_description == "A warm friendly voice"
+        assert dialog._last_preview_text == "Hello world"
+        assert len(dispatched) == 1
+
+        dialog._session_manager.cleanup()
+        dialog.deleteLater()
 
     def test_regenerate_uses_current_description(self, dialog):
         """Test regenerate uses the current description text."""
@@ -481,6 +534,72 @@ class TestRegenerateAllVariations:
         dialog._on_regenerate_requested()
 
         assert generate_calls[0][1] == "Custom preview"
+
+
+class TestGenerateGuardsOnTtsService:
+    """The two service guards at the top of _on_generate_requested
+    (tooling-4, AC #2).
+
+    Each guard shows a modal QMessageBox.warning and returns without starting
+    generation. Under pytest a real modal blocks forever, so the tests patch
+    ``QMessageBox.warning`` and assert it was called with the guard's title.
+    The guards themselves are production behaviour and are not changed.
+    """
+
+    @staticmethod
+    def _capture_warning(monkeypatch):
+        from PyQt6.QtWidgets import QMessageBox
+
+        calls = []
+
+        def fake_warning(parent, title, text, *args, **kwargs):
+            calls.append((title, text))
+            return QMessageBox.StandardButton.Ok
+
+        monkeypatch.setattr(QMessageBox, "warning", fake_warning)
+        return calls
+
+    def test_generate_without_service_warns_instead_of_starting(
+        self, dialog, monkeypatch
+    ):
+        """_tts_service is None -> "Service Unavailable", nothing starts."""
+        assert dialog._tts_service is None
+        warnings = self._capture_warning(monkeypatch)
+
+        dialog._on_generate_requested("A voice", "Hello", "English")
+
+        assert [title for title, _ in warnings] == ["Service Unavailable"]
+        assert dialog._is_generating is False
+
+    def test_regenerate_without_service_warns_instead_of_starting(
+        self, dialog, monkeypatch
+    ):
+        """The exact shape that hung tooling-3: regenerate on a dialog built
+        with no service routes into the guard and must end at the warning."""
+        warnings = self._capture_warning(monkeypatch)
+        dialog.description_panel.set_description("A voice")
+        dialog.description_panel.set_preview_text("Hello")
+
+        dialog._on_regenerate_requested()
+
+        assert [title for title, _ in warnings] == ["Service Unavailable"]
+        assert dialog._is_generating is False
+
+    def test_generate_with_stopped_service_warns_instead_of_starting(
+        self, qapp, tts_service_stub, monkeypatch
+    ):
+        """_tts_service present but not running -> "Service Not Ready"."""
+        tts_service_stub.is_running.return_value = False
+        dialog = VoiceDesignStudioDialog(tts_service=tts_service_stub)
+        warnings = self._capture_warning(monkeypatch)
+
+        dialog._on_generate_requested("A voice", "Hello", "English")
+
+        assert [title for title, _ in warnings] == ["Service Not Ready"]
+        assert dialog._is_generating is False
+
+        dialog._session_manager.cleanup()
+        dialog.deleteLater()
 
 
 # Story 2.1 Tests
@@ -678,9 +797,13 @@ class TestSessionManagement:
         assert test_embedding.exists()
         assert test_audio.exists()
 
-    def test_regenerate_clears_variant_files(self, qapp):
+    def test_regenerate_clears_variant_files(self, qapp, tts_service_stub):
         """Test Regenerate clears variant files but preserves session dir (Story 1.9/4.1)."""
-        dialog = VoiceDesignStudioDialog()
+        # tooling-4: regenerate routes into the generate flow, which guards on
+        # the TTS service with a modal; give it a service and capture the
+        # async dispatch so the flow runs to its hand-off.
+        dialog = VoiceDesignStudioDialog(tts_service=tts_service_stub)
+        _capture_async_dispatch(dialog)
         session_dir = dialog.session_dir
 
         # Create various temp files
@@ -705,9 +828,11 @@ class TestSessionManagement:
         dialog._session_manager.cleanup()
         dialog.deleteLater()
 
-    def test_regenerate_preserves_non_variant_files(self, qapp):
+    def test_regenerate_preserves_non_variant_files(self, qapp, tts_service_stub):
         """Test Regenerate preserves non-variant files in session."""
-        dialog = VoiceDesignStudioDialog()
+        # tooling-4: see test_regenerate_clears_variant_files.
+        dialog = VoiceDesignStudioDialog(tts_service=tts_service_stub)
+        _capture_async_dispatch(dialog)
         session_dir = dialog.session_dir
 
         # Create variant and non-variant files

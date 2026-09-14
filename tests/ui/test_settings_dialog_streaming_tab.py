@@ -13,8 +13,6 @@ embeds the panel as a tab.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import pytest
 
 pytest.importorskip("PyQt6")
@@ -47,13 +45,13 @@ def default_settings(tmp_path):
 
 
 @pytest.fixture
-def dialog(qapp, default_settings, qtbot):
-    quick_speak_stub = MagicMock()
-    quick_speak_stub.load_entries = MagicMock()
+def dialog(qapp, default_settings, qtbot, quick_speak_service_stub):
+    # tooling-4: shared typed stub (tests/conftest.py) -- a bare MagicMock()
+    # here pops a modal from inside SettingsDialog.__init__.
     dlg = SettingsDialog(
         default_settings,
         parent=None,
-        quick_speak_service=quick_speak_stub,
+        quick_speak_service=quick_speak_service_stub,
     )
     qtbot.addWidget(dlg)
     return dlg
