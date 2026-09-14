@@ -295,6 +295,6 @@ development_status:
   tooling-4-fix-suite-hangs: done
   # 2026-09-14 pre-build cleanup: three branches in parallel, then review, merge,
   # and a build for the RTX 3060 transfer (Epic 20 F6's confirmation run).
-  ui-2-no-modal-in-settings-init: in-progress
-  20-9-qasync-call-site-audit: in-progress
-  tooling-5-clear-the-failure-backlog: in-progress
+  ui-2-no-modal-in-settings-init: done
+  20-9-qasync-call-site-audit: done
+  tooling-5-clear-the-failure-backlog: done
