@@ -98,3 +98,18 @@ pywin32>=306; sys_platform == 'win32'
 # pytest.main(). Example:
 #   python tools/run_cov.py --cov=myvoice.ui.main_window tests/ui/test_status_indicators.py
 pytest-cov>=4.1  # dev-only — Story 12.3 indicator-suite coverage gate (AC #6); use tools/run_cov.py on Windows
+#
+# Story tooling-3 added pytest-timeout so a hung test fails and is named
+# instead of stalling `pytest tests/` forever (Story 20.8 AC #4 found the
+# whole-suite run never completes on main). Config lives in pytest.ini
+# (`timeout` + `timeout_method = thread`; the signal method needs SIGALRM,
+# which Windows lacks). Same dev-only home as pytest-cov: excluded from
+# build_tools/requirements-production.txt (pytest-*), listed in
+# build_tools/myvoice.spec `excludes`, and never imported by the app, so
+# PyInstaller cannot pull it into the bundle.
+#
+# WINDOWS NOTE: with timeout_method = thread, a timeout dumps every thread's
+# stack and ends the pytest process (os._exit(1)) -- the run terminates at
+# the first hang instead of stalling. Run with -v so the hung test's id is on
+# the "+++ Timeout +++" line, --deselect it, rerun for the next one.
+pytest-timeout>=2.3  # dev-only — Story tooling-3 hang guard; thread method (Windows); see pytest.ini

@@ -1,0 +1,7 @@
+ERROR    AudioPlayerWidget:audio_player_widget.py:293 Media player error: Error.FormatError
+ERROR    SamplePathPanel:sample_path_panel.py:1205 Transcription error: Connection failed
+ERROR    SamplePathPanel:sample_path_panel.py:1394 Extraction error: Failed
+ERROR tests/unit/ui/dialogs/voice_design_studio/test_audio_player_widget.py::TestAudioFileManagement::test_get_audio_path
+ERROR tests/unit/ui/dialogs/voice_design_studio/test_audio_player_widget.py::TestAudioFileManagement::test_set_audio_file_updates_duration
+ERROR tests/unit/ui/dialogs/voice_design_studio/test_audio_player_widget.py::TestAudioFileManagement::test_set_none_disables_play
+ERROR tests/unit/ui/dialogs/voice_design_studio/test_audio_player_widget.py::TestPlaybackState::test_get_duration

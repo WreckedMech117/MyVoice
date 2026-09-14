@@ -1,0 +1,61 @@
+resuming: 8 hangs already recorded, starting at iteration 9
+=== iteration 9 start 2026-09-14T12:49:40-06:00 deselected=8 ===
+=== iteration 9 end 2026-09-14T12:50:54-06:00 rc=1 wall=74s ===
+TIMEOUT: tests/ui/test_close_to_tray_toggle.py::TestInterfaceTabCloseBehaviorControl::test_saved_value_round_trips_through_persistence (iteration 9)
+=== iteration 10 start 2026-09-14T12:50:55-06:00 deselected=9 ===
+=== iteration 10 end 2026-09-14T12:52:13-06:00 rc=1 wall=78s ===
+TIMEOUT: tests/ui/test_settings_dialog_clear_comms_tab.py::TestClearCommsTabPresence::test_clear_comms_tab_is_last (iteration 10)
+=== iteration 11 start 2026-09-14T12:52:13-06:00 deselected=10 ===
+=== iteration 11 end 2026-09-14T12:53:31-06:00 rc=1 wall=78s ===
+TIMEOUT: tests/ui/test_settings_dialog_clear_comms_tab.py::TestClearCommsTabPresence::test_clear_comms_tab_widget_is_panel_instance (iteration 11)
+=== iteration 12 start 2026-09-14T12:53:31-06:00 deselected=11 ===
+=== iteration 12 end 2026-09-14T12:54:49-06:00 rc=1 wall=78s ===
+TIMEOUT: tests/ui/test_settings_dialog_clear_comms_tab.py::TestClearCommsTabPresence::test_dialog_exposes_clear_comms_test_playback_signal (iteration 12)
+=== iteration 13 start 2026-09-14T12:54:49-06:00 deselected=12 ===
+=== iteration 13 end 2026-09-14T12:56:06-06:00 rc=1 wall=77s ===
+TIMEOUT: tests/ui/test_settings_dialog_clear_comms_tab.py::TestSignalForward::test_panel_signal_re_emits_through_dialog (iteration 13)
+=== iteration 14 start 2026-09-14T12:56:07-06:00 deselected=13 ===
+=== iteration 14 end 2026-09-14T12:57:24-06:00 rc=1 wall=77s ===
+TIMEOUT: tests/ui/test_settings_dialog_clear_comms_tab.py::TestSignalForward::test_panel_signal_with_file_payload (iteration 14)
+=== iteration 15 start 2026-09-14T12:57:24-06:00 deselected=14 ===
+=== iteration 15 end 2026-09-14T12:58:42-06:00 rc=1 wall=78s ===
+TIMEOUT: tests/ui/test_settings_dialog_clear_comms_tab.py::TestOkPersistence::test_save_current_settings_pushes_panel_state_into_current_settings (iteration 15)
+=== iteration 16 start 2026-09-14T12:58:42-06:00 deselected=15 ===
+=== iteration 16 end 2026-09-14T13:00:00-06:00 rc=1 wall=78s ===
+TIMEOUT: tests/ui/test_settings_dialog_clear_comms_tab.py::TestOkPersistence::test_load_current_settings_hydrates_panel_from_current_settings (iteration 16)
+=== iteration 17 start 2026-09-14T13:00:00-06:00 deselected=16 ===
+=== iteration 17 end 2026-09-14T13:01:18-06:00 rc=1 wall=78s ===
+TIMEOUT: tests/ui/test_settings_dialog_clear_comms_tab.py::TestCancelLosslessness::test_cancel_button_does_not_emit_settings_changed (iteration 17)
+=== iteration 18 start 2026-09-14T13:01:18-06:00 deselected=17 ===
+=== iteration 18 end 2026-09-14T13:02:36-06:00 rc=1 wall=78s ===
+TIMEOUT: tests/ui/test_settings_dialog_clear_comms_tab.py::TestCancelLosslessness::test_persisted_settings_unchanged_after_panel_mutation_then_cancel (iteration 18)
+=== iteration 19 start 2026-09-14T13:02:36-06:00 deselected=18 ===
+=== iteration 19 end 2026-09-14T13:03:54-06:00 rc=1 wall=78s ===
+TIMEOUT: tests/ui/test_settings_dialog_clear_comms_tab.py::TestResetToDefaults::test_reset_restores_panel_to_defaults (iteration 19)
+=== iteration 20 start 2026-09-14T13:03:54-06:00 deselected=19 ===
+=== iteration 20 end 2026-09-14T13:05:12-06:00 rc=1 wall=78s ===
+TIMEOUT: tests/ui/test_settings_dialog_streaming_tab.py::TestStreamingTabPresence::test_streaming_tab_exists (iteration 20)
+=== iteration 21 start 2026-09-14T13:05:12-06:00 deselected=20 ===
+=== iteration 21 end 2026-09-14T13:06:30-06:00 rc=1 wall=78s ===
+TIMEOUT: tests/ui/test_settings_dialog_streaming_tab.py::TestStreamingTabPresence::test_streaming_tab_widget_is_panel_instance (iteration 21)
+=== iteration 22 start 2026-09-14T13:06:30-06:00 deselected=21 ===
+=== iteration 22 end 2026-09-14T13:07:47-06:00 rc=1 wall=77s ===
+TIMEOUT: tests/ui/test_settings_dialog_streaming_tab.py::TestStreamingPanelBindsToStagingCopy::test_panel_is_bound_to_current_settings_not_original (iteration 22)
+=== iteration 23 start 2026-09-14T13:07:47-06:00 deselected=22 ===
+=== iteration 23 end 2026-09-14T13:09:05-06:00 rc=1 wall=78s ===
+TIMEOUT: tests/ui/test_settings_dialog_streaming_tab.py::TestStreamingPanelBindsToStagingCopy::test_changing_dropdown_writes_to_current_settings (iteration 23)
+=== iteration 24 start 2026-09-14T13:09:06-06:00 deselected=23 ===
+=== iteration 24 end 2026-09-14T13:10:23-06:00 rc=1 wall=77s ===
+TIMEOUT: tests/ui/test_settings_dialog_streaming_tab.py::TestStreamingPanelBindsToStagingCopy::test_load_current_settings_hydrates_dropdown (iteration 24)
+=== iteration 25 start 2026-09-14T13:10:23-06:00 deselected=24 ===
+=== iteration 25 end 2026-09-14T13:12:45-06:00 rc=1 wall=142s ===
+TIMEOUT: tests/unit/ui/dialogs/voice_design_studio/test_voice_design_studio_dialog.py::TestRegenerateAllVariations::test_regenerate_triggers_generate_flow (iteration 25)
+=== iteration 26 start 2026-09-14T13:12:45-06:00 deselected=25 ===
+=== iteration 26 end 2026-09-14T13:15:08-06:00 rc=1 wall=143s ===
+TIMEOUT: tests/unit/ui/dialogs/voice_design_studio/test_voice_design_studio_dialog.py::TestSessionManagement::test_regenerate_clears_variant_files (iteration 26)
+=== iteration 27 start 2026-09-14T13:15:08-06:00 deselected=26 ===
+=== iteration 27 end 2026-09-14T13:17:31-06:00 rc=1 wall=143s ===
+TIMEOUT: tests/unit/ui/dialogs/voice_design_studio/test_voice_design_studio_dialog.py::TestSessionManagement::test_regenerate_preserves_non_variant_files (iteration 27)
+=== iteration 28 start 2026-09-14T13:17:31-06:00 deselected=27 ===
+=== iteration 28 end 2026-09-14T13:18:57-06:00 rc=1 wall=86s ===
+completed normally on iteration 28

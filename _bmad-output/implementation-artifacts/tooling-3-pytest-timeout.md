@@ -1,6 +1,6 @@
 # Story tooling-3: Make Suite Hangs Countable (pytest-timeout)
 
-Status: in-progress
+Status: review
 
 <!-- Out-of-epic tooling story, following the tooling-N precedent. -->
 <!-- Source: Story 20.8 AC #4 — `pytest tests/` does not complete on main; an external per-directory guard was needed to produce a regression comparison at all. -->
@@ -96,10 +96,10 @@ way the pytest-cov one was recorded
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Install and configure** (AC: #1, #3, #5) — `pytest-timeout` into `python310`, config block with `timeout_method = thread`, `requirements.txt` dev-only entry, verify production requirements and build probes untouched.
-- [ ] **Task 2 — Derive the timeout** (AC: #2) — measure passing-test durations, set the default with margin, mark individual slow tests.
-- [ ] **Task 3 — Run the whole suite to completion** (AC: #1, #4) — list every timeout by id and stall location; confirm the pre-existing failure set is unchanged.
-- [ ] **Task 4 — Evidence file** — `_bmad-output/implementation-artifacts/tooling-3-pytest-timeout-evidence.md`.
+- [x] **Task 1 — Install and configure** (AC: #1, #3, #5) — `pytest-timeout` into `python310`, config block with `timeout_method = thread`, `requirements.txt` dev-only entry, verify production requirements and build probes untouched.
+- [x] **Task 2 — Derive the timeout** (AC: #2) — measure passing-test durations, set the default with margin, mark individual slow tests.
+- [x] **Task 3 — Run the whole suite to completion** (AC: #1, #4) — list every timeout by id and stall location; confirm the pre-existing failure set is unchanged.
+- [x] **Task 4 — Evidence file** — `_bmad-output/implementation-artifacts/tooling-3-pytest-timeout-evidence.md`.
 
 ## Dev Notes
 
@@ -127,8 +127,36 @@ disappear.
 
 ## Dev Agent Record
 
-_(to be filled by dev agent)_
+Implemented 2026-09-14 on `tooling/3-pytest-timeout`. Evidence:
+`tooling-3-pytest-timeout-evidence.md` (+ raw logs/scripts in `tooling-3/`).
+
+- **Changed:** `pytest.ini` (new; `timeout = 60`, `timeout_method = thread`),
+  `requirements.txt` (`pytest-timeout>=2.3  # dev-only`, beside pytest-cov),
+  `python310` (+ pytest-timeout 2.4.0). No test marked; conftest untouched.
+- **Derived timeout:** 60 s. Measured 2,875 passing tests per-directory:
+  max 7.63 s (Story 20.5 qasync driver setup), p99 0.93 s, none over 10 s;
+  whole-suite final pass agrees (max 4.89 s). 60 s = ~8x the slowest honest test.
+- **Result:** whole suite driven to completion in 28 passes -> **27 named
+  timeouts** at 2 stall sites (both modal `QMessageBox.warning` on an error
+  path: `quick_speak_settings_widget.py:152` via `SettingsDialog.__init__`
+  for 24 tests; `voice_design_studio_dialog.py:471` for 3). Final pass:
+  47 failed / 4 errors / 2896 passed in 82 s.
+- **Failure set:** 20.8 baseline's 49 FAILED = 47 identical FAILED + 2 that
+  are now TIMEOUT rows (`test_clear_comms_tab_is_last`,
+  `test_clear_comms_tab_widget_is_panel_instance`). Population 2970 both runs.
+- **AC #5:** zero `WinError 1114` in every log; tts_streaming 224/224 under the
+  plugin. pytest-timeout has no `pytest_load_initial_conftests` hook — no
+  workaround needed.
+- **Deviation (AC #1 wording):** with the thread method the plugin ends the
+  pytest process (`os._exit(1)`) at the first timeout after naming it and
+  dumping stacks; it does not continue to later tests. Enumerating all hangs
+  needs the `--deselect`-and-rerun loop in `tooling-3/suite-until-complete.sh`.
+  Recorded in `pytest.ini` and evidence section 8.
+- **Not fixed (by design):** the 27 tests. Open question recorded for the fix
+  story: the same modal did *not* block in the 20.8 AFTER run.
+- Nothing committed.
 
 ## Change Log
 
 - 2026-09-14 — Drafted by Winston at Commander's direction. Chosen over the remaining Epic 20 follow-ups because it costs no listening time and has been degrading every story's regression evidence since Story 20.6.
+- 2026-09-14 — Implemented by dev agent (Claude). pytest.ini + requirements.txt; timeout 60 s derived from measurement; 27 hangs named at 2 stall sites; failure set identity confirmed. Status -> review.
