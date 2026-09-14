@@ -79,10 +79,16 @@ def skip_if_no_tray():
 class TestAppSettingsTrayFields:
     """Tests for new tray-related AppSettings fields."""
 
-    def test_minimize_to_tray_default_is_true(self):
-        """Test minimize_to_tray defaults to True."""
+    def test_minimize_to_tray_default_is_false(self):
+        """Test minimize_to_tray defaults to False.
+
+        tooling-5: was True (Story 7.2 draft). The shipped default is False
+        and Story ui-1 pinned it deliberately
+        (test_close_to_tray_toggle.py::test_default_setting_value_is_unchanged)
+        so existing users' persisted choice is not silently altered.
+        """
         settings = AppSettings()
-        assert settings.minimize_to_tray == True
+        assert settings.minimize_to_tray is False
 
     def test_tray_notification_shown_default_is_false(self):
         """Test tray_notification_shown defaults to False."""

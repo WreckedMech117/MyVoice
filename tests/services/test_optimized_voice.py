@@ -51,8 +51,12 @@ class TestVoiceTypeOptimized:
 
     def test_optimized_sort_order(self):
         """Test OPTIMIZED sort order is between DESIGNED and CLONED."""
-        # Sort orders: BUNDLED=0, DESIGNED=1, OPTIMIZED=2, CLONED=3
-        assert VoiceType.OPTIMIZED.sort_order == 2
+        # Sort orders: BUNDLED=0, EMBEDDING=1, DESIGNED=2, OPTIMIZED=3, CLONED=4
+        # tooling-5: was 2 -- the V2 Voice Design Studio (7d36963) added the
+        # EMBEDDING type ahead of DESIGNED; the relative order this test is
+        # about (DESIGNED < OPTIMIZED < CLONED) is unchanged.
+        assert VoiceType.OPTIMIZED.sort_order == 3
+        assert VoiceType.DESIGNED.sort_order < VoiceType.OPTIMIZED.sort_order < VoiceType.CLONED.sort_order
         assert VoiceType.DESIGNED.sort_order < VoiceType.OPTIMIZED.sort_order
         assert VoiceType.OPTIMIZED.sort_order < VoiceType.CLONED.sort_order
 
@@ -270,7 +274,10 @@ class TestModelRegistryCheckpointLoading:
             mock_load.return_value = (True, None)
 
             # Manually simulate what _load_model does
-            async def fake_load(model_type, checkpoint_path=None):
+            # tooling-5: ``tier_override`` was added to _load_model's
+            # signature with the multi-tier (quality/small) model registry;
+            # ensure_model_loaded always forwards it.
+            async def fake_load(model_type, checkpoint_path=None, tier_override=None):
                 mock_model_registry._current_checkpoint_path = checkpoint_path
                 mock_model_registry._current_model_type = model_type
                 return (True, None)

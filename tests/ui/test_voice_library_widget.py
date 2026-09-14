@@ -111,10 +111,33 @@ class TestVoiceLibraryWidgetInit:
         assert widget.design_button is not None
         assert widget.bottom_design_button is not None
 
-    def test_clone_button_exists(self, widget):
-        """Test clone voice button exists."""
-        assert widget.clone_button is not None
-        assert widget.bottom_clone_button is not None
+    def test_no_clone_button(self, widget):
+        """Test the library has no Clone Voice button.
+
+        tooling-5: was "clone button exists" (Story 4.4). The V2 migration
+        (7d36963) dropped the library's clone entry point; cloning happens
+        inside the Voice Design Studio (From Description > Clone sub-tab,
+        QA8), reached through the single Design Voice button.
+        """
+        assert not hasattr(widget, 'clone_button')
+        assert not hasattr(widget, 'bottom_clone_button')
+
+    def test_design_buttons_gated_on_tts_availability(self, widget):
+        """Test Design Voice buttons start disabled and follow set_tts_available.
+
+        V2 (7d36963): both Design Voice buttons are disabled until the TTS
+        service reports ready, so the studio cannot be opened without a
+        backend to generate with.
+        """
+        assert not widget.design_button.isEnabled()
+        assert not widget.bottom_design_button.isEnabled()
+
+        widget.set_tts_available(True)
+        assert widget.design_button.isEnabled()
+        assert widget.bottom_design_button.isEnabled()
+
+        widget.set_tts_available(False)
+        assert not widget.bottom_design_button.isEnabled()
 
 
 class TestVoiceLibraryWidgetPopulation:
@@ -261,29 +284,30 @@ class TestVoiceLibraryWidgetSignals:
         """Test design_voice_requested signal exists."""
         assert hasattr(widget, 'design_voice_requested')
 
-    def test_clone_voice_requested_signal_exists(self, widget):
-        """Test clone_voice_requested signal exists."""
-        assert hasattr(widget, 'clone_voice_requested')
+    def test_no_clone_voice_requested_signal(self, widget):
+        """Test the clone_voice_requested signal is gone with the button.
+
+        tooling-5: was "signal exists"; removed in V2 alongside the Clone
+        Voice button (see test_no_clone_button).
+        """
+        assert not hasattr(widget, 'clone_voice_requested')
 
     def test_refresh_requested_signal_exists(self, widget):
         """Test refresh_requested signal exists."""
         assert hasattr(widget, 'refresh_requested')
 
     def test_design_button_emits_signal(self, widget):
-        """Test design button emits signal."""
+        """Test design button emits signal once TTS is available."""
         signal_mock = Mock()
         widget.design_voice_requested.connect(signal_mock)
 
+        # tooling-5: V2 (7d36963) constructs the buttons disabled until
+        # set_tts_available(True); a disabled QPushButton swallows click().
         widget.bottom_design_button.click()
+        signal_mock.assert_not_called()
 
-        signal_mock.assert_called_once()
-
-    def test_clone_button_emits_signal(self, widget):
-        """Test clone button emits signal."""
-        signal_mock = Mock()
-        widget.clone_voice_requested.connect(signal_mock)
-
-        widget.bottom_clone_button.click()
+        widget.set_tts_available(True)
+        widget.bottom_design_button.click()
 
         signal_mock.assert_called_once()
 

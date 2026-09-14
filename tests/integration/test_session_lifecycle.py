@@ -796,6 +796,10 @@ class TestAudioChunkPayloadStability:
             "chunk_index",
             "is_final",
             "text_segment",
+            # Story 18.1 (code-review M1): producer tags every chunk with its
+            # session so consumer-side metrics rows stay joinable. tooling-5
+            # moved the baseline; the assertion below still pins the set.
+            "session_id",
         }
         actual_fields = {f.name for f in dataclasses.fields(AudioChunk)}
         assert actual_fields == expected_fields, (

@@ -300,8 +300,14 @@ class TestMetadataVersioning:
         assert parsed["description"] == "A test voice"
         assert len(parsed["available_emotions"]) == 5
 
-    def test_generate_v2_metadata(self, tmp_path):
-        """Test generating v2.0 metadata from profile."""
+    def test_generate_v3_metadata(self, tmp_path):
+        """Test generating current-schema metadata from profile.
+
+        tooling-5: was "v2.0". ``to_embedding_metadata`` writes the multi-tier
+        v3.0 schema (``available_tiers`` per emotion; see
+        docs/CONFIGURATION.md "Schema version"). v2.0 files are still parsed
+        (``test_v2_metadata_full``), but never written.
+        """
         embedding_file = tmp_path / "embedding.pt"
         embedding_file.write_bytes(b"PK_MOCK")
 
@@ -314,7 +320,8 @@ class TestMetadataVersioning:
 
         metadata = profile.to_embedding_metadata()
 
-        assert metadata["version"] == "2.0"
+        assert metadata["version"] == "3.0"
+        assert "available_tiers" in metadata
         assert metadata["name"] == "TestVoice"
         assert metadata["description"] == "Test description"
         assert metadata["available_emotions"] == ["neutral", "happy"]

@@ -95,17 +95,34 @@ def dialog(qapp, default_settings, qtbot, quick_speak_service_stub):
 # --------------------------------------------------------------------------- #
 
 
+def _clear_comms_tab_index(tab_widget: QTabWidget) -> int:
+    """Index of the Clear Comms tab, located by label rather than position.
+
+    tooling-5: Story 15.3 asserted Clear Comms was the *last* tab. Story 16.6
+    inserted "Streaming" before it (keeping it last), then the local TTS API
+    (tech-spec local-tts-api v1, commit 3e3e740) appended "API Access" after
+    it. The current intended order is Audio, Voices, TTS, Interface, Quick
+    Speak, Streaming, Clear Comms, API Access; the lookup below pins the
+    tab's presence and the tabs it follows, not "last".
+    """
+    labels = [tab_widget.tabText(i) for i in range(tab_widget.count())]
+    assert "Clear Comms" in labels, labels
+    return labels.index("Clear Comms")
+
+
 class TestClearCommsTabPresence:
-    def test_clear_comms_tab_is_last(self, dialog):
+    def test_clear_comms_tab_follows_streaming(self, dialog):
         tab_widget: QTabWidget = dialog.tab_widget
-        assert tab_widget.count() >= 6  # Audio, Voices, TTS, Interface, Quick Speak, Clear Comms
-        last_idx = tab_widget.count() - 1
-        assert tab_widget.tabText(last_idx) == "Clear Comms"
+        assert tab_widget.count() >= 7  # Audio, Voices, TTS, Interface, Quick Speak, Streaming, Clear Comms, ...
+        idx = _clear_comms_tab_index(tab_widget)
+        assert idx == 6
+        assert [tab_widget.tabText(i) for i in range(idx)] == [
+            "Audio", "Voices", "TTS", "Interface", "Quick Speak", "Streaming"
+        ]
 
     def test_clear_comms_tab_widget_is_panel_instance(self, dialog):
         tab_widget: QTabWidget = dialog.tab_widget
-        last_idx = tab_widget.count() - 1
-        widget = tab_widget.widget(last_idx)
+        widget = tab_widget.widget(_clear_comms_tab_index(tab_widget))
         assert isinstance(widget, ClearCommsSettingsPanel)
         assert widget is dialog.clear_comms_panel
 
