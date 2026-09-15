@@ -1,6 +1,6 @@
 # Story 20.11: Re-prime After a Tier Change, and Prime Through TRUE_STREAM
 
-Status: ready-for-dev - 2026-09-14
+Status: done - 2026-09-14. Tier change now re-hydrates + preloads + primes via `_compile_warmup_entrypoint` off an idle pass (continuation runs inside the `set_quality_tier` task, proved under qasync with a destroyed control); priming dispatches `effective_streaming_mode(None)`; 24 new tests, 7/7 mutations caught; evidence in `20-11-reprime-after-tier-change-evidence.md`.
 
 <!-- Source: Story 20.10 evidence §5, the two follow-ups raised from the RTX 3060 build-58 log. -->
 <!-- Risk: MEDIUM. Touches the priming dispatch and adds a scheduling site in app.py. -->
