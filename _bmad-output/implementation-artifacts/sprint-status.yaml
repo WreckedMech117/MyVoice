@@ -303,3 +303,10 @@ development_status:
   # end-user install -- Inno Setup rounds installed mtimes to 2 s, the 1 ms
   # fingerprint check rejected them, priming skipped, cold compile on first click.
   20-10-installer-timestamp-rounding: done
+  # 2026-09-14 evening: the two follow-ups from the build-58 log, the two shipped
+  # defects the same log and tooling-5 surfaced, an observability line, and the
+  # build-script version capture -- then v2.3.0 build for the public release.
+  20-11-reprime-after-tier-change: ready-for-dev
+  20-12-prebuffer-release-reason-log: ready-for-dev
+  ui-3-playback-stop-and-clone-unsaved-work: ready-for-dev
+  tooling-6-build-script-version-capture: ready-for-dev
