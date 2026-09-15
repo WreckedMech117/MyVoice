@@ -265,6 +265,34 @@ section {
     margin-top: 12px;
 }
 
+.section-header .whats-new {
+    max-width: 720px;
+    margin: 20px auto 0;
+    padding: 20px 28px;
+    text-align: left;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+}
+
+.section-header .whats-new h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 10px;
+}
+
+.section-header .whats-new ul {
+    margin: 0;
+    padding-left: 20px;
+    color: var(--text-secondary);
+    font-size: 0.95rem;
+    line-height: 1.6;
+}
+
+.section-header .whats-new li + li {
+    margin-top: 6px;
+}
+
 /* Features Section */
 .features {
     background: var(--darker-blue);
@@ -552,6 +580,35 @@ section {
 
 .vb-cable-thanks .btn:hover {
     background: #c2185b;
+}
+
+.research-thanks {
+    margin-top: 32px;
+}
+
+.feature-card code,
+.research-thanks code {
+    white-space: nowrap;
+    font-size: 0.9em;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.research-links {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 12px;
+}
+
+.research-thanks .btn,
+.research-thanks .btn:hover {
+    background: var(--primary-blue);
+}
+
+.research-thanks .btn:hover {
+    filter: brightness(1.15);
 }
 
 /* Donate Section */
