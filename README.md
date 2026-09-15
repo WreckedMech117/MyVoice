@@ -4,7 +4,7 @@ MyVoice is a Windows desktop application that enables mute individuals and conte
 
 ## Download
 
-**[Download MyVoice Installer (v2.2.0)](https://f005.backblazeb2.com/file/MyVoiceTTS-Installers/MyVoice-Setup-v2.2.0.exe)** — single-executable installer with bundled Python environment. Recommended for most users.
+**[Download MyVoice Installer (v2.3.0)](https://f005.backblazeb2.com/file/MyVoiceTTS-Installers/MyVoice-Setup-v2.3.0.exe)** — single-executable installer with bundled Python environment. Recommended for most users.
 
 For the portable .zip, system requirements, and the feature guide, visit **[myvoicetts.com](https://myvoicetts.com)**.
 
@@ -30,6 +30,18 @@ For the portable .zip, system requirements, and the feature guide, visit **[myvo
 
 </details>
 
+## What's New in 2.3.0
+
+Speech starts **2–3× sooner**. First audio now lands in about 1–2 seconds on a modern GPU and ~3 seconds on an RTX 3060, down from ~5 seconds — measured on both cards, same voice, same sitting.
+
+- **Faster first audio** — the streaming engine carries its decoder state across chunks instead of re-decoding overlap, so the first chunk is 2.5× smaller and the seam "clicks" between chunks are gone (a real fix at the source, not a crossfade over them).
+- **No cold-start penalty on your first click** — the engine warms itself up in the background while the app starts, and again when you switch model quality. Generate is briefly gated while that happens instead of your first sentence paying for it.
+- **Bundled voices ready immediately after install** — a packaging bug meant the pre-built voice data shipped with the installer was silently ignored on every fresh install, forcing a rebuild on first use. Fixed.
+- **Local HTTP API (opt-in)** — drive MyVoice from other apps on your PC: `POST /v1/audio/speech`, `GET /v1/voices`, `GET /v1/models`. Localhost only, bearer key, off by default. Enable it under Settings → API Access.
+- **Close-to-tray toggle** — choose whether the X and minimize buttons send MyVoice to the tray or close it (Settings → Interface).
+- **Stop actually stops** — the Stop button now halts batch and sentence-mode playback; it used to log an error and keep playing.
+- **Smaller fixes** — a corrupted Quick Speak file no longer blocks Settings behind a pop-up; loading a clone sample in Voice Design Studio now counts as unsaved work, so New Voice asks before discarding it.
+
 ## What's New in V2
 
 - **Embedded Qwen3-TTS** - No external service required, works completely offline
@@ -38,7 +50,7 @@ For the portable .zip, system requirements, and the feature guide, visit **[myvo
 - **Improved Voice Cloning** - Clone voices from just 3 seconds of audio
 - **9 Bundled Voices** - Ready to use out of the box with full emotion support
 - **Quick Speak** - Save and trigger common phrases instantly
-- **Live Streaming Playback** - Hear your speech begin within ~5 seconds; audio streams as it's generated rather than waiting for the full clip
+- **Live Streaming Playback** - Hear your speech begin within 1–3 seconds; audio streams as it's generated rather than waiting for the full clip
 
 ## Features
 
@@ -50,7 +62,8 @@ For the portable .zip, system requirements, and the feature guide, visit **[myvo
 - **Microphone Passthrough**: Route your real microphone through the virtual mic device for seamless voice chat mixing
 - **Quick Speak**: Configure common phrases for instant generation
 - **Virtual Microphone**: Route speech directly to Discord, Zoom, Teams, and other apps
-- **Live Streaming Playback**: Audio begins playing within ~5 seconds and streams as it's generated — real-time pacing for natural voice chat instead of waiting for the full clip
+- **Live Streaming Playback**: Audio begins playing within 1–3 seconds and streams as it's generated — real-time pacing for natural voice chat instead of waiting for the full clip
+- **Local HTTP API**: Opt-in localhost server (`/v1/audio/speech`, `/v1/voices`, `/v1/models`) so other apps on your PC can drive MyVoice
 - **Audio Transcription**: Automatic transcription using OpenAI Whisper
 - **Always-On-Top Window**: Compact 400x188px interface stays visible during voice chats
 - **Fully Offline**: After initial setup, no internet connection required
@@ -61,7 +74,7 @@ For the portable .zip, system requirements, and the feature guide, visit **[myvo
 - **Memory**: 16GB RAM recommended (8GB minimum - may experience slower model switching)
 - **Storage**: 8GB free space
   - Installation: ~2GB
-  - Qwen3-TTS models: ~3.4GB each (downloaded on first use, one model loaded at a time)
+  - Qwen3-TTS models: ~1.2GB (Small) / ~3.4GB (Quality) — the installer pre-downloads the tier you pick; the portable .zip downloads on first use
   - Whisper models: ~1-3GB (downloaded on first use)
 - **Processor**: CPU-only supported (GPU optional for faster inference)
 - **Audio**: Audio output device required
@@ -374,5 +387,5 @@ MyVoice would not be possible without **VB-Cable** by VB-Audio. Their virtual au
 
 ## Version
 
-Current version: **2.2.0**
+Current version: **2.3.0**
 ---
