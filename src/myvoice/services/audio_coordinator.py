@@ -899,7 +899,9 @@ class AudioCoordinator(BaseService):
         playing. Both underlying ``AudioService`` instances expose their
         own ``stop_all_playback`` / ``stop_all_virtual_microphone_playback``
         helpers; this coordinator method just fans out to them and sums
-        the count.
+        the count. (Story ui-3: those helpers did not exist until
+        2026-09-14 — the except-blocks below hid the AttributeError, so
+        Stop silently did nothing on the task-based playback path.)
 
         Returns:
             int: Total number of playback tasks stopped (0 if nothing

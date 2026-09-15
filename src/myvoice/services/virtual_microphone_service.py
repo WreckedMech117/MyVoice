@@ -53,6 +53,15 @@ class VirtualMicrophoneConfig:
     timeout_seconds: float = 10.0
 
 
+# Story ui-3: terminal statuses a stop request must not overwrite (mirrors
+# monitor_audio_service._FINISHED_STATUSES).
+_FINISHED_STATUSES = frozenset({
+    PlaybackStatus.COMPLETED,
+    PlaybackStatus.FAILED,
+    PlaybackStatus.STOPPED,
+})
+
+
 @dataclass
 class VirtualPlaybackTask:
     """Task for tracking virtual microphone playback operations."""
@@ -238,9 +247,10 @@ class VirtualMicrophoneService(BaseService):
         try:
             self.logger.info("Shutting down VirtualMicrophoneService")
 
-            # Stop all active playback tasks
-            for task_id in list(self._active_tasks.keys()):
-                await self.stop_virtual_playback(task_id)
+            # Stop all active playback tasks (Story ui-3: through the same
+            # helper the coordinator's Stop button fans out to; finished
+            # tasks still sitting in _active_tasks are cleaned up silently)
+            await self.stop_all_virtual_microphone_playback()
 
             # Terminate PyAudio instance
             if self._pyaudio:
@@ -317,7 +327,11 @@ class VirtualMicrophoneService(BaseService):
             task_id: ID of the task to stop
 
         Returns:
-            bool: True if stopped successfully
+            bool: True only when a live (pending/playing) task was actually
+                  interrupted. Story ui-3: a task that already finished is
+                  a clean no-op — its entry is dropped, its terminal status
+                  is left intact, nothing raises or logs ERROR (mirrors
+                  MonitorAudioService.stop_monitor_playback).
         """
         try:
             if task_id not in self._active_tasks:
@@ -325,6 +339,16 @@ class VirtualMicrophoneService(BaseService):
                 return False
 
             task = self._active_tasks[task_id]
+            if task.status in _FINISHED_STATUSES:
+                self._active_tasks.pop(task_id, None)
+                self._playback_threads.pop(task_id, None)
+                self.logger.debug(
+                    f"Virtual playback {task_id} already {task.status.value}; "
+                    "entry removed"
+                )
+                return False
+
+            # The worker polls for this value between chunk writes
             task.status = PlaybackStatus.STOPPED
 
             # Wait for thread to finish
@@ -345,6 +369,25 @@ class VirtualMicrophoneService(BaseService):
         except Exception as e:
             self.logger.error(f"Error stopping virtual playback {task_id}: {e}")
             return False
+
+    async def stop_all_virtual_microphone_playback(self) -> int:
+        """Stop every task in ``_active_tasks`` through the per-task stop.
+
+        Story ui-3: ``AudioCoordinator.stop_all_playback`` (Story 11.4
+        follow-up, the dual-mode Clear/Stop button) has called this since
+        it shipped, but the method never existed — the coordinator's
+        try/except swallowed the AttributeError, so Stop logged an ERROR
+        and stopped nothing on the batch / sentence-stream playback path.
+
+        Returns:
+            int: Number of live tasks actually interrupted. Finished tasks
+                 are cleaned up but not counted.
+        """
+        stopped = 0
+        for task_id in list(self._active_tasks.keys()):
+            if await self.stop_virtual_playback(task_id):
+                stopped += 1
+        return stopped
 
     async def enumerate_virtual_devices(self) -> List[AudioDevice]:
         """

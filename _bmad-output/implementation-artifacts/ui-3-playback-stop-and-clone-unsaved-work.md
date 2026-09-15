@@ -1,6 +1,6 @@
 # Story ui-3: Two Shipped Defects — Stop-All Playback Helpers Missing, Clone Load Not Marking Unsaved Work
 
-Status: ready-for-dev - 2026-09-14
+Status: done - 2026-09-14 — A: `PlaybackStatus.STOPPED` never existed (EnumMeta's `AttributeError('STOPPED')` was the log message) + both stop-all helpers added, finished-task stop is a clean no-op; B: `clone_file_loaded` → `set_has_unsaved_work(True)`, xfail removed. 3006 passed, 0 xfailed. Evidence: `ui-3-playback-stop-and-clone-unsaved-work-evidence.md`.
 
 <!-- Source: (A) RTX 3060 log 2026-09-14 19:07:03 + 19:11:30 (build 56, code unchanged since); (B) tooling-5's strict xfail. -->
 <!-- Risk: LOW–MEDIUM. (A) touches the Stop button path in batch/sentence mode; (B) one signal connection. -->
