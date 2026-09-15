@@ -62,15 +62,27 @@ AudioCoordinator. Two operating modes:
 State is per-session. Caller is responsible for thread-safety;
 AudioCoordinator's existing per-call locking around play_audio_chunk
 is sufficient.
+
+**Observability (Story 20.12, 2026-09-14).** The first flush of the
+watermark queue logs ONE INFO line naming the release regime, the audio
+held, the wall-clock wait since the first chunk, the worst observed P and
+the cushion the policy required. The RTX 3060 log that closed Story 20.10
+showed the adaptive path engaged but the regime had to be inferred from
+dispatched byte counts; this line answers the Epic 20 F6 question
+directly. It is the only thing this class logs, and it never changes a
+decision.
 """
 
 from __future__ import annotations
 
+import logging
 import time
 from collections import deque
 from typing import Callable, List, Optional
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 class StreamingChunkBuffer:
@@ -83,10 +95,22 @@ class StreamingChunkBuffer:
 
     # Release-regime labels, exposed via ``last_release_reason`` for tests,
     # simulation and evidence. Not telemetry: nothing in production reads
-    # them, and no metric is emitted from this class.
+    # them, and no metric is emitted from this class -- the Story 20.12
+    # release line below is a log record, not a metric.
     REGIME_PRODUCER_KEEPS_UP = "producer_keeps_up"
     REGIME_GAPLESS_FEASIBLE = "gapless_feasible"
     REGIME_GAPLESS_UNREACHABLE = "gapless_unreachable"
+
+    # Reason tokens for the release paths that are NOT adaptive decisions,
+    # so the Story 20.12 line can name them without touching
+    # ``last_release_reason`` (which stays None on the static path -- an
+    # existing test pins that, and the ≥16 GiB tier must stay byte- and
+    # state-identical). ``static_watermark`` is the ≥16 GiB default; the
+    # other two are the coordinator's stop/abort drain and a static-mode
+    # stream that ended before the watermark filled.
+    RELEASE_STATIC_WATERMARK = "static_watermark"
+    RELEASE_FLUSH_REMAINING = "flush_remaining"
+    RELEASE_IS_FINAL = "is_final"
 
     def __init__(
         self,
@@ -334,10 +358,19 @@ class StreamingChunkBuffer:
 
             if self._enable_adaptive_pre_buffer:
                 ready_to_dispatch = self._adaptive_ready_to_dispatch(is_final)
+                release_reason = self._last_release_reason
             else:
                 ready_to_dispatch = (
                     self._watermark_buffered_bytes >= self._watermark_bytes
                     or is_final
+                )
+                # Name the static release without recording it: the static
+                # path has no adaptive decision, so ``last_release_reason``
+                # stays None (pinned by TestStaticWatermarkPathUntouched).
+                release_reason = (
+                    self.RELEASE_STATIC_WATERMARK
+                    if self._watermark_buffered_bytes >= self._watermark_bytes
+                    else self.RELEASE_IS_FINAL
                 )
 
             if not ready_to_dispatch:
@@ -347,6 +380,7 @@ class StreamingChunkBuffer:
             self._watermark_queue.clear()
             self._watermark_buffered_bytes = 0
             self._watermark_filled = True
+            self._log_release(release_reason, len(flushed))
             ready = self._apply_crossfade_and_update_tail(flushed)
             return [ready] if ready else []
 
@@ -429,8 +463,73 @@ class StreamingChunkBuffer:
         self._watermark_queue.clear()
         self._watermark_buffered_bytes = 0
         self._watermark_filled = True
+        # This IS the session's first release when it runs with a non-empty
+        # queue (``push`` empties the queue on its own flush, so the two
+        # paths cannot both log). Name it so a log where playback opened
+        # only because the session was torn down reads as such.
+        self._log_release(self.RELEASE_FLUSH_REMAINING, len(flushed))
         ready = self._apply_crossfade_and_update_tail(flushed)
         return [ready] if ready else []
+
+    def _log_release(self, reason: Optional[str], held_bytes: int) -> None:
+        """Emit the once-per-session Story 20.12 release line.
+
+        Called exactly once per session, at the moment the watermark queue
+        is first flushed (``push`` or ``flush_remaining``; both set
+        ``_watermark_filled`` so neither can fire twice). Pure observation:
+        every field is read from state the release decision already
+        produced, and ``_cushion_decision`` is a pure function of ``P``, so
+        nothing here can move a release.
+
+        Fields, in order:
+
+          * ``reason``  -- ``last_release_reason`` in adaptive mode (a
+            ``REGIME_*`` constant or a guardrail token); one of the
+            ``RELEASE_*`` tokens otherwise.
+          * ``held``    -- seconds of audio in the flushed payload.
+          * ``waited``  -- wall-clock seconds from the first non-empty push
+            to this flush. 0.00 when nothing was ever pushed.
+          * ``P``       -- the worst observed producer rate, i.e. the value
+            the cushion was sized against. ``n/a`` on the static path (the
+            rate is never measured there) and before chunk 2 has arrived.
+          * ``cushion`` -- the cushion the policy required at release: the
+            static watermark on the static path and in the unreachable
+            regime, τ_gapless in the feasible regime, 0 when the producer
+            keeps up, ``n/a`` when P was never measured. On a guardrail
+            escape this is still the policy's number, so a ``max_pre_delay``
+            line with ``cushion=1.30s`` reads as "the policy wanted 1.3 s
+            and never got it" -- which is the diagnosis Story 20.4 wanted.
+          * ``mode``    -- ``adaptive`` / ``static``, so a ≥16 GiB log is
+            not silent and the two tiers can be told apart at a glance.
+        """
+        held_seconds = self._audio_seconds_from_bytes(held_bytes)
+        waited_seconds = (
+            self._clock() - self._t_first_chunk
+            if self._t_first_chunk is not None
+            else 0.0
+        )
+        if self._enable_adaptive_pre_buffer:
+            mode = "adaptive"
+            # Read, don't re-observe: ``_adaptive_ready_to_dispatch`` has
+            # already folded this push into the worst-rate tracker when it
+            # got that far; on an ``is_final`` / ``max_hold_chunks`` escape
+            # it did not, and re-observing here would be a state change.
+            p_observed = self._min_observed_producer_rate
+            if p_observed is None:
+                p_text = "n/a"
+                cushion_text = "n/a"
+            else:
+                p_text = f"{p_observed:.2f}"
+                cushion_text = f"{self._cushion_decision(p_observed)[0]:.2f}s"
+        else:
+            mode = "static"
+            p_text = "n/a"
+            cushion_text = f"{self._watermark_bytes / self._bytes_per_second:.2f}s"
+        logger.info(
+            "Streaming buffer: pre-buffer RELEASED — reason=%s held=%.2fs "
+            "waited=%.2fs P=%s cushion=%s mode=%s",
+            reason, held_seconds, waited_seconds, p_text, cushion_text, mode,
+        )
 
     def _apply_crossfade_and_update_tail(self, chunk: bytes) -> bytes:
         """Blend chunk's leading K samples with previous chunk's tail; stash new tail."""
