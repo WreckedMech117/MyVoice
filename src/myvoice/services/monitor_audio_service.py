@@ -354,6 +354,16 @@ class MonitorAudioService(BaseService):
 
             task = self._active_tasks[task_id]
             if task.status in _FINISHED_STATUSES:
+                # A STOPPED task may still be mid-stop: its worker can be
+                # inside stream.write while the first stop's join waits in
+                # the executor. Join a live thread before dropping it, so a
+                # second stop (shutdown -> pyaudio.terminate) never runs
+                # while the worker still owns a PortAudio stream.
+                thread = self._playback_threads.get(task_id)
+                if thread is not None and thread.is_alive():
+                    await asyncio.get_running_loop().run_in_executor(
+                        None, thread.join, 2.0
+                    )
                 self._active_tasks.pop(task_id, None)
                 self._playback_threads.pop(task_id, None)
                 self.logger.debug(

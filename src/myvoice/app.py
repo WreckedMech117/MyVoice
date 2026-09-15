@@ -1226,8 +1226,6 @@ class MyVoiceApp(QObject):
             await coro_factory()
         finally:
             self._compile_warmup_runs_active -= 1
-            if self._compile_warmup_runs_active > 0:
-                return
             # Story 20.7 AC #2 — the second, independent guarantee that
             # Generate comes back. The service releases its own gate in a
             # ``finally`` around each priming call; this one is at the task
@@ -1237,7 +1235,12 @@ class MyVoiceApp(QObject):
             # whole warmup coroutine unwinding. Idempotent (a redundant
             # ``False`` is a no-op) and cheap, and a dead Generate button is
             # strictly worse than the silent queue this story fixes.
-            self._on_tts_compile_priming_changed(False)
+            # Guarded, not early-returned: a ``return`` inside ``finally``
+            # would swallow the in-flight exception (and CancelledError) of
+            # the earlier of two overlapping runs, so its failure would never
+            # reach ``on_error``.
+            if self._compile_warmup_runs_active == 0:
+                self._on_tts_compile_priming_changed(False)
 
     def _on_quality_tier_updated(self, changed: bool) -> None:
         """Story 20.11 AC #1 — the ``set_quality_tier`` success continuation:

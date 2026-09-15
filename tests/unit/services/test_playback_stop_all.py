@@ -341,3 +341,44 @@ class TestStopBeforeWorkerStarts:
         # the ticker would still read 0 when the stop returned.
         assert ticks_while_stopping >= 4
         assert task.playback_id not in monitor._active_tasks
+
+
+class TestSecondStopJoinsAMidStopWorker:
+    """Review second pass: a STOPPED task whose worker is still running
+    (mid-stop, join pending) must be joined -- not just dropped -- by a
+    second stop such as shutdown, so ``pyaudio.terminate()`` never runs
+    while the worker still owns a stream."""
+
+    @pytest.mark.asyncio
+    async def test_monitor_finished_branch_joins_a_live_thread(self, monitor):
+        import threading
+        import time
+
+        task = _monitor_task("monitor_9", PlaybackStatus.STOPPED)
+        monitor._active_tasks[task.playback_id] = task
+        worker = threading.Thread(target=lambda: time.sleep(0.3))
+        worker.start()
+        monitor._playback_threads[task.playback_id] = worker
+
+        result = await monitor.stop_monitor_playback(task.playback_id)
+
+        assert result is False
+        assert not worker.is_alive(), "the entry was dropped before the worker exited"
+        assert task.playback_id not in monitor._playback_threads
+
+    @pytest.mark.asyncio
+    async def test_virtual_finished_branch_joins_a_live_thread(self, virtual):
+        import threading
+        import time
+
+        task = _virtual_task("virtual_9", PlaybackStatus.STOPPED)
+        virtual._active_tasks[task.playback_id] = task
+        worker = threading.Thread(target=lambda: time.sleep(0.3))
+        worker.start()
+        virtual._playback_threads[task.playback_id] = worker
+
+        result = await virtual.stop_virtual_playback(task.playback_id)
+
+        assert result is False
+        assert not worker.is_alive()
+        assert task.playback_id not in virtual._playback_threads
