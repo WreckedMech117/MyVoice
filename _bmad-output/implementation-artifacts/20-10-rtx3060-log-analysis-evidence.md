@@ -134,3 +134,60 @@ INFO line per session naming the regime (`producer_keeps_up`,
 `gapless_feasible`, `gapless_unreachable`, `max_hold_chunks`,
 `max_pre_delay`, `is_final`) would let a user log answer the F6 question
 directly instead of by byte-count inference.
+
+---
+
+## 5. Build 58 confirmation (logs copied 20:26, same PC, same sitting)
+
+Two launches of 2.2.0.58. `rthook_debug.log` clean (8 hook completions
+across the day's launches), predownload cache-hit as before.
+
+**Story 20.10 confirmed on both launches:**
+
+```
+20:17:52,252  Voice clone prompt cache: hydrated 12/12 CLONED voices for tier small from disk
+20:17:57,611  Compile-priming Generate gate: ENGAGED
+20:17:57,611  Compile priming: dispatching against the resident model Base (Clone)
+20:18:07,097  Compile warmup primed cache successfully (duration=9485ms)
+20:18:07,097  Compile-priming Generate gate: RELEASED
+
+20:23:52,138  Voice clone prompt cache: hydrated 12/12 CLONED voices for tier small from disk
+20:23:56,656  torch.compile + CUDA Graph engaged (decode_window_frames=10, ..., cache=warm)
+20:23:57,193  Starting TTS generation (TRUE_STREAM): ... text='Hello world....'      ← priming
+20:24:06,619  Compile cache hit; warm-path priming completed (duration=9438ms)
+```
+
+The bundled *quality*-tier prompt also hit on disk (2 ms) when the tier was
+switched: `Voice clone prompt cache hit on disk: D:\MyVoice\voice_files\Sarira-F.quality.pt`.
+The inductor cache key is unchanged between builds 57 and 58
+(`8384a5df…`), so the compile artefacts carried over; `cache=cold` on the
+first 58 launch is the priming marker, which build 57 never set because
+priming never ran there.
+
+**First user generation, request → first chunk → first audible audio:**
+
+| launch | mode | note | first chunk | first audio |
+|---|---|---|---|---|
+| 20:17 | SENTENCE_STREAM (override left on from the earlier test) | 36 chars | 18.5 s | 18.5 s |
+| 20:17 | SENTENCE_STREAM | 56 chars | 8.6 s | 8.6 s |
+| 20:17 | TRUE_STREAM, first in process | 64 chars; includes the one-time CodecStateCache self-test (1.48 s) | 3.08 s | 3.98 s |
+| 20:23 | TRUE_STREAM, tier just switched to quality (1.7B) | 45 chars; 17.07 s model load + cold compile for the 1.7B key inside the request | 19.2 s | 20.2 s |
+| 20:23 | TRUE_STREAM, 1.7B warm | 127 chars | **1.90 s** | **2.94 s** |
+
+Against build 57's 50.2 s first generation: the cold work now lands at
+startup behind the priming gate. The 1.7B warm numbers on the 3060 match
+the 0.6B ones (1.86–1.90 s first chunk) — the first-chunk floor on this
+card is not talker-size-bound at cs10.
+
+**Two follow-ups raised, not acted on:**
+
+* Priming runs once at startup against the resident model. A **tier
+  switch** unloads the model and the next generation pays the reload +
+  cold compile (19.2 s above). Re-priming after a tier change — same
+  `_run_compile_priming` path, same gate — would close it.
+* When priming runs in SENTENCE_STREAM mode (a user override), it primes
+  the batch decode path and the first TRUE_STREAM generation still pays
+  the codec self-test (~1.5 s on a 3060). Priming through TRUE_STREAM
+  regardless of the user's mode override would absorb it; whether that is
+  correct when the user has deliberately chosen sentence mode is a product
+  call.
