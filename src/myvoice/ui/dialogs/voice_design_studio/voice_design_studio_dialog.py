@@ -699,9 +699,14 @@ class VoiceDesignStudioDialog(QDialog):
 
     def _on_description_content_changed(self):
         """Handle content changes in description panel."""
-        # Update unsaved work flag if there's content
-        has_content = self.description_panel.has_content()
-        self.set_has_unsaved_work(has_content)
+        # Only ever RAISE the flag from here. ``has_content()`` looks at the
+        # description/preview text alone, so assigning it outright cleared
+        # unsaved work that lives elsewhere -- a loaded clone sample
+        # (Story ui-3) or a selected emotion variant -- the moment the user
+        # typed a character and deleted it. The flag is lowered only by the
+        # paths that actually resolve the work: save, New Voice, and close.
+        if self.description_panel.has_content():
+            self.set_has_unsaved_work(True)
 
     # =========================================================================
     # Emotion Variants: Emotions Tab Signal Handlers

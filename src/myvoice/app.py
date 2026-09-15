@@ -149,6 +149,10 @@ class MyVoiceApp(QObject):
         # skipped for want of one. None until _initialize_services_async
         # wires it.
         self._voice_clone_prompt_hydration_task = None
+        # Story 20.11 review — number of ``_compile_warmup_entrypoint`` bodies
+        # currently in flight (startup prime + tier-change re-primes can
+        # overlap); the gate safety net fires only when it returns to zero.
+        self._compile_warmup_runs_active: int = 0
         # Story 13.2 follow-up: bounded dedup set (FIFO-evicting at 256
         # entries) prevents unbounded growth across long-running sessions.
         # The dual-fire callback window is milliseconds; 256 entries is
@@ -1208,9 +1212,20 @@ class MyVoiceApp(QObject):
                 "warmup time; a BASE prime will skip with no_priming_prompt "
                 "rather than switch models"
             )
+        # Story 20.11 review — count the runs in flight. The startup prime
+        # and a tier-change re-prime (or two tier changes) can overlap, and
+        # the safety net below must not force Generate back on while a
+        # LATER run is still priming; it fires only when the last one exits.
+        # ``__dict__.get`` rather than ``getattr``: the qasync drivers build
+        # partial-init instances via ``MyVoiceApp.__new__``, and sip raises
+        # RuntimeError (not AttributeError) for an unset attribute there.
+        self._compile_warmup_runs_active = (
+            self.__dict__.get("_compile_warmup_runs_active", 0) + 1
+        )
         try:
             await coro_factory()
         finally:
+            self._compile_warmup_runs_active -= 1
             # Story 20.7 AC #2 — the second, independent guarantee that
             # Generate comes back. The service releases its own gate in a
             # ``finally`` around each priming call; this one is at the task
@@ -1220,7 +1235,12 @@ class MyVoiceApp(QObject):
             # whole warmup coroutine unwinding. Idempotent (a redundant
             # ``False`` is a no-op) and cheap, and a dead Generate button is
             # strictly worse than the silent queue this story fixes.
-            self._on_tts_compile_priming_changed(False)
+            # Guarded, not early-returned: a ``return`` inside ``finally``
+            # would swallow the in-flight exception (and CancelledError) of
+            # the earlier of two overlapping runs, so its failure would never
+            # reach ``on_error``.
+            if self._compile_warmup_runs_active == 0:
+                self._on_tts_compile_priming_changed(False)
 
     def _on_quality_tier_updated(self, changed: bool) -> None:
         """Story 20.11 AC #1 — the ``set_quality_tier`` success continuation:

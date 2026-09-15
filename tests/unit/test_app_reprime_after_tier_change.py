@@ -595,3 +595,82 @@ def test_qasync_shipped_reprime_survives_a_pump_inside_the_continuation(
         "the hand-off never deferred, so the pump was not reproduced: "
         f"{tier_fixed_pumped['deferrals']}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Review fixes on the 2.3.0 pass — overlapping entrypoint bodies
+# ---------------------------------------------------------------------------
+
+
+def test_overlapping_entrypoints_release_the_safety_net_only_once_at_the_end():
+    """Review MEDIUM: the app-side gate safety net must not force Generate
+    back on when the FIRST of two overlapping warmup bodies exits while the
+    second is still priming; it fires once, when the last one exits."""
+
+    async def scenario():
+        from myvoice.app import MyVoiceApp
+
+        app = MyVoiceApp.__new__(MyVoiceApp)
+        app.logger = logging.getLogger("test-20-11")
+        app._voice_clone_prompt_hydration_task = None
+        app._main_window = None
+        releases: List[int] = []
+        app._on_tts_compile_priming_changed = lambda v: releases.append(v)
+
+        release_first = asyncio.Event()
+
+        async def first():
+            await release_first.wait()
+
+        async def second():
+            return None
+
+        t1 = asyncio.ensure_future(app._compile_warmup_entrypoint(first))
+        await asyncio.sleep(0)
+        await app._compile_warmup_entrypoint(second)
+        after_second = list(releases)
+        release_first.set()
+        await t1
+        return after_second, releases
+
+    after_second, releases = asyncio.run(scenario())
+    assert after_second == [], "the second body's exit must not release"
+    assert releases == [False]
+
+
+def test_an_overlapping_entrypoint_still_propagates_its_exception():
+    """Review second pass: a ``return`` inside the entrypoint's ``finally``
+    would have swallowed the exception of the earlier of two overlapping
+    runs, so its failure never reached ``on_error``. The raise must
+    propagate even when another run is still in flight."""
+
+    async def scenario():
+        from myvoice.app import MyVoiceApp
+
+        app = MyVoiceApp.__new__(MyVoiceApp)
+        app.logger = logging.getLogger("test-20-11")
+        app._voice_clone_prompt_hydration_task = None
+        app._main_window = None
+        app._on_tts_compile_priming_changed = lambda v: None
+
+        release_other = asyncio.Event()
+
+        async def other():
+            await release_other.wait()
+
+        async def failing():
+            raise RuntimeError("preload exploded")
+
+        t_other = asyncio.ensure_future(app._compile_warmup_entrypoint(other))
+        await asyncio.sleep(0)
+        try:
+            await app._compile_warmup_entrypoint(failing)
+        except RuntimeError as exc:
+            outcome = str(exc)
+        else:
+            outcome = "swallowed"
+        release_other.set()
+        await t_other
+        return outcome
+
+    assert asyncio.run(scenario()) == "preload exploded"

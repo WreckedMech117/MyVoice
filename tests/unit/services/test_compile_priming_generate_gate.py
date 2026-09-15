@@ -699,3 +699,77 @@ async def test_cache_key_computation_failure_never_engages_the_gate(
         if r.name == "tts_compile_warmup_priming"
     ]
     assert reasons == ["priming_failed"]
+
+
+# ==========================================================================
+# Story 20.11 review — overlapping priming runs share one gate
+# ==========================================================================
+
+
+@pytest.mark.asyncio
+async def test_overlapping_primes_keep_the_gate_until_the_last_one_exits(
+    monkeypatch, metric_records, _clean_priming_env
+):
+    """Story 20.11 made ``warmup_compile_async`` re-entrant across time: a
+    tier-change re-prime can start while the startup prime is still
+    running (or two tier changes can overlap). The second run parks on
+    ``_request_semaphore`` behind the first, so with a boolean gate the
+    first run's ``finally`` re-enabled Generate while the second still
+    held the semaphore -- the exact Story 20.7 bug class. The gate must
+    stay engaged until the LAST run exits, and the callback must see one
+    ENGAGED and one RELEASED, not a release in the middle."""
+    _patch_hardware(monkeypatch)
+    _patch_cache(monkeypatch, warm=True)
+    service = _make_service()
+    rec = _GateRecorder(service)
+
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    second_done = asyncio.Event()
+    gate_when_second_ran: List[bool] = []
+
+    async def _slow_first():
+        first_started.set()
+        await release_first.wait()
+
+    async def _second():
+        gate_when_second_ran.append(service.compile_priming_active)
+        second_done.set()
+
+    monkeypatch.setattr(service, "_run_compile_priming", _slow_first)
+    first = asyncio.ensure_future(service.warmup_compile_async())
+    await first_started.wait()
+
+    # The startup prime is mid-flight; a tier-change re-prime arrives.
+    monkeypatch.setattr(service, "_run_compile_priming", _second)
+    second = asyncio.ensure_future(service.warmup_compile_async())
+    await second_done.wait()
+    # Let the second run's ``finally`` execute before the first finishes.
+    await second
+    assert service.compile_priming_active is True, (
+        "the second run's release must not open the gate while the first "
+        "still holds it"
+    )
+    assert rec.calls == [True], "no RELEASED must reach the UI mid-overlap"
+
+    release_first.set()
+    await first
+    assert service.compile_priming_active is False
+    assert rec.calls == [True, False]
+    assert gate_when_second_ran == [True]
+
+
+def test_a_redundant_release_cannot_underflow_the_gate():
+    """The app-side safety net fires ``False`` at every warmup task
+    boundary; with a count that must be a floor-at-zero no-op, so a later
+    genuine engage still opens the gate."""
+    service = _make_service()
+    calls: List[bool] = []
+    service.set_compile_priming_callback(calls.append)
+    service._set_compile_priming_active(False)
+    service._set_compile_priming_active(False)
+    assert service.compile_priming_active is False
+    assert calls == []
+    service._set_compile_priming_active(True)
+    assert service.compile_priming_active is True
+    assert calls == [True]

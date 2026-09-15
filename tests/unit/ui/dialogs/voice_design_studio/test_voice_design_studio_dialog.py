@@ -23,7 +23,7 @@ Revisions the tests below track (tooling-5 reconciliation):
 """
 
 import pytest
-from unittest.mock import Mock, MagicMock
+from unittest.mock import patch, Mock, MagicMock
 
 # PyQt6 imports - skip tests if not available
 pytest.importorskip("PyQt6")
@@ -686,6 +686,26 @@ class TestSampleTabSignals:
         panel = dialog.description_panel
         with patch.object(panel, '_get_clone_audio_duration', return_value=5.0):
             panel._load_clone_audio_file(wav_file)
+
+        assert dialog._has_unsaved_work is True
+
+    def test_clone_unsaved_work_survives_a_description_edit_and_clear(
+        self, dialog, tmp_path
+    ):
+        """Story ui-3 review: ``_on_description_content_changed`` assigned
+        ``has_content()`` outright, so loading a sample, typing one character
+        in the description and deleting it reset the flag to False -- the
+        loaded sample was discarded without a prompt again. The handler may
+        only raise the flag."""
+        wav_file = tmp_path / "test.wav"
+        wav_file.write_bytes(b"RIFF" + b"\x00" * 40)
+        panel = dialog.description_panel
+        with patch.object(panel, '_get_clone_audio_duration', return_value=5.0):
+            panel._load_clone_audio_file(wav_file)
+        assert dialog._has_unsaved_work is True
+
+        panel.description_edit.setPlainText("a")
+        panel.description_edit.clear()
 
         assert dialog._has_unsaved_work is True
 
