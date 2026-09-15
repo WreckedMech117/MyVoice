@@ -19,6 +19,13 @@
 ; =============================================================================
 
 [Setup]
+; Preserve source-file timestamps exactly (Story 20.10). Inno Setup's default
+; TimeStampRounding=2 rounds every installed file's mtime DOWN to an even
+; second. The bundled default-voice prompt caches
+; (voice_files\<voice>.<tier>.pt.meta.json) fingerprint their .wav/.txt by
+; sub-second mtime, so with rounding every one of them mismatched on first
+; run ("hydrated 0/12") and compile priming was skipped on end-user installs.
+TimeStampRounding=0
 ; Application identity
 AppId={{8F4B7C92-3D1E-4A5B-9C2E-7F8D4E6A1B3C}
 AppName={#MyAppName}

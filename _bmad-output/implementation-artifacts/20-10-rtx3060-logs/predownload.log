@@ -1,0 +1,16 @@
+2026-06-04 21:07:01,491 - INFO - Predownload log file: D:\MyVoice\logs\predownload.log
+2026-06-04 21:07:01,492 - INFO - Pre-downloading 2 model(s) for tier=small
+2026-06-04 21:07:01,623 - INFO - Progress bars disabled (frozen-exe stderr is None).
+2026-06-04 21:07:01,623 - INFO - [1/2] Downloading Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice ...
+2026-06-04 21:07:01,783 - INFO - [1/2] Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice done
+2026-06-04 21:07:01,783 - INFO - [2/2] Downloading Qwen/Qwen3-TTS-12Hz-0.6B-Base ...
+2026-06-04 21:07:01,864 - INFO - [2/2] Qwen/Qwen3-TTS-12Hz-0.6B-Base done
+2026-06-04 21:07:01,865 - INFO - Pre-download complete.
+2026-09-14 19:15:23,958 - INFO - Predownload log file: D:\MyVoice\logs\predownload.log
+2026-09-14 19:15:23,961 - INFO - Pre-downloading 2 model(s) for tier=small
+2026-09-14 19:15:24,030 - INFO - Progress bars disabled (frozen-exe stderr is None).
+2026-09-14 19:15:24,030 - INFO - [1/2] Downloading Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice ...
+2026-09-14 19:15:24,201 - INFO - [1/2] Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice done
+2026-09-14 19:15:24,201 - INFO - [2/2] Downloading Qwen/Qwen3-TTS-12Hz-0.6B-Base ...
+2026-09-14 19:15:24,268 - INFO - [2/2] Qwen/Qwen3-TTS-12Hz-0.6B-Base done
+2026-09-14 19:15:24,268 - INFO - Pre-download complete.
