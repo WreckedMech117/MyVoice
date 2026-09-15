@@ -116,6 +116,11 @@
                     <p>Save your most recent take to a WAV file with one click. Build a sound library, share favorite clips with friends, or archive that perfect read.</p>
                 </div>
                 <div class="feature-card">
+                    <div class="feature-icon">&#128268;</div>
+                    <h3>Local API</h3>
+                    <p>Let other apps on your PC drive MyVoice &mdash; stream deck macros, chat bots, accessibility tools. An opt-in HTTP server (<code>/v1/audio/speech</code>, <code>/v1/voices</code>, <code>/v1/models</code>) bound to localhost with a bearer key; off by default.</p>
+                </div>
+                <div class="feature-card">
                     <div class="feature-icon">&#128293;</div>
                     <h3>GPU-Accelerated</h3>
                     <p>Compiled inference + a persistent on-disk cache deliver near-instant warmups on RTX 30/40/50 series. The first launch primes the cache; every run after loads in seconds.</p>
@@ -180,6 +185,16 @@
                 <h2>Download MyVoice</h2>
                 <p>Free, open-source, and ready to use</p>
                 <p class="update-date">Updated September 14th, 2026 - Version 2.3.0</p>
+                <div class="whats-new">
+                    <h4>What&rsquo;s new in 2.3.0</h4>
+                    <ul>
+                        <li><strong>Speech starts 2&ndash;3&times; sooner</strong> &mdash; first audio in about 1&ndash;2 seconds on a modern GPU, ~3 seconds on an RTX 3060, down from ~5.</li>
+                        <li><strong>No cold-start penalty on your first click</strong> &mdash; the engine warms up in the background at launch and when you switch model quality.</li>
+                        <li><strong>Cleaner streaming</strong> &mdash; the clicks between streamed chunks are gone, fixed at the source rather than smoothed over.</li>
+                        <li><strong>Local API</strong> (opt-in) &mdash; drive MyVoice from other apps on your PC. See Powerful Features above.</li>
+                        <li><strong>Close-to-tray toggle</strong>, Stop now halts every playback mode, and bundled voices are ready immediately after install.</li>
+                    </ul>
+                </div>
             </div>
             <div class="download-grid">
                 <div class="download-card recommended">
@@ -266,6 +281,17 @@
                 <a href="https://shop.vb-audio.com/en/win-apps/11-vb-cable.html" target="_blank" rel="noopener" class="btn">
                     &#10084; Support VB-Audio
                 </a>
+            </div>
+
+            <!-- Latency research Special Thanks (2.3.0) -->
+            <div class="vb-cable-thanks research-thanks">
+                <h3>&#9889; Special Thanks to the Qwen3-TTS Latency Researchers</h3>
+                <p>The 2&ndash;3&times; faster first audio in 2.3.0 started with the <strong>Nari Labs</strong> team&rsquo;s research post on the Qwen3-TTS discussion board, their write-up of the speed/cost frontier, and the techniques their <code>nari-qwen3-tts</code> code and container demonstrate &mdash; carrying codec state across chunks instead of re-decoding overlap is the change you hear. Thanks also to <strong>Andres Marafioti</strong>, whose open-source <code>faster-qwen3-tts</code> and its blog showed exactly where a cold start spends its time.</p>
+                <div class="research-links">
+                    <a href="https://github.com/QwenLM/Qwen3-TTS/discussions/358" target="_blank" rel="noopener" class="btn">Discussion #358</a>
+                    <a href="https://nari-labs.com/blog/qwen3-tts-speed-cost-frontier/" target="_blank" rel="noopener" class="btn">Nari Labs write-up</a>
+                    <a href="https://github.com/andimarafioti/faster-qwen3-tts" target="_blank" rel="noopener" class="btn">faster-qwen3-tts</a>
+                </div>
             </div>
         </div>
     </section>
