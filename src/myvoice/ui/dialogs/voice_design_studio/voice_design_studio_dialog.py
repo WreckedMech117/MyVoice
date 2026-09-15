@@ -399,6 +399,11 @@ class VoiceDesignStudioDialog(QDialog):
         # QA8: Connect clone tab signals
         self.description_panel.clone_transcribe_requested.connect(self._on_clone_transcribe_requested)
         self.description_panel.clone_proceed_requested.connect(self._on_clone_proceed_requested)
+        # Story ui-3: a loaded clone sample is unsaved work (Story 2.1's
+        # sample panel flagged it; QA8 moved the flow here without
+        # re-connecting it, so New Voice / close discarded the sample
+        # without the confirm prompt).
+        self.description_panel.clone_file_loaded.connect(self._on_clone_file_loaded)
 
         self.tab_widget.addTab(self.description_panel, "From Description")
 
@@ -1582,6 +1587,11 @@ class VoiceDesignStudioDialog(QDialog):
     # =========================================================================
     # QA8: Clone Tab Handlers
     # =========================================================================
+
+    def _on_clone_file_loaded(self, audio_path: str):
+        """Story ui-3: a loaded clone sample counts as unsaved work."""
+        self.logger.debug(f"Clone sample loaded, marking unsaved work: {audio_path}")
+        self.set_has_unsaved_work(True)
 
     def _on_clone_transcribe_requested(self, file_path: str):
         """

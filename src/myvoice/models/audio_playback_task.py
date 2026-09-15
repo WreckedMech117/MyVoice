@@ -25,6 +25,15 @@ class PlaybackStatus(Enum):
     PLAYING = "playing"
     COMPLETED = "completed"
     FAILED = "failed"
+    # Story ui-3: the per-task stop paths in MonitorAudioService /
+    # VirtualMicrophoneService assigned ``PlaybackStatus.STOPPED`` and their
+    # playback workers polled for ``status.value == 'stopped'`` — but this
+    # member never existed, so EnumMeta raised ``AttributeError('STOPPED')``
+    # on every stop (the RTX 3060 shutdown log shows the bare status name as
+    # the error message, eight times). Terminal state for a task the user or
+    # shutdown interrupted, distinct from COMPLETED (ran to the end) and
+    # FAILED (errored).
+    STOPPED = "stopped"
 
 
 class DualRoutingMode(Enum):

@@ -669,18 +669,15 @@ class TestSampleTab:
 class TestSampleTabSignals:
     """Tests for clone-path signal handling."""
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Defect (tooling-5, for a product story): QA8 moved the clone "
-            "flow into DescriptionPathPanel but the dialog never connects "
-            "clone_file_loaded to set_has_unsaved_work. Story 2.1's sample "
-            "panel flagged unsaved work on file load; the Clone sub-tab does "
-            "not, so dialog_closing/New Voice see a loaded sample as no work."
-        ),
-    )
     def test_clone_file_loaded_sets_unsaved_work(self, dialog, tmp_path):
-        """Test loading a clone sample sets the unsaved work flag."""
+        """Test loading a clone sample sets the unsaved work flag.
+
+        Was a strict xfail from tooling-5 (QA8 moved the clone flow into
+        DescriptionPathPanel without re-connecting ``clone_file_loaded`` to
+        ``set_has_unsaved_work``); Story ui-3 wired it, so this now runs as
+        a plain test. Drives the real panel load path, not the signal, so
+        it mirrors the shipped bug class (a user browsing to a sample).
+        """
         from unittest.mock import patch
 
         wav_file = tmp_path / "test.wav"
@@ -691,6 +688,40 @@ class TestSampleTabSignals:
             panel._load_clone_audio_file(wav_file)
 
         assert dialog._has_unsaved_work is True
+
+    def test_new_voice_after_clone_load_asks_before_discarding(
+        self, dialog, tmp_path, monkeypatch
+    ):
+        """Story ui-3 user-facing symptom: load a sample, press New Voice ->
+        the "Start New Voice" confirm must appear, and answering No must keep
+        the loaded sample. Before the fix the prompt was skipped and the
+        sample was discarded. The production QMessageBox is patched to
+        answer No, never weakened (tooling-4).
+        """
+        from unittest.mock import patch
+        from PyQt6.QtWidgets import QMessageBox
+
+        wav_file = tmp_path / "test.wav"
+        wav_file.write_bytes(b"RIFF" + b"\x00" * 40)
+
+        panel = dialog.description_panel
+        with patch.object(panel, '_get_clone_audio_duration', return_value=5.0):
+            panel._load_clone_audio_file(wav_file)
+
+        questions = []
+
+        def fake_question(parent, title, text, *args, **kwargs):
+            questions.append(title)
+            return QMessageBox.StandardButton.No
+
+        monkeypatch.setattr(QMessageBox, "question", fake_question)
+
+        dialog._on_new_voice_clicked()
+
+        assert questions == ["Start New Voice"]
+        # No -> nothing was cleared (panel.clear() would None this)
+        assert dialog._has_unsaved_work is True
+        assert panel._clone_audio_path == wav_file
 
 
 class TestSessionManagement:

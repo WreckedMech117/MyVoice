@@ -53,6 +53,16 @@ class MonitorAudioConfig:
     timeout_seconds: float = 30.0
 
 
+# Story ui-3: terminal statuses a stop request must not overwrite — the
+# worker already exited, so there is nothing to interrupt, only an entry to
+# drop from _active_tasks.
+_FINISHED_STATUSES = frozenset({
+    PlaybackStatus.COMPLETED,
+    PlaybackStatus.FAILED,
+    PlaybackStatus.STOPPED,
+})
+
+
 @dataclass
 class MonitorPlaybackTask:
     """Task for tracking monitor speaker playback operations."""
@@ -235,9 +245,10 @@ class MonitorAudioService(BaseService):
         try:
             self.logger.info("Shutting down MonitorAudioService")
 
-            # Stop all active playback tasks
-            for task_id in list(self._active_tasks.keys()):
-                await self.stop_monitor_playback(task_id)
+            # Stop all active playback tasks (Story ui-3: through the same
+            # helper the coordinator's Stop button fans out to; finished
+            # tasks still sitting in _active_tasks are cleaned up silently)
+            await self.stop_all_playback()
 
             # Terminate PyAudio instance
             if self._pyaudio:
@@ -316,13 +327,31 @@ class MonitorAudioService(BaseService):
             return None
 
     async def stop_monitor_playback(self, task_id: str) -> bool:
-        """Stop an active monitor audio playback."""
+        """Stop an active monitor audio playback.
+
+        Returns True only when a live (pending/playing) task was actually
+        interrupted. Story ui-3: the worker never removes its entry from
+        ``_active_tasks`` when playback runs to the end, so by shutdown the
+        dict is mostly finished tasks. Stopping one of those is a clean
+        no-op that just drops the bookkeeping — it neither raises nor logs
+        ERROR, and its terminal status (COMPLETED/FAILED) is left intact.
+        """
         try:
             if task_id not in self._active_tasks:
                 self.logger.warning(f"Task {task_id} not found")
                 return False
 
             task = self._active_tasks[task_id]
+            if task.status in _FINISHED_STATUSES:
+                self._active_tasks.pop(task_id, None)
+                self._playback_threads.pop(task_id, None)
+                self.logger.debug(
+                    f"Monitor playback {task_id} already {task.status.value}; "
+                    "entry removed"
+                )
+                return False
+
+            # The worker polls for this value between chunk writes
             task.status = PlaybackStatus.STOPPED
 
             # Wait for thread to finish
@@ -340,6 +369,25 @@ class MonitorAudioService(BaseService):
         except Exception as e:
             self.logger.error(f"Error stopping monitor playback {task_id}: {e}")
             return False
+
+    async def stop_all_playback(self) -> int:
+        """Stop every task in ``_active_tasks`` through the per-task stop.
+
+        Story ui-3: ``AudioCoordinator.stop_all_playback`` (Story 11.4
+        follow-up, the dual-mode Clear/Stop button) has called this since
+        it shipped, but the method never existed — the coordinator's
+        try/except swallowed the AttributeError, so Stop logged an ERROR
+        and stopped nothing on the batch / sentence-stream playback path.
+
+        Returns:
+            int: Number of live tasks actually interrupted. Finished tasks
+                 are cleaned up but not counted.
+        """
+        stopped = 0
+        for task_id in list(self._active_tasks.keys()):
+            if await self.stop_monitor_playback(task_id):
+                stopped += 1
+        return stopped
 
     async def enumerate_monitor_devices(self) -> List[AudioDevice]:
         """Enumerate available monitor speaker devices."""
