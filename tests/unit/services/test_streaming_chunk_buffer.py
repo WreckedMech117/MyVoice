@@ -12,6 +12,8 @@ this is the consumer-side fix).
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pytest
 
@@ -887,3 +889,236 @@ class TestStaticWatermarkPathUntouched:
         assert len(buf.push(_make_chunk(_SAMPLES_PER_100MS_24K))) == 1
         # No adaptive decision was ever taken on this path.
         assert buf.last_release_reason is None
+
+
+# --------------------------------------------------------------------------- #
+# Story 20.12 AC #1 / AC #2 — the once-per-session release line
+# --------------------------------------------------------------------------- #
+
+_RELEASE_LOGGER = "myvoice.services.streaming_chunk_buffer"
+_RELEASE_MARKER = "Streaming buffer: pre-buffer RELEASED"
+
+
+def _release_lines(caplog):
+    """The Story 20.12 lines captured so far, as rendered messages."""
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == _RELEASE_LOGGER and _RELEASE_MARKER in r.getMessage()
+    ]
+
+
+def _fields(line):
+    """``key=value`` pairs after the em dash, as a dict of strings."""
+    return dict(tok.split("=", 1) for tok in line.split("— ", 1)[1].split())
+
+
+class TestReleaseReasonLog:
+    """Story 20.12 — one INFO line per session naming the release regime.
+
+    The RTX 3060 log that closed Story 20.10 (evidence §1, §4) showed the
+    adaptive path engaged and two chunks in the first dispatch, but which
+    regime opened playback had to be inferred from byte counts. These rows
+    pin that every regime — including the ≥16 GiB static path — logs
+    exactly one line with the right reason token, and that the line is
+    pure observation (every existing behaviour row above is untouched).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _capture(self, caplog):
+        caplog.set_level(logging.INFO, logger=_RELEASE_LOGGER)
+        self.caplog = caplog
+
+    def _only_line(self):
+        lines = _release_lines(self.caplog)
+        assert len(lines) == 1, lines
+        return lines[0]
+
+    # -- adaptive regimes -------------------------------------------------- #
+
+    def test_producer_keeps_up_logs_zero_cushion(self):
+        clock = _FakeClock()
+        buf = _adaptive_buf(clock, target_audio_seconds=5.0)
+        buf.push(_make_chunk(24000), is_final=False)
+        assert _release_lines(self.caplog) == []
+        clock.advance(0.5)                 # 1.0 s of audio in 0.5 s → P = 2.0
+        assert len(buf.push(_make_chunk(24000), is_final=False)) == 1
+
+        f = _fields(self._only_line())
+        assert f["reason"] == StreamingChunkBuffer.REGIME_PRODUCER_KEEPS_UP
+        assert f["mode"] == "adaptive"
+        assert f["held"] == "2.00s"
+        assert f["waited"] == "0.50s"
+        assert f["P"] == "2.00"
+        assert f["cushion"] == "0.00s"
+
+    def test_gapless_feasible_logs_tau_as_the_cushion(self):
+        # Same geometry as test_feasible_cushion_is_still_waited_out:
+        # P = 0.9 on 15 s → τ = 1.667 s inside the 2.0 s budget.
+        clock = _FakeClock()
+        buf = _adaptive_buf(clock, target_audio_seconds=15.0)
+        _drive(buf, clock, 6000, 0.9)
+
+        f = _fields(self._only_line())
+        assert f["reason"] == StreamingChunkBuffer.REGIME_GAPLESS_FEASIBLE
+        assert f["mode"] == "adaptive"
+        assert f["P"] == "0.90"
+        assert f["cushion"] == f"{15.0 * (1.0 / 0.9 - 1.0):.2f}s"
+        # Held audio is what the policy waited for — at least τ.
+        assert float(f["held"].rstrip("s")) >= 15.0 * (1.0 / 0.9 - 1.0)
+
+    def test_gapless_unreachable_logs_the_watermark_as_the_cushion(self):
+        # The ship-target slow tier (P = 0.5 on the long fixture): the
+        # policy falls back to the 500 ms static watermark, and the line
+        # must say so rather than print the 19.7 s τ it could not buy.
+        clock = _FakeClock()
+        buf = _adaptive_buf(clock, target_audio_seconds=_LONG_FIXTURE_T_A)
+        buf.push(_make_chunk(_CS25_CHUNK_SAMPLES), is_final=False)
+        clock.advance(_CS25_CHUNK_SECONDS / 0.5)
+        buf.push(_make_chunk(_CS25_CHUNK_SAMPLES), is_final=False)
+
+        f = _fields(self._only_line())
+        assert f["reason"] == StreamingChunkBuffer.REGIME_GAPLESS_UNREACHABLE
+        assert f["mode"] == "adaptive"
+        assert f["P"] == "0.50"
+        assert f["cushion"] == "0.50s"
+        assert f["held"] == f"{2 * _CS25_CHUNK_SECONDS:.2f}s"
+
+    def test_is_final_before_a_rate_exists_logs_na(self):
+        # Short utterance: the stream ends on chunk 1, so P was never
+        # measured and the policy never priced a cushion. Both are "n/a",
+        # not a fabricated number.
+        clock = _FakeClock()
+        buf = _adaptive_buf(clock, target_audio_seconds=5.0)
+        clock.advance(0.25)
+        assert len(buf.push(_make_chunk(24000), is_final=True)) == 1
+
+        f = _fields(self._only_line())
+        assert f["reason"] == "is_final"
+        assert f["mode"] == "adaptive"
+        assert f["P"] == "n/a"
+        assert f["cushion"] == "n/a"
+        assert f["held"] == "1.00s"
+        assert f["waited"] == "0.00s"    # origin is the first push itself
+
+    def test_max_hold_chunks_guardrail_is_named(self):
+        clock = _FakeClock()
+        buf = _adaptive_buf(
+            clock, target_audio_seconds=5.0, max_pre_delay_seconds=100.0,
+            max_hold_chunks=3,
+        )
+        for _ in range(3):
+            buf.push(_make_chunk(_SAMPLES_PER_100MS_24K), is_final=False)
+
+        f = _fields(self._only_line())
+        assert f["reason"] == "max_hold_chunks"
+        assert f["mode"] == "adaptive"
+        assert f["held"] == "0.30s"
+
+    def test_max_pre_delay_guardrail_still_reports_the_policy_cushion(self):
+        # Same guardrail as test_max_pre_delay_cap_kicks_in, but arranged so
+        # P IS measured (push 2) before the cap fires (push 3). The line
+        # then carries the cushion the policy wanted, so the log reads
+        # "wanted 3.0 s, never got it" — the Story 20.4 diagnosis.
+        clock = _FakeClock()
+        buf = _adaptive_buf(
+            clock, target_audio_seconds=5.0, max_pre_delay_seconds=3.0,
+            cushion_budget_seconds=1000.0,
+        )
+        buf.push(_make_chunk(24000), is_final=False)
+        clock.advance(2.0)
+        # P = 1.0 / 2.0 = 0.5 → τ = 5 × (1/0.5 − 1) = 5 s, clamped to the
+        # 3 s guardrail; 2.0 s buffered < 3.0 s, so it holds.
+        assert buf.push(_make_chunk(24000), is_final=False) == []
+        clock.advance(1.0)                 # elapsed = 3.0 ≥ max_pre_delay
+        assert len(buf.push(_make_chunk(_SAMPLES_PER_100MS_24K), is_final=False)) == 1
+
+        f = _fields(self._only_line())
+        assert f["reason"] == "max_pre_delay"
+        assert f["mode"] == "adaptive"
+        assert f["P"] == "0.50"
+        assert f["cushion"] == "3.00s"
+        assert f["held"] == "2.10s"
+        assert f["waited"] == "3.00s"
+
+    # -- static path (≥16 GiB) --------------------------------------------- #
+
+    def test_static_watermark_release_is_not_silent(self):
+        # AC #1: the ≥16 GiB path logs too, and does so WITHOUT recording
+        # an adaptive reason (last_release_reason stays None — pinned by
+        # TestStaticWatermarkPathUntouched).
+        clock = _FakeClock()
+        buf = StreamingChunkBuffer(
+            watermark_ms=500, crossfade_samples=0, sample_rate=24000,
+            channels=1, enable_adaptive_pre_buffer=False, clock=clock,
+        )
+        for _ in range(4):
+            buf.push(_make_chunk(_SAMPLES_PER_100MS_24K))
+            clock.advance(0.1)
+        assert _release_lines(self.caplog) == []
+        assert len(buf.push(_make_chunk(_SAMPLES_PER_100MS_24K))) == 1
+
+        f = _fields(self._only_line())
+        assert f["reason"] == StreamingChunkBuffer.RELEASE_STATIC_WATERMARK
+        assert f["mode"] == "static"
+        assert f["held"] == "0.50s"
+        assert f["waited"] == "0.40s"
+        assert f["P"] == "n/a"
+        assert f["cushion"] == "0.50s"
+        assert buf.last_release_reason is None
+
+    def test_static_is_final_below_the_watermark_is_named(self):
+        buf = StreamingChunkBuffer(
+            watermark_ms=500, crossfade_samples=0, sample_rate=24000,
+            channels=1, enable_adaptive_pre_buffer=False,
+        )
+        assert len(buf.push(_make_chunk(_SAMPLES_PER_100MS_24K), is_final=True)) == 1
+
+        f = _fields(self._only_line())
+        assert f["reason"] == StreamingChunkBuffer.RELEASE_IS_FINAL
+        assert f["mode"] == "static"
+        assert f["held"] == "0.10s"
+        assert buf.last_release_reason is None
+
+    # -- teardown drain and the once-per-session invariant ------------------ #
+
+    def test_flush_remaining_before_release_is_the_first_release(self):
+        clock = _FakeClock()
+        buf = _adaptive_buf(clock, target_audio_seconds=5.0)
+        buf.push(_make_chunk(_SAMPLES_PER_100MS_24K), is_final=False)
+        clock.advance(0.3)
+        assert len(buf.flush_remaining()) == 1
+
+        f = _fields(self._only_line())
+        assert f["reason"] == StreamingChunkBuffer.RELEASE_FLUSH_REMAINING
+        assert f["held"] == "0.10s"
+        assert f["waited"] == "0.30s"
+
+    def test_line_is_emitted_exactly_once_per_session(self):
+        # After release: pass-through pushes, an is_final push and the
+        # teardown drain must all stay silent. reset() opens a new session,
+        # which logs again — once.
+        clock = _FakeClock()
+        buf = _adaptive_buf(clock, target_audio_seconds=5.0)
+        buf.push(_make_chunk(24000), is_final=False)
+        clock.advance(0.5)
+        buf.push(_make_chunk(24000), is_final=False)
+        assert len(_release_lines(self.caplog)) == 1
+
+        for _ in range(3):
+            clock.advance(0.5)
+            buf.push(_make_chunk(24000), is_final=False)
+        buf.push(_make_chunk(24000), is_final=True)
+        assert buf.flush_remaining() == []
+        assert len(_release_lines(self.caplog)) == 1
+
+        buf.reset()
+        buf.push(_make_chunk(_SAMPLES_PER_100MS_24K), is_final=True)
+        lines = _release_lines(self.caplog)
+        assert len(lines) == 2
+        assert _fields(lines[1])["reason"] == "is_final"
+
+    def test_flush_remaining_on_an_empty_buffer_stays_silent(self):
+        buf = _adaptive_buf(_FakeClock(), target_audio_seconds=5.0)
+        assert buf.flush_remaining() == []
+        assert _release_lines(self.caplog) == []

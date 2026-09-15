@@ -1,6 +1,6 @@
 # Story 20.12: Log the Pre-Buffer Release Regime
 
-Status: ready-for-dev - 2026-09-14
+Status: done - 2026-09-14 — one INFO line per session (`Streaming buffer: pre-buffer RELEASED — reason=… held=… waited=… P=… cushion=… mode=…`) from `StreamingChunkBuffer`; 11 regime tests; full suite 3003 passed, 1 xfailed. Evidence: `20-12-prebuffer-release-reason-log-evidence.md`.
 
 <!-- Source: Story 20.10 evidence §4, observability gap raised from the RTX 3060 log. -->
 <!-- Risk: LOW. One INFO line per streaming session; no behaviour change. -->
