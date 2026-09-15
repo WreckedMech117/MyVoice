@@ -1240,6 +1240,21 @@ class QwenTTSService(BaseService):
     # the previous pin are invalidated on first run after this bump (Story 17.2
     # H1+H2 cache-invalidation discipline per memory/code_review_regression_test_exact_class.md).
     _QWEN_TTS_PIN_HASH = "3fdb4682"
+    # mtime tolerance for the persisted-meta and in-memory fingerprint checks
+    # (Story 20.10). Was 1 ms on the assumption that "filesystem timestamps
+    # round-trip exactly on the platforms MyVoice ships to". They do not
+    # survive the INSTALLER: Inno Setup's default ``TimeStampRounding=2``
+    # rounds every installed file's mtime DOWN to an even second, so the
+    # bundled ``<voice>.<tier>.pt.meta.json`` (written against the build
+    # host's sub-second mtime) mismatched every end-user install by up to
+    # 1.999 s and all 12 precomputed default-voice prompts were rejected on
+    # first run -- "hydrated 0/12" on the RTX 3060 (2026-09-14), priming
+    # skipped, the cold compile landed on the user's first generation.
+    # installer.iss now sets ``TimeStampRounding=0`` so the meta round-trips
+    # exactly; this tolerance covers the same rounding class (FAT copies,
+    # other installers) without weakening stale detection -- a re-recorded
+    # wav is minutes or days newer, and size + sidecar + pin still gate.
+    _MTIME_TOLERANCE_SECONDS = 2.0
     # Whisper retry policy for the lazy-precompute (AC #2): three attempts
     # total, with progressive backoff between. The bundled subprocess
     # Whisper path (whisper_subprocess.py) typically completes in 1-3s
@@ -1299,8 +1314,11 @@ class QwenTTSService(BaseService):
             # ref_audio went missing — drop the stale entry.
             self._voice_clone_prompts.pop(cache_key, None)
             return None
-        # mtime tolerance matches _voice_clone_prompt_meta_is_valid (1ms).
-        if abs(current_mtime - cached_mtime) > 1e-3 or current_size != cached_size:
+        # mtime tolerance matches _voice_clone_prompt_meta_is_valid.
+        if (
+            abs(current_mtime - cached_mtime) > self._MTIME_TOLERANCE_SECONDS
+            or current_size != cached_size
+        ):
             self._voice_clone_prompts.pop(cache_key, None)
             self.logger.info(
                 f"Voice clone prompt in-memory cache invalidated for "
@@ -1645,13 +1663,12 @@ class QwenTTSService(BaseService):
             return False
         if meta.get("qwen_tts_pin") != self._QWEN_TTS_PIN_HASH:
             return False
-        # mtime is a float; allow exact equality (filesystem timestamps round-
-        # trip exactly on the platforms MyVoice ships to) but tolerate ~1ms
-        # of float drift defensively.
+        # mtime is a float; tolerance per _MTIME_TOLERANCE_SECONDS (the
+        # installer rounds installed-file timestamps -- see the constant).
         meta_mtime = meta.get("ref_audio_mtime")
         if not isinstance(meta_mtime, (int, float)):
             return False
-        if abs(float(meta_mtime) - stat.st_mtime) > 1e-3:
+        if abs(float(meta_mtime) - stat.st_mtime) > self._MTIME_TOLERANCE_SECONDS:
             return False
         if meta.get("ref_audio_size") != stat.st_size:
             return False
@@ -1672,7 +1689,8 @@ class QwenTTSService(BaseService):
         elif (
             meta_txt_mtime is None
             or current_txt_mtime is None
-            or abs(float(meta_txt_mtime) - float(current_txt_mtime)) > 1e-3
+            or abs(float(meta_txt_mtime) - float(current_txt_mtime))
+            > self._MTIME_TOLERANCE_SECONDS
         ):
             return False
         return True

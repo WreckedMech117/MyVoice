@@ -1,0 +1,1709 @@
+2026-06-04 21:07:16,776 - __main__ - INFO - Starting MyVoice V2 application with qasync event loop
+2026-06-04 21:07:16,799 - myvoice.metrics - INFO - metric
+2026-06-04 21:07:16,800 - myvoice.services.tts_streaming.torch_runtime - INFO - TF32 + cuDNN benchmark enabled (device_capability=8.6)
+2026-06-04 21:07:16,800 - GlobalExceptionHandler - INFO - Global exception handler installed
+2026-06-04 21:07:16,800 - __main__ - INFO - Global exception handler installed
+2026-06-04 21:07:16,830 - __main__ - INFO - qasync event loop created and set as default
+2026-06-04 21:07:17,931 - MyVoiceApp - INFO - Initializing MyVoice application components asynchronously
+2026-06-04 21:07:17,931 - myvoice.utils.portable_paths - INFO - === Portable Mode Diagnostics ===
+2026-06-04 21:07:17,937 - myvoice.utils.portable_paths - INFO - Portable mode: True
+2026-06-04 21:07:17,937 - myvoice.utils.portable_paths - INFO - Application root: D:\MyVoice
+2026-06-04 21:07:17,937 - myvoice.utils.portable_paths - INFO - Data root: D:\MyVoice
+2026-06-04 21:07:17,938 - myvoice.utils.portable_paths - INFO - Config path: D:\MyVoice\config
+2026-06-04 21:07:17,938 - myvoice.utils.portable_paths - INFO - Logs path: D:\MyVoice\logs
+2026-06-04 21:07:17,938 - myvoice.utils.portable_paths - INFO - Voice files path: D:\MyVoice\voice_files
+2026-06-04 21:07:17,938 - myvoice.utils.portable_paths - INFO - FFmpeg path: D:\MyVoice\_internal\ffmpeg
+2026-06-04 21:07:17,938 - myvoice.utils.portable_paths - INFO - === End Diagnostics ===
+2026-06-04 21:07:17,939 - myvoice.utils.portable_paths - INFO - Initialized directory: D:\MyVoice\config
+2026-06-04 21:07:17,940 - myvoice.utils.portable_paths - INFO - Initialized directory: D:\MyVoice\logs
+2026-06-04 21:07:17,940 - myvoice.utils.portable_paths - INFO - Initialized directory: D:\MyVoice\voice_files
+2026-06-04 21:07:17,940 - myvoice.utils.portable_paths - INFO - Initialized directory: D:\MyVoice\whisper_models
+2026-06-04 21:07:17,941 - myvoice.utils.portable_paths - INFO - FFmpeg found at: D:\MyVoice\_internal\ffmpeg
+2026-06-04 21:07:17,942 - MyVoiceApp - INFO - Using portable config path: D:\MyVoice\config\settings.json
+2026-06-04 21:07:17,942 - ConfigurationManager - INFO - Service 'ConfigurationManager' status changed: stopped -> starting
+2026-06-04 21:07:17,942 - ConfigurationManager - INFO - Starting ConfigurationManager service
+2026-06-04 21:07:17,943 - ConfigurationManager - INFO - Loading settings from: D:\MyVoice\config\settings.json
+2026-06-04 21:07:17,954 - ConfigurationManager - INFO - Settings loaded successfully from D:\MyVoice\config\settings.json
+2026-06-04 21:07:17,955 - ConfigurationManager - INFO - Settings loading completed in 0.012s
+2026-06-04 21:07:17,955 - ConfigurationManager - INFO - Service 'ConfigurationManager' status changed: starting -> running
+2026-06-04 21:07:17,955 - ConfigurationManager - INFO - ConfigurationManager service started successfully
+2026-06-04 21:07:17,955 - MyVoiceApp - INFO - Configuration service started successfully
+2026-06-04 21:07:17,955 - MyVoiceApp - INFO - Loading application settings during startup
+2026-06-04 21:07:17,955 - ConfigurationManager - INFO - Loading settings from: D:\MyVoice\config\settings.json
+2026-06-04 21:07:17,955 - ConfigurationManager - INFO - Settings loaded successfully from D:\MyVoice\config\settings.json
+2026-06-04 21:07:17,956 - ConfigurationManager - INFO - Settings loading completed in 0.001s
+2026-06-04 21:07:17,956 - MyVoiceApp - INFO - Application settings loaded successfully
+2026-06-04 21:07:17,956 - MyVoiceApp - INFO - Application settings loaded and applied
+2026-06-04 21:07:17,956 - MyVoiceApp - INFO - SessionRegistry constructed on Qt main thread
+2026-06-04 21:07:17,956 - MyVoiceApp - INFO - PlaybackQueue constructed on Qt main thread
+2026-06-04 21:07:17,968 - myvoice.services.audio_coordinator - INFO - AudioCoordinator using SessionRegistry
+2026-06-04 21:07:17,969 - myvoice.services.audio_coordinator - INFO - AudioCoordinator initialized
+2026-06-04 21:07:17,969 - myvoice.services.audio_coordinator - INFO - Initializing AudioCoordinator with dual services
+2026-06-04 21:07:17,969 - myvoice.services.device_resilience_manager - INFO - DeviceResilienceManager initialized
+2026-06-04 21:07:17,969 - myvoice.services.device_resilience_manager - INFO - Initializing DeviceResilienceManager
+2026-06-04 21:07:17,969 - WindowsAudioClient - INFO - Using audio backend: PyAudio
+2026-06-04 21:07:17,970 - myvoice.services.integrations.audio_backend - INFO - Audio backend initialized: PyAudio
+2026-06-04 21:07:17,970 - myvoice.services.integrations.audio_backend - WARNING - Using standard PyAudio - WASAPI loopback not available. Consider installing PyAudioWPatch for better Windows 11 support
+2026-06-04 21:07:18,130 - myvoice.services.integrations.audio_backend - INFO - ============================================================
+2026-06-04 21:07:18,130 - myvoice.services.integrations.audio_backend - INFO - Audio Backend Information
+2026-06-04 21:07:18,130 - myvoice.services.integrations.audio_backend - INFO - ============================================================
+2026-06-04 21:07:18,130 - myvoice.services.integrations.audio_backend - INFO - Backend: PyAudio
+2026-06-04 21:07:18,130 - myvoice.services.integrations.audio_backend - INFO - PortAudio Version: PortAudio V19.7.0-devel, revision unknown (1246976)
+2026-06-04 21:07:18,130 - myvoice.services.integrations.audio_backend - INFO - WASAPI Loopback Support: False
+2026-06-04 21:07:18,130 - myvoice.services.integrations.audio_backend - INFO - Context Manager Support: False
+2026-06-04 21:07:18,130 - myvoice.services.integrations.audio_backend - INFO - ============================================================
+2026-06-04 21:07:18,130 - WindowsAudioClient - INFO - Windows Audio Client initialized
+2026-06-04 21:07:18,130 - WindowsAudioClient - INFO - Starting audio device monitoring
+2026-06-04 21:07:18,148 - WindowsAudioClient - INFO - Found 51 audio devices
+2026-06-04 21:07:18,149 - WindowsAudioClient - WARNING - Device monitoring is already active
+2026-06-04 21:07:18,149 - myvoice.services.device_resilience_manager - INFO - Device monitoring started (interval: 2.0s)
+2026-06-04 21:07:18,149 - myvoice.services.device_resilience_manager - INFO - DeviceResilienceManager initialized successfully
+2026-06-04 21:07:18,149 - myvoice.services.audio_coordinator - INFO - DeviceResilienceManager initialized successfully
+2026-06-04 21:07:18,149 - myvoice.services.monitor_audio_service - INFO - MonitorAudioService initialized
+2026-06-04 21:07:18,149 - WindowsAudioClient - INFO - Using audio backend: PyAudio
+2026-06-04 21:07:18,150 - myvoice.services.integrations.audio_backend - INFO - Audio backend initialized: PyAudio
+2026-06-04 21:07:18,150 - myvoice.services.integrations.audio_backend - WARNING - Using standard PyAudio - WASAPI loopback not available. Consider installing PyAudioWPatch for better Windows 11 support
+2026-06-04 21:07:18,150 - myvoice.services.integrations.audio_backend - INFO - ============================================================
+2026-06-04 21:07:18,150 - myvoice.services.integrations.audio_backend - INFO - Audio Backend Information
+2026-06-04 21:07:18,150 - myvoice.services.integrations.audio_backend - INFO - ============================================================
+2026-06-04 21:07:18,150 - myvoice.services.integrations.audio_backend - INFO - Backend: PyAudio
+2026-06-04 21:07:18,150 - myvoice.services.integrations.audio_backend - INFO - PortAudio Version: PortAudio V19.7.0-devel, revision unknown (1246976)
+2026-06-04 21:07:18,150 - myvoice.services.integrations.audio_backend - INFO - WASAPI Loopback Support: False
+2026-06-04 21:07:18,150 - myvoice.services.integrations.audio_backend - INFO - Context Manager Support: False
+2026-06-04 21:07:18,150 - myvoice.services.integrations.audio_backend - INFO - ============================================================
+2026-06-04 21:07:18,150 - WindowsAudioClient - INFO - Windows Audio Client initialized
+2026-06-04 21:07:18,150 - WindowsAudioClient - INFO - ============================================================
+2026-06-04 21:07:18,150 - WindowsAudioClient - INFO - Audio System Information
+2026-06-04 21:07:18,150 - WindowsAudioClient - INFO - ============================================================
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO - PortAudio Version: PortAudio V19.7.0-devel, revision unknown (1246976)
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO - 
+Available Host APIs: 4
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO -   [0] MME
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO -       Devices: 13
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO -       Default Input: 1
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO -       Default Output: 6
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO -   [1] Windows DirectSound
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO -       Devices: 13
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO -       Default Input: 13
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO -       Default Output: 18
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO -   [2] Windows WASAPI
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO -       Devices: 11
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO -       Default Input: 34
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO -       Default Output: 31
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO -   [3] Windows WDM-KS
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO -       Devices: 14
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO -       Default Input: 41
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO -       Default Output: 49
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO - 
+Default Devices:
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO -   Input: Microphone (NVIDIA Broadcast) (index 1)
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO -   Output: NS19D220NA16A (NVIDIA High Defi (index 6)
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO - 
+WASAPI Support:
+2026-06-04 21:07:18,151 - WindowsAudioClient - INFO - Found WASAPI host API at index 2: Windows WASAPI
+2026-06-04 21:07:18,152 - WindowsAudioClient - INFO -   WASAPI is AVAILABLE at host API index 2
+2026-06-04 21:07:18,152 - WindowsAudioClient - INFO -   DirectSound is available at host API index 1
+2026-06-04 21:07:18,152 - WindowsAudioClient - INFO - ============================================================
+2026-06-04 21:07:18,152 - myvoice.services.monitor_audio_service - INFO - MonitorAudioService initialized successfully
+2026-06-04 21:07:18,152 - myvoice.services.audio_coordinator - INFO - MonitorAudioService initialized successfully
+2026-06-04 21:07:18,152 - myvoice.services.virtual_microphone_service - INFO - VirtualMicrophoneService initialized
+2026-06-04 21:07:18,152 - myvoice.services.virtual_microphone_service - ERROR - Virtual device -1 validation failed: [Errno -9996] Invalid device info
+2026-06-04 21:07:18,152 - myvoice.services.virtual_microphone_service - WARNING - Default virtual device -1 not available
+2026-06-04 21:07:18,152 - myvoice.services.virtual_microphone_service - INFO - VirtualMicrophoneService initialized successfully
+2026-06-04 21:07:18,152 - myvoice.services.audio_coordinator - INFO - VirtualMicrophoneService initialized successfully
+2026-06-04 21:07:18,152 - myvoice.services.microphone_capture_service - INFO - MicrophoneCaptureService initialized
+2026-06-04 21:07:18,152 - myvoice.services.microphone_capture_service - INFO - MicrophoneCaptureService initialized successfully
+2026-06-04 21:07:18,152 - myvoice.services.audio_coordinator - INFO - MicrophoneCaptureService initialized successfully
+2026-06-04 21:07:18,152 - myvoice.services.audio_mixer_service - INFO - AudioMixerService initialized
+2026-06-04 21:07:18,152 - myvoice.services.audio_coordinator - INFO - AudioMixerService initialized
+2026-06-04 21:07:18,152 - myvoice.services.audio_coordinator - INFO - AudioCoordinator initialized - Monitor: OK, Virtual: OK
+2026-06-04 21:07:18,152 - MyVoiceApp - INFO - Audio coordinator started successfully
+2026-06-04 21:07:18,152 - MyVoiceApp - INFO - Audio coordinator started successfully
+2026-06-04 21:07:18,153 - MyVoiceApp - INFO - First boot detected - attempting VB-Cable auto-detection
+2026-06-04 21:07:18,154 - VirtualDeviceCompatibilityService - INFO - Virtual Device Compatibility Service initialized
+2026-06-04 21:07:18,154 - VirtualDeviceCompatibilityService - INFO - Service 'VirtualDeviceCompatibilityService' status changed: stopped -> starting
+2026-06-04 21:07:18,154 - VirtualDeviceCompatibilityService - INFO - Detecting virtual audio drivers
+2026-06-04 21:07:18,155 - VirtualDeviceCompatibilityService - INFO - Virtual driver detection complete: 0 drivers installed
+2026-06-04 21:07:18,155 - VirtualDeviceCompatibilityService - INFO - Service 'VirtualDeviceCompatibilityService' status changed: starting -> running
+2026-06-04 21:07:18,155 - VirtualDeviceCompatibilityService - INFO - Virtual Device Compatibility Service started
+2026-06-04 21:07:18,155 - VirtualDeviceCompatibilityService - INFO - Auto-detecting VB-Cable device
+2026-06-04 21:07:18,155 - VirtualDeviceCompatibilityService - INFO - VB-Cable driver not detected as installed
+2026-06-04 21:07:18,155 - MyVoiceApp - INFO - VB-Cable device not detected - virtual microphone not configured
+2026-06-04 21:07:18,155 - VirtualDeviceCompatibilityService - INFO - Service 'VirtualDeviceCompatibilityService' status changed: running -> stopping
+2026-06-04 21:07:18,155 - VirtualDeviceCompatibilityService - INFO - Service 'VirtualDeviceCompatibilityService' status changed: stopping -> stopped
+2026-06-04 21:07:18,155 - VirtualDeviceCompatibilityService - INFO - Virtual Device Compatibility Service stopped
+2026-06-04 21:07:18,156 - MyVoiceApp - INFO - Initializing TTS service with quality tier: small
+2026-06-04 21:07:18,156 - QwenTTSService - INFO - QwenTTSService using SessionRegistry
+2026-06-04 21:07:18,156 - myvoice.metrics - INFO - metric
+2026-06-04 21:07:18,156 - ModelRegistry - INFO - ModelRegistry initialized: device=cuda:0, dtype=torch.bfloat16, precision_source='app_settings_auto_ampere', quality_tier=small, compile_engaged='deferred'
+2026-06-04 21:07:18,156 - QwenTTSService - INFO - QwenTTSService initialized: device=auto, cache_dir=C:\Users\AL301\AppData\Local\Temp
+2026-06-04 21:07:18,156 - QwenTTSService - INFO - Service 'QwenTTSService' status changed: stopped -> starting
+2026-06-04 21:07:18,156 - QwenTTSService - INFO - Starting QwenTTSService
+2026-06-04 21:07:18,156 - QwenTTSService - INFO - Service 'QwenTTSService' status changed: starting -> running
+2026-06-04 21:07:18,156 - QwenTTSService - INFO - QwenTTSService started (models will load on first use)
+2026-06-04 21:07:18,156 - MyVoiceApp - INFO - TTS health status callback received: healthy, main_window exists: False
+2026-06-04 21:07:18,156 - MyVoiceApp - WARNING - Main window not initialized yet, cannot update TTS status
+2026-06-04 21:07:18,156 - MyVoiceApp - INFO - TTS service started successfully
+2026-06-04 21:07:18,157 - MyVoiceApp - INFO - TTS service started successfully
+2026-06-04 21:07:18,157 - MyVoiceApp - INFO - Using voice directory: D:\MyVoice\voice_files
+2026-06-04 21:07:18,157 - VoiceProfileManager - INFO - Service 'VoiceProfileManager' status changed: stopped -> starting
+2026-06-04 21:07:18,157 - VoiceProfileManager - INFO - Starting VoiceProfileManager service
+2026-06-04 21:07:18,175 - VoiceProfileManager - INFO - Loaded 12 profiles from cache, invalidated 0
+2026-06-04 21:07:18,176 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Vivian (Bright, slightly edgy young female)
+2026-06-04 21:07:18,176 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Serena (Warm, gentle young female)
+2026-06-04 21:07:18,176 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Uncle_Fu (Seasoned male, low and mellow voice)
+2026-06-04 21:07:18,176 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Dylan (Youthful Beijing male)
+2026-06-04 21:07:18,176 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Eric (Lively Chengdu male)
+2026-06-04 21:07:18,176 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Ryan (Dynamic male with strong rhythm)
+2026-06-04 21:07:18,176 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Aiden (Sunny American male)
+2026-06-04 21:07:18,176 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Ono_Anna (Playful Japanese female)
+2026-06-04 21:07:18,176 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Sohee (Warm Korean female)
+2026-06-04 21:07:18,176 - VoiceProfileManager - INFO - Initialized 9 bundled voice profiles
+2026-06-04 21:07:18,176 - VoiceProfileManager - INFO - Performing initial directory scan
+2026-06-04 21:07:18,176 - VoiceProfileManager - INFO - Scanning voice directory: D:\MyVoice\voice_files (incremental=True)
+2026-06-04 21:07:18,177 - VoiceProfileManager - INFO - Found 12 WAV files, processing 12 (cached: 0)
+2026-06-04 21:07:18,179 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Anna-F (7.4s) - Anna-F.wav
+2026-06-04 21:07:18,180 - MyVoiceApp - INFO - Setting up device change monitoring
+2026-06-04 21:07:18,181 - myvoice.services.audio_coordinator - INFO - Starting device monitoring
+2026-06-04 21:07:18,181 - myvoice.services.audio_coordinator - INFO - Device monitoring started
+2026-06-04 21:07:18,181 - MyVoiceApp - INFO - Device change monitoring started successfully
+2026-06-04 21:07:18,181 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Autumn-Southern-F (8.2s) - Autumn-Southern-F.wav
+2026-06-04 21:07:18,182 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Crissy-Brit-F (8.7s) - Crissy-Brit-F.wav
+2026-06-04 21:07:18,182 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Eddy-Brit-M (3.9s) - Eddy-Brit-M.wav
+2026-06-04 21:07:18,183 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Elliot-Brit-M (8.4s) - Elliot-Brit-M.wav
+2026-06-04 21:07:18,184 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Jules-Brit-M (9.5s) - Jules-Brit-M.wav
+2026-06-04 21:07:18,184 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] June-Southern-F (8.3s) - June-Southern-F.wav
+2026-06-04 21:07:18,185 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Sally-Southern-F (9.1s) - Sally-Southern-F.wav
+2026-06-04 21:07:18,186 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Sarira-F (9.7s) - Sarira-F.wav
+2026-06-04 21:07:18,186 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Suspense-M (8.7s) - Suspense-M.wav
+2026-06-04 21:07:18,186 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Trixie-Southern-F (9.6s) - Trixie-Southern-F.wav
+2026-06-04 21:07:18,189 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Bella-F (9.2s) - Bella-F.wav
+2026-06-04 21:07:18,192 - VoiceProfileManager - INFO - Directory scan completed: 12/12 valid profiles (12 processed, 0 cached) in 0.01s
+2026-06-04 21:07:18,192 - VoiceProfileManager - INFO - Service 'VoiceProfileManager' status changed: starting -> running
+2026-06-04 21:07:18,192 - VoiceProfileManager - INFO - VoiceProfileManager service started successfully
+2026-06-04 21:07:18,192 - MyVoiceApp - INFO - Voice profile service started successfully
+2026-06-04 21:07:18,192 - MyVoiceApp - INFO - Voice profile service started successfully
+2026-06-04 21:07:18,192 - MyVoiceApp - INFO - Preloading model for cached active profile: Base (Clone)
+2026-06-04 21:07:18,199 - ModelRegistry - INFO - Loading model: Base (Clone)
+2026-06-04 21:07:18,227 - QwenTTSService - INFO - Prompt is already library VoiceClonePromptItem, returning as-is
+2026-06-04 21:07:18,227 - QwenTTSService - INFO - Voice clone prompt cache: hydrated 1/12 CLONED voices for tier small from disk
+2026-06-04 21:07:18,228 - MyVoiceApp - INFO - Voice clone prompt cache hydration: (1, 12)
+2026-06-04 21:07:18,228 - myvoice.metrics - INFO - metric
+2026-06-04 21:07:18,386 - qwen_tts.core.models.configuration_qwen3_tts - INFO - talker_config is None. Initializing talker model with default values
+2026-06-04 21:07:18,386 - qwen_tts.core.models.configuration_qwen3_tts - INFO - speaker_encoder_config is None. Initializing talker model with default values
+2026-06-04 21:07:18,386 - qwen_tts.core.models.configuration_qwen3_tts - INFO - code_predictor_config is None. Initializing code_predictor model with default values
+2026-06-04 21:07:18,387 - qwen_tts.core.models.configuration_qwen3_tts - INFO - code_predictor_config is None. Initializing code_predictor model with default values
+2026-06-04 21:07:18,693 - MyVoiceApp - INFO - Voice restoration scheduled after initialization delay
+2026-06-04 21:07:19,194 - MyVoiceApp - INFO - Restoring voice selection from saved configuration
+2026-06-04 21:07:19,194 - ConfigurationManager - INFO - Attempting to restore voice selection: Sarira-F
+2026-06-04 21:07:19,194 - ConfigurationManager - INFO - Successfully restored voice selection: Sarira-F
+2026-06-04 21:07:19,194 - VoiceProfileManager - INFO - Set active voice profile: Sarira-F
+2026-06-04 21:07:19,195 - MyVoiceApp - INFO - Successfully restored voice selection: Sarira-F
+2026-06-04 21:07:19,195 - MyVoiceApp - INFO - No voice selection to restore
+2026-06-04 21:07:24,903 - qwen_tts.core.tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 - INFO - encoder_config is None. Initializing encoder with default values
+2026-06-04 21:07:24,903 - qwen_tts.core.tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 - INFO - decoder_config is None. Initializing decoder with default values
+2026-06-04 21:07:29,469 - myvoice.services.tts_streaming.compile_cache - INFO - TORCHINDUCTOR_CACHE_DIR set to C:\Users\AL301\AppData\Local\MyVoice\torch_compile_cache\a7ea1bcfd1233175
+2026-06-04 21:07:30,224 - myvoice.metrics - INFO - metric
+2026-06-04 21:07:30,224 - myvoice.services.tts_streaming.torch_runtime - INFO - torch.compile + CUDA Graph engaged (decode_window_frames=30, cuda_capability=8.6, cache=cold)
+2026-06-04 21:07:30,224 - ModelRegistry - INFO - ModelRegistry model loaded: model_type=Qwen/Qwen3-TTS-12Hz-1.7B-Base, compile_engaged='True', compile_reason='engaged_cold_compile'
+2026-06-04 21:07:30,225 - ModelRegistry - INFO - Model Base (Clone) loaded successfully in 12.03s
+2026-06-04 21:07:30,225 - MyVoiceApp - INFO - Model Base (Clone) preloaded successfully
+2026-06-04 21:07:30,226 - MainWindow - INFO - MainWindow using SessionRegistry for TTS indicator substate
+2026-06-04 21:07:30,240 - ThemeManager - INFO - Successfully loaded theme: dark
+2026-06-04 21:07:30,355 - QuickSpeakService - INFO - QuickSpeakService initialized with profile: default
+2026-06-04 21:07:30,362 - QuickSpeakService - INFO - Loaded 15 Quick Speak entries from CSV
+2026-06-04 21:07:30,362 - MainWindow - INFO - Applying theme from settings: dark
+2026-06-04 21:07:30,367 - MainWindow - INFO - THEME DEBUG: Successfully applied theme from settings: dark
+2026-06-04 21:07:30,532 - ServiceStatusBar - WARNING - Service TTS already exists in status bar
+2026-06-04 21:07:30,533 - MainWindow - INFO - TTS service set for MainWindow: available
+2026-06-04 21:07:30,533 - MainWindow - INFO - Model ready: Base (Clone)
+2026-06-04 21:07:30,533 - MyVoiceApp - INFO - TTS health status callback received: healthy, main_window exists: True
+2026-06-04 21:07:30,533 - MyVoiceApp - INFO - TTS status initialized in UI: healthy
+2026-06-04 21:07:30,533 - MyVoiceApp - INFO - [MIC_DEBUG] ========================================
+2026-06-04 21:07:30,533 - MyVoiceApp - INFO - [MIC_DEBUG] _setup_mic_mixing_from_settings called
+2026-06-04 21:07:30,533 - MyVoiceApp - INFO - [MIC_DEBUG] mic_mixing_enabled: False
+2026-06-04 21:07:30,533 - MyVoiceApp - INFO - [MIC_DEBUG] mic_input_device_id: None
+2026-06-04 21:07:30,533 - MyVoiceApp - INFO - [MIC_DEBUG] virtual_microphone_device_id: None
+2026-06-04 21:07:30,533 - MyVoiceApp - INFO - [MIC_DEBUG] mic_monitor_running: False
+2026-06-04 21:07:30,534 - MyVoiceApp - INFO - [MIC_DEBUG] continuous_passthrough_running: False
+2026-06-04 21:07:30,534 - MyVoiceApp - INFO - [MIC_DEBUG] NOTE: Mic mixing is DISABLED - enable 'Enable Microphone Mixing' in settings
+2026-06-04 21:07:30,534 - MyVoiceApp - INFO - [MIC_DEBUG] ========================================
+2026-06-04 21:07:30,534 - myvoice.services.audio_coordinator - INFO - Mic mixing disabled
+2026-06-04 21:07:30,534 - myvoice.services.device_resilience_manager - INFO - Unregistered microphone device: unknown
+2026-06-04 21:07:30,534 - myvoice.services.audio_coordinator - INFO - Microphone capture stopped
+2026-06-04 21:07:30,534 - MyVoiceApp - INFO - MyVoice application initialization completed successfully
+2026-06-04 21:07:30,679 - __main__ - INFO - Exception handler UI callbacks configured
+2026-06-04 21:07:30,679 - __main__ - INFO - MyVoice application initialized successfully
+2026-06-04 21:07:50,650 - MainWindow - INFO - Starting TTS generation for: Here is some sample audio for lip sync testing....
+2026-06-04 21:07:50,650 - MyVoiceApp - INFO - TTS generation requested for text: Here is some sample audio for lip sync testing....
+2026-06-04 21:07:50,650 - MyVoiceApp - INFO - Voice type 'VoiceType.CLONED' does not support emotion, skipping instruct
+2026-06-04 21:07:50,650 - MyVoiceApp - INFO - TTS generation using voice profile: Sarira-F
+2026-06-04 21:07:50,650 - MyVoiceApp - INFO - TTS request for cloned voice 'Sarira-F' (no emotion support)
+2026-06-04 21:07:50,651 - MyVoiceApp - INFO - [DEBUG] Voice type: VoiceType.CLONED (value=cloned)
+2026-06-04 21:07:50,651 - MyVoiceApp - INFO - [DEBUG] file_path: D:\MyVoice\voice_files\Sarira-F.wav
+2026-06-04 21:07:50,651 - MyVoiceApp - INFO - [DEBUG] VoiceType.EMBEDDING = VoiceType.EMBEDDING, comparison = False
+2026-06-04 21:07:50,651 - MyVoiceApp - INFO - Using Base model for cloned voice with ICL mode (transcription available)
+2026-06-04 21:07:50,652 - myvoice.metrics - INFO - metric
+2026-06-04 21:07:50,652 - QwenTTSService - INFO - Starting TTS generation (TRUE_STREAM): model=Base (Clone), text='Here is some sample audio for lip sync testing....'
+2026-06-04 21:07:50,652 - MainWindow - INFO - Model loading: Loading Base (Clone)...
+2026-06-04 21:07:50,652 - MainWindow - INFO - Model ready: Base (Clone)
+2026-06-04 21:07:50,879 - qwen_tts.core.models.configuration_qwen3_tts - INFO - code_predictor_config is None. Initializing code_predictor model with default values
+2026-06-04 21:07:52,648 - MainWindow - INFO - TTS generation completed (stub) for: Here is some sample audio for ...
+2026-06-04 21:08:24,943 - myvoice.metrics - INFO - metric
+2026-06-04 21:08:24,943 - myvoice.metrics - INFO - metric
+2026-06-04 21:08:24,943 - myvoice.services.audio_coordinator - INFO - Streaming buffer: adaptive pre-buffer ENABLED — text_length=47 chars, T_a_estimate=3.76s, detected_vram=12.0 GiB (< 16 GiB threshold)
+2026-06-04 21:08:24,944 - myvoice.services.monitor_audio_service - INFO - Found 29 monitor devices
+2026-06-04 21:08:24,944 - myvoice.services.audio_coordinator - INFO - [WIN11-DEBUG] Monitor service health check result: True, health=(True, None)
+2026-06-04 21:08:24,993 - myvoice.services.monitor_audio_service - INFO - Started streaming session stream_1_1780628904: 1ch, 24000Hz, device=11
+2026-06-04 21:08:24,993 - myvoice.services.audio_coordinator - INFO - [WIN11-DEBUG] Virtual service health check result: True, health=(True, None)
+2026-06-04 21:08:24,993 - myvoice.services.virtual_microphone_service - INFO - Found 12 virtual microphone devices
+2026-06-04 21:08:25,028 - myvoice.services.virtual_microphone_service - INFO - Started virtual mic streaming session vstream_1_1780628905: 1ch, 24000Hz, device=5
+2026-06-04 21:08:25,028 - myvoice.services.audio_coordinator - INFO - Streaming sessions started: {'monitor': 'stream_1_1780628904', 'virtual': 'vstream_1_1780628905'}
+2026-06-04 21:08:25,028 - MyVoiceApp - INFO - Progressive playback session opened: sample_rate=24000Hz, monitor_session=stream_1_1780628904, virtual_session=vstream_1_1780628905
+2026-06-04 21:08:25,028 - myvoice.metrics - INFO - metric
+2026-06-04 21:08:25,028 - myvoice.metrics - INFO - metric
+2026-06-04 21:08:25,347 - myvoice.metrics - INFO - metric
+2026-06-04 21:08:25,347 - myvoice.metrics - INFO - metric
+2026-06-04 21:08:25,348 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=44970 dispatched_bytes=140044 is_final=False batch_idx=0/1 total_bytes_so_far=140044
+2026-06-04 21:08:25,355 - myvoice.metrics - INFO - metric
+2026-06-04 21:08:25,355 - QwenTTSService - INFO - TTS generation complete (TRUE_STREAM): 70022 samples, 2 chunks, 34.70s total, 34.29s first chunk
+2026-06-04 21:08:25,355 - MyVoiceApp - INFO - TTS generation completed successfully, 140088 bytes
+2026-06-04 21:08:25,356 - MyVoiceApp - INFO - Starting audio playback via AudioCoordinator
+2026-06-04 21:08:25,356 - MyVoiceApp - INFO - Progressive playback already active; skipping batch dispatch (queue_token=1df3bdb6-f004-43ca-b8ed-2cb364bb179e)
+2026-06-04 21:08:25,356 - MyVoiceApp - INFO - Audio playback dispatched successfully
+2026-06-04 21:08:28,117 - myvoice.metrics - INFO - metric
+2026-06-04 21:08:28,117 - myvoice.metrics - INFO - metric
+2026-06-04 21:08:28,118 - myvoice.services.audio_coordinator - INFO - stop_streaming_session called: wait_for_drain=True _streaming_buffer=set _stream_total_bytes=140044 _stream_first_write_ts=set _stream_last_chunk_bytes=140044
+2026-06-04 21:08:28,287 - myvoice.services.audio_coordinator - INFO - Drain calc: last_chunk_bytes=140044 total_bytes=140044 bytes_per_sec=48000 last_chunk_dur=2.918s time_since_last_write=2.937s last_chunk_remaining=0.000s total_audio_dur=2.918s playback_elapsed=2.937s total_queued=0.000s drain_wait=0.800s
+2026-06-04 21:08:29,099 - myvoice.services.audio_coordinator - INFO - Drain wait complete: planned=0.800s actual=0.813s
+2026-06-04 21:08:29,311 - myvoice.services.monitor_audio_service - INFO - Streaming session stopped
+2026-06-04 21:08:29,497 - myvoice.services.virtual_microphone_service - INFO - Virtual mic streaming session stopped
+2026-06-04 21:08:29,498 - myvoice.services.audio_coordinator - INFO - Streaming sessions stopped: {'monitor': True, 'virtual': True}
+2026-06-04 21:09:11,010 - MainWindow - INFO - MainWindow closing
+2026-06-04 21:09:11,011 - MainWindow - INFO - Background process cleanup completed
+2026-06-04 21:09:11,016 - __main__ - INFO - Force exit failsafe armed (10s timeout)
+2026-06-04 21:09:11,016 - __main__ - INFO - Application shutting down - cleaning up services...
+2026-06-04 21:09:11,016 - MyVoiceApp - INFO - Starting async cleanup - stopping services...
+2026-06-04 21:09:11,017 - QwenTTSService - INFO - Service 'QwenTTSService' status changed: running -> stopping
+2026-06-04 21:09:11,017 - QwenTTSService - INFO - Stopping QwenTTSService
+2026-06-04 21:09:11,017 - ModelRegistry - INFO - Unloading model: Base (Clone)
+2026-06-04 21:09:11,374 - ModelRegistry - INFO - Model Base (Clone) unloaded
+2026-06-04 21:09:11,374 - ModelRegistry - INFO - Shutting down ModelRegistry
+2026-06-04 21:09:11,674 - ModelRegistry - INFO - ModelRegistry shutdown complete
+2026-06-04 21:09:11,674 - QwenTTSService - INFO - Service 'QwenTTSService' status changed: stopping -> stopped
+2026-06-04 21:09:11,674 - QwenTTSService - INFO - QwenTTSService stopped
+2026-06-04 21:09:11,674 - MyVoiceApp - INFO - TTS service stopped
+2026-06-04 21:09:11,674 - ConfigurationManager - INFO - Service 'ConfigurationManager' status changed: running -> stopping
+2026-06-04 21:09:11,674 - ConfigurationManager - INFO - Stopping ConfigurationManager service
+2026-06-04 21:09:11,708 - ConfigurationManager - INFO - Settings saved successfully to D:\MyVoice\config\settings.json in 0.034s
+2026-06-04 21:09:11,709 - ConfigurationManager - INFO - Service 'ConfigurationManager' status changed: stopping -> stopped
+2026-06-04 21:09:11,709 - ConfigurationManager - INFO - ConfigurationManager service stopped successfully
+2026-06-04 21:09:11,709 - VoiceProfileManager - INFO - Service 'VoiceProfileManager' status changed: running -> stopping
+2026-06-04 21:09:11,709 - VoiceProfileManager - INFO - Stopping VoiceProfileManager service
+2026-06-04 21:09:11,711 - VoiceProfileManager - INFO - Service 'VoiceProfileManager' status changed: stopping -> stopped
+2026-06-04 21:09:11,711 - VoiceProfileManager - INFO - VoiceProfileManager service stopped successfully
+2026-06-04 21:09:11,711 - myvoice.services.audio_coordinator - INFO - Shutting down AudioCoordinator
+2026-06-04 21:09:11,711 - myvoice.services.monitor_audio_service - INFO - Shutting down MonitorAudioService
+2026-06-04 21:09:11,711 - myvoice.services.monitor_audio_service - INFO - MonitorAudioService shutdown complete
+2026-06-04 21:09:11,711 - myvoice.services.virtual_microphone_service - INFO - Shutting down VirtualMicrophoneService
+2026-06-04 21:09:11,712 - myvoice.services.virtual_microphone_service - INFO - VirtualMicrophoneService shutdown complete
+2026-06-04 21:09:11,712 - myvoice.services.microphone_capture_service - INFO - Shutting down MicrophoneCaptureService
+2026-06-04 21:09:11,712 - myvoice.services.microphone_capture_service - INFO - MicrophoneCaptureService shutdown complete
+2026-06-04 21:09:11,712 - myvoice.services.audio_coordinator - INFO - Monitor service shutdown successful
+2026-06-04 21:09:11,712 - myvoice.services.audio_coordinator - INFO - Virtual service shutdown successful
+2026-06-04 21:09:11,712 - myvoice.services.audio_coordinator - INFO - MicCapture service shutdown successful
+2026-06-04 21:09:11,712 - myvoice.services.device_resilience_manager - INFO - Shutting down DeviceResilienceManager
+2026-06-04 21:09:11,712 - WindowsAudioClient - INFO - Stopping audio device monitoring
+2026-06-04 21:09:11,712 - WindowsAudioClient - INFO - Closing Windows Audio Client
+2026-06-04 21:09:11,712 - myvoice.services.device_resilience_manager - INFO - DeviceResilienceManager shutdown complete
+2026-06-04 21:09:11,712 - myvoice.services.audio_coordinator - INFO - AudioCoordinator shutdown complete
+2026-06-04 21:09:11,712 - MyVoiceApp - INFO - Releasing service references...
+2026-06-04 21:09:11,712 - MyVoiceApp - INFO - Running garbage collection...
+2026-06-04 21:09:12,604 - MyVoiceApp - INFO - CUDA cache cleared
+2026-06-04 21:09:12,604 - MyVoiceApp - INFO - Async cleanup complete
+2026-06-04 21:09:12,605 - __main__ - INFO - Cleanup complete, exiting normally...
+2026-06-04 21:09:12,605 - MyVoiceApp - INFO - Application shutting down
+2026-06-04 21:09:12,605 - MyVoiceApp - WARNING - _cleanup_services() is deprecated - use cleanup_async() instead
+2026-06-04 21:09:12,632 - __main__ - INFO - MyVoice application exited with code: 0
+2026-06-04 21:09:12,633 - __main__ - INFO - Forcing process termination...
+2026-09-14 19:05:06,067 - __main__ - INFO - Starting MyVoice V2 application with qasync event loop
+2026-09-14 19:05:06,098 - myvoice.metrics - INFO - metric
+2026-09-14 19:05:06,098 - myvoice.services.tts_streaming.torch_runtime - INFO - TF32 + cuDNN benchmark enabled (device_capability=8.6)
+2026-09-14 19:05:06,098 - GlobalExceptionHandler - INFO - Global exception handler installed
+2026-09-14 19:05:06,098 - __main__ - INFO - Global exception handler installed
+2026-09-14 19:05:06,157 - __main__ - INFO - qasync event loop created and set as default
+2026-09-14 19:05:07,269 - MyVoiceApp - INFO - Initializing MyVoice application components asynchronously
+2026-09-14 19:05:07,269 - myvoice.utils.portable_paths - INFO - === Portable Mode Diagnostics ===
+2026-09-14 19:05:07,269 - myvoice.utils.portable_paths - INFO - Portable mode: True
+2026-09-14 19:05:07,270 - myvoice.utils.portable_paths - INFO - Application root: D:\MyVoice
+2026-09-14 19:05:07,270 - myvoice.utils.portable_paths - INFO - Data root: D:\MyVoice
+2026-09-14 19:05:07,270 - myvoice.utils.portable_paths - INFO - Config path: D:\MyVoice\config
+2026-09-14 19:05:07,270 - myvoice.utils.portable_paths - INFO - Logs path: D:\MyVoice\logs
+2026-09-14 19:05:07,271 - myvoice.utils.portable_paths - INFO - Voice files path: D:\MyVoice\voice_files
+2026-09-14 19:05:07,271 - myvoice.utils.portable_paths - INFO - FFmpeg path: D:\MyVoice\_internal\ffmpeg
+2026-09-14 19:05:07,271 - myvoice.utils.portable_paths - INFO - === End Diagnostics ===
+2026-09-14 19:05:07,272 - myvoice.utils.portable_paths - INFO - Initialized directory: D:\MyVoice\config
+2026-09-14 19:05:07,272 - myvoice.utils.portable_paths - INFO - Initialized directory: D:\MyVoice\logs
+2026-09-14 19:05:07,272 - myvoice.utils.portable_paths - INFO - Initialized directory: D:\MyVoice\voice_files
+2026-09-14 19:05:07,272 - myvoice.utils.portable_paths - INFO - Initialized directory: D:\MyVoice\whisper_models
+2026-09-14 19:05:07,273 - myvoice.utils.portable_paths - INFO - FFmpeg found at: D:\MyVoice\_internal\ffmpeg
+2026-09-14 19:05:07,275 - MyVoiceApp - INFO - Using portable config path: D:\MyVoice\config\settings.json
+2026-09-14 19:05:07,275 - ConfigurationManager - INFO - Service 'ConfigurationManager' status changed: stopped -> starting
+2026-09-14 19:05:07,275 - ConfigurationManager - INFO - Starting ConfigurationManager service
+2026-09-14 19:05:07,275 - ConfigurationManager - INFO - Loading settings from: D:\MyVoice\config\settings.json
+2026-09-14 19:05:07,277 - ConfigurationManager - INFO - Settings loaded successfully from D:\MyVoice\config\settings.json
+2026-09-14 19:05:07,277 - ConfigurationManager - INFO - Settings loading completed in 0.002s
+2026-09-14 19:05:07,277 - ConfigurationManager - INFO - Service 'ConfigurationManager' status changed: starting -> running
+2026-09-14 19:05:07,277 - ConfigurationManager - INFO - ConfigurationManager service started successfully
+2026-09-14 19:05:07,277 - MyVoiceApp - INFO - Configuration service started successfully
+2026-09-14 19:05:07,278 - MyVoiceApp - INFO - Loading application settings during startup
+2026-09-14 19:05:07,278 - ConfigurationManager - INFO - Loading settings from: D:\MyVoice\config\settings.json
+2026-09-14 19:05:07,278 - ConfigurationManager - INFO - Settings loaded successfully from D:\MyVoice\config\settings.json
+2026-09-14 19:05:07,278 - ConfigurationManager - INFO - Settings loading completed in 0.000s
+2026-09-14 19:05:07,278 - MyVoiceApp - INFO - Application settings loaded successfully
+2026-09-14 19:05:07,278 - MyVoiceApp - INFO - Application settings loaded and applied
+2026-09-14 19:05:07,279 - MyVoiceApp - INFO - SessionRegistry constructed on Qt main thread
+2026-09-14 19:05:07,279 - MyVoiceApp - INFO - PlaybackQueue constructed on Qt main thread
+2026-09-14 19:05:07,294 - myvoice.services.audio_coordinator - INFO - AudioCoordinator using SessionRegistry
+2026-09-14 19:05:07,294 - myvoice.services.audio_coordinator - INFO - AudioCoordinator initialized
+2026-09-14 19:05:07,294 - myvoice.services.audio_coordinator - INFO - Initializing AudioCoordinator with dual services
+2026-09-14 19:05:07,295 - myvoice.services.device_resilience_manager - INFO - DeviceResilienceManager initialized
+2026-09-14 19:05:07,295 - myvoice.services.device_resilience_manager - INFO - Initializing DeviceResilienceManager
+2026-09-14 19:05:07,295 - WindowsAudioClient - INFO - Using audio backend: PyAudio
+2026-09-14 19:05:07,296 - myvoice.services.integrations.audio_backend - INFO - Audio backend initialized: PyAudio
+2026-09-14 19:05:07,296 - myvoice.services.integrations.audio_backend - WARNING - Using standard PyAudio - WASAPI loopback not available. Consider installing PyAudioWPatch for better Windows 11 support
+2026-09-14 19:05:07,582 - myvoice.services.integrations.audio_backend - INFO - ============================================================
+2026-09-14 19:05:07,583 - myvoice.services.integrations.audio_backend - INFO - Audio Backend Information
+2026-09-14 19:05:07,583 - myvoice.services.integrations.audio_backend - INFO - ============================================================
+2026-09-14 19:05:07,583 - myvoice.services.integrations.audio_backend - INFO - Backend: PyAudio
+2026-09-14 19:05:07,583 - myvoice.services.integrations.audio_backend - INFO - PortAudio Version: PortAudio V19.7.0-devel, revision unknown (1246976)
+2026-09-14 19:05:07,583 - myvoice.services.integrations.audio_backend - INFO - WASAPI Loopback Support: False
+2026-09-14 19:05:07,583 - myvoice.services.integrations.audio_backend - INFO - Context Manager Support: False
+2026-09-14 19:05:07,583 - myvoice.services.integrations.audio_backend - INFO - ============================================================
+2026-09-14 19:05:07,583 - WindowsAudioClient - INFO - Windows Audio Client initialized
+2026-09-14 19:05:07,583 - WindowsAudioClient - INFO - Starting audio device monitoring
+2026-09-14 19:05:07,624 - WindowsAudioClient - INFO - Found 123 audio devices
+2026-09-14 19:05:07,625 - WindowsAudioClient - WARNING - Device monitoring is already active
+2026-09-14 19:05:07,625 - myvoice.services.device_resilience_manager - INFO - Device monitoring started (interval: 2.0s)
+2026-09-14 19:05:07,625 - myvoice.services.device_resilience_manager - INFO - DeviceResilienceManager initialized successfully
+2026-09-14 19:05:07,625 - myvoice.services.audio_coordinator - INFO - DeviceResilienceManager initialized successfully
+2026-09-14 19:05:07,625 - myvoice.services.monitor_audio_service - INFO - MonitorAudioService initialized
+2026-09-14 19:05:07,625 - WindowsAudioClient - INFO - Using audio backend: PyAudio
+2026-09-14 19:05:07,625 - myvoice.services.integrations.audio_backend - INFO - Audio backend initialized: PyAudio
+2026-09-14 19:05:07,625 - myvoice.services.integrations.audio_backend - WARNING - Using standard PyAudio - WASAPI loopback not available. Consider installing PyAudioWPatch for better Windows 11 support
+2026-09-14 19:05:07,626 - myvoice.services.integrations.audio_backend - INFO - ============================================================
+2026-09-14 19:05:07,626 - myvoice.services.integrations.audio_backend - INFO - Audio Backend Information
+2026-09-14 19:05:07,626 - myvoice.services.integrations.audio_backend - INFO - ============================================================
+2026-09-14 19:05:07,626 - myvoice.services.integrations.audio_backend - INFO - Backend: PyAudio
+2026-09-14 19:05:07,626 - myvoice.services.integrations.audio_backend - INFO - PortAudio Version: PortAudio V19.7.0-devel, revision unknown (1246976)
+2026-09-14 19:05:07,626 - myvoice.services.integrations.audio_backend - INFO - WASAPI Loopback Support: False
+2026-09-14 19:05:07,626 - myvoice.services.integrations.audio_backend - INFO - Context Manager Support: False
+2026-09-14 19:05:07,626 - myvoice.services.integrations.audio_backend - INFO - ============================================================
+2026-09-14 19:05:07,626 - WindowsAudioClient - INFO - Windows Audio Client initialized
+2026-09-14 19:05:07,626 - WindowsAudioClient - INFO - ============================================================
+2026-09-14 19:05:07,626 - WindowsAudioClient - INFO - Audio System Information
+2026-09-14 19:05:07,626 - WindowsAudioClient - INFO - ============================================================
+2026-09-14 19:05:07,626 - WindowsAudioClient - INFO - PortAudio Version: PortAudio V19.7.0-devel, revision unknown (1246976)
+2026-09-14 19:05:07,626 - WindowsAudioClient - INFO - 
+Available Host APIs: 4
+2026-09-14 19:05:07,626 - WindowsAudioClient - INFO -   [0] MME
+2026-09-14 19:05:07,626 - WindowsAudioClient - INFO -       Devices: 29
+2026-09-14 19:05:07,626 - WindowsAudioClient - INFO -       Default Input: 1
+2026-09-14 19:05:07,626 - WindowsAudioClient - INFO -       Default Output: 14
+2026-09-14 19:05:07,626 - WindowsAudioClient - INFO -   [1] Windows DirectSound
+2026-09-14 19:05:07,626 - WindowsAudioClient - INFO -       Devices: 29
+2026-09-14 19:05:07,626 - WindowsAudioClient - INFO -       Default Input: 29
+2026-09-14 19:05:07,627 - WindowsAudioClient - INFO -       Default Output: 42
+2026-09-14 19:05:07,627 - WindowsAudioClient - INFO -   [2] Windows WASAPI
+2026-09-14 19:05:07,627 - WindowsAudioClient - INFO -       Devices: 27
+2026-09-14 19:05:07,627 - WindowsAudioClient - INFO -       Default Input: 77
+2026-09-14 19:05:07,627 - WindowsAudioClient - INFO -       Default Output: 66
+2026-09-14 19:05:07,627 - WindowsAudioClient - INFO -   [3] Windows WDM-KS
+2026-09-14 19:05:07,627 - WindowsAudioClient - INFO -       Devices: 38
+2026-09-14 19:05:07,627 - WindowsAudioClient - INFO -       Default Input: 93
+2026-09-14 19:05:07,627 - WindowsAudioClient - INFO -       Default Output: 121
+2026-09-14 19:05:07,627 - WindowsAudioClient - INFO - 
+Default Devices:
+2026-09-14 19:05:07,627 - WindowsAudioClient - INFO -   Input: Voicemeeter Out B1 (VB-Audio Vo (index 1)
+2026-09-14 19:05:07,627 - WindowsAudioClient - INFO -   Output: NS19D220NA16A (NVIDIA High Defi (index 14)
+2026-09-14 19:05:07,627 - WindowsAudioClient - INFO - 
+WASAPI Support:
+2026-09-14 19:05:07,627 - WindowsAudioClient - INFO - Found WASAPI host API at index 2: Windows WASAPI
+2026-09-14 19:05:07,627 - WindowsAudioClient - INFO -   WASAPI is AVAILABLE at host API index 2
+2026-09-14 19:05:07,627 - WindowsAudioClient - INFO -   DirectSound is available at host API index 1
+2026-09-14 19:05:07,627 - WindowsAudioClient - INFO - ============================================================
+2026-09-14 19:05:07,627 - myvoice.services.monitor_audio_service - WARNING - Default monitor device 11 not available
+2026-09-14 19:05:07,627 - myvoice.services.monitor_audio_service - INFO - MonitorAudioService initialized successfully
+2026-09-14 19:05:07,627 - myvoice.services.audio_coordinator - INFO - MonitorAudioService initialized successfully
+2026-09-14 19:05:07,627 - myvoice.services.virtual_microphone_service - INFO - VirtualMicrophoneService initialized
+2026-09-14 19:05:07,627 - myvoice.services.virtual_microphone_service - ERROR - Virtual device -1 validation failed: [Errno -9996] Invalid device info
+2026-09-14 19:05:07,627 - myvoice.services.virtual_microphone_service - WARNING - Default virtual device -1 not available
+2026-09-14 19:05:07,627 - myvoice.services.virtual_microphone_service - INFO - VirtualMicrophoneService initialized successfully
+2026-09-14 19:05:07,627 - myvoice.services.audio_coordinator - INFO - VirtualMicrophoneService initialized successfully
+2026-09-14 19:05:07,628 - myvoice.services.microphone_capture_service - INFO - MicrophoneCaptureService initialized
+2026-09-14 19:05:07,628 - myvoice.services.microphone_capture_service - INFO - MicrophoneCaptureService initialized successfully
+2026-09-14 19:05:07,628 - myvoice.services.audio_coordinator - INFO - MicrophoneCaptureService initialized successfully
+2026-09-14 19:05:07,628 - myvoice.services.audio_mixer_service - INFO - AudioMixerService initialized
+2026-09-14 19:05:07,628 - myvoice.services.audio_coordinator - INFO - AudioMixerService initialized
+2026-09-14 19:05:07,628 - myvoice.services.audio_coordinator - INFO - AudioCoordinator initialized - Monitor: OK, Virtual: OK
+2026-09-14 19:05:07,628 - MyVoiceApp - INFO - Audio coordinator started successfully
+2026-09-14 19:05:07,628 - MyVoiceApp - INFO - Audio coordinator started successfully
+2026-09-14 19:05:07,628 - MyVoiceApp - INFO - First boot detected - attempting VB-Cable auto-detection
+2026-09-14 19:05:07,629 - VirtualDeviceCompatibilityService - INFO - Virtual Device Compatibility Service initialized
+2026-09-14 19:05:07,629 - VirtualDeviceCompatibilityService - INFO - Service 'VirtualDeviceCompatibilityService' status changed: stopped -> starting
+2026-09-14 19:05:07,629 - VirtualDeviceCompatibilityService - INFO - Detecting virtual audio drivers
+2026-09-14 19:05:07,632 - VirtualDeviceCompatibilityService - INFO - Virtual driver detection complete: 0 drivers installed
+2026-09-14 19:05:07,632 - VirtualDeviceCompatibilityService - INFO - Service 'VirtualDeviceCompatibilityService' status changed: starting -> running
+2026-09-14 19:05:07,632 - VirtualDeviceCompatibilityService - INFO - Virtual Device Compatibility Service started
+2026-09-14 19:05:07,632 - VirtualDeviceCompatibilityService - INFO - Auto-detecting VB-Cable device
+2026-09-14 19:05:07,632 - VirtualDeviceCompatibilityService - INFO - VB-Cable driver not detected as installed
+2026-09-14 19:05:07,632 - MyVoiceApp - INFO - VB-Cable device not detected - virtual microphone not configured
+2026-09-14 19:05:07,632 - VirtualDeviceCompatibilityService - INFO - Service 'VirtualDeviceCompatibilityService' status changed: running -> stopping
+2026-09-14 19:05:07,632 - VirtualDeviceCompatibilityService - INFO - Service 'VirtualDeviceCompatibilityService' status changed: stopping -> stopped
+2026-09-14 19:05:07,632 - VirtualDeviceCompatibilityService - INFO - Virtual Device Compatibility Service stopped
+2026-09-14 19:05:07,632 - MyVoiceApp - INFO - Initializing TTS service with quality tier: small
+2026-09-14 19:05:07,632 - QwenTTSService - INFO - QwenTTSService using SessionRegistry
+2026-09-14 19:05:07,632 - myvoice.metrics - INFO - metric
+2026-09-14 19:05:07,632 - ModelRegistry - INFO - ModelRegistry initialized: device=cuda:0, dtype=torch.bfloat16, precision_source='app_settings_auto_ampere', quality_tier=small, compile_engaged='deferred'
+2026-09-14 19:05:07,633 - QwenTTSService - INFO - QwenTTSService initialized: device=auto, cache_dir=C:\Users\AL301\AppData\Local\Temp
+2026-09-14 19:05:07,633 - QwenTTSService - INFO - Service 'QwenTTSService' status changed: stopped -> starting
+2026-09-14 19:05:07,633 - QwenTTSService - INFO - Starting QwenTTSService
+2026-09-14 19:05:07,633 - QwenTTSService - INFO - Service 'QwenTTSService' status changed: starting -> running
+2026-09-14 19:05:07,633 - QwenTTSService - INFO - QwenTTSService started (models will load on first use)
+2026-09-14 19:05:07,633 - MyVoiceApp - INFO - TTS health status callback received: healthy, main_window exists: False
+2026-09-14 19:05:07,633 - MyVoiceApp - WARNING - Main window not initialized yet, cannot update TTS status
+2026-09-14 19:05:07,633 - MyVoiceApp - INFO - TTS service started successfully
+2026-09-14 19:05:07,633 - MyVoiceApp - INFO - TTS service started successfully
+2026-09-14 19:05:07,635 - MyVoiceApp - INFO - Using voice directory: D:\MyVoice\voice_files
+2026-09-14 19:05:07,635 - VoiceProfileManager - INFO - Service 'VoiceProfileManager' status changed: stopped -> starting
+2026-09-14 19:05:07,635 - VoiceProfileManager - INFO - Starting VoiceProfileManager service
+2026-09-14 19:05:07,645 - VoiceProfileManager - INFO - Loaded 12 profiles from cache, invalidated 0
+2026-09-14 19:05:07,645 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Vivian (Bright, slightly edgy young female)
+2026-09-14 19:05:07,645 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Serena (Warm, gentle young female)
+2026-09-14 19:05:07,645 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Uncle_Fu (Seasoned male, low and mellow voice)
+2026-09-14 19:05:07,646 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Dylan (Youthful Beijing male)
+2026-09-14 19:05:07,646 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Eric (Lively Chengdu male)
+2026-09-14 19:05:07,646 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Ryan (Dynamic male with strong rhythm)
+2026-09-14 19:05:07,646 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Aiden (Sunny American male)
+2026-09-14 19:05:07,646 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Ono_Anna (Playful Japanese female)
+2026-09-14 19:05:07,646 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Sohee (Warm Korean female)
+2026-09-14 19:05:07,646 - VoiceProfileManager - INFO - Initialized 9 bundled voice profiles
+2026-09-14 19:05:07,646 - VoiceProfileManager - INFO - Performing initial directory scan
+2026-09-14 19:05:07,646 - VoiceProfileManager - INFO - Scanning voice directory: D:\MyVoice\voice_files (incremental=True)
+2026-09-14 19:05:07,647 - VoiceProfileManager - INFO - Found 12 WAV files, processing 12 (cached: 0)
+2026-09-14 19:05:07,649 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Anna-F (7.4s) - Anna-F.wav
+2026-09-14 19:05:07,649 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Autumn-Southern-F (8.2s) - Autumn-Southern-F.wav
+2026-09-14 19:05:07,650 - MyVoiceApp - INFO - Setting up device change monitoring
+2026-09-14 19:05:07,650 - myvoice.services.audio_coordinator - INFO - Starting device monitoring
+2026-09-14 19:05:07,650 - myvoice.services.audio_coordinator - INFO - Device monitoring started
+2026-09-14 19:05:07,650 - MyVoiceApp - INFO - Device change monitoring started successfully
+2026-09-14 19:05:07,650 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Bella-F (9.2s) - Bella-F.wav
+2026-09-14 19:05:07,652 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Crissy-Brit-F (8.7s) - Crissy-Brit-F.wav
+2026-09-14 19:05:07,652 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Eddy-Brit-M (3.9s) - Eddy-Brit-M.wav
+2026-09-14 19:05:07,653 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Elliot-Brit-M (8.4s) - Elliot-Brit-M.wav
+2026-09-14 19:05:07,654 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Jules-Brit-M (9.5s) - Jules-Brit-M.wav
+2026-09-14 19:05:07,654 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] June-Southern-F (8.3s) - June-Southern-F.wav
+2026-09-14 19:05:07,655 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Sarira-F (9.7s) - Sarira-F.wav
+2026-09-14 19:05:07,655 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Sally-Southern-F (9.1s) - Sally-Southern-F.wav
+2026-09-14 19:05:07,655 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Suspense-M (8.7s) - Suspense-M.wav
+2026-09-14 19:05:07,656 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Trixie-Southern-F (9.6s) - Trixie-Southern-F.wav
+2026-09-14 19:05:07,658 - VoiceProfileManager - INFO - Directory scan completed: 12/12 valid profiles (12 processed, 0 cached) in 0.01s
+2026-09-14 19:05:07,658 - VoiceProfileManager - INFO - Service 'VoiceProfileManager' status changed: starting -> running
+2026-09-14 19:05:07,658 - VoiceProfileManager - INFO - VoiceProfileManager service started successfully
+2026-09-14 19:05:07,659 - MyVoiceApp - INFO - Voice profile service started successfully
+2026-09-14 19:05:07,659 - MyVoiceApp - INFO - Voice profile service started successfully
+2026-09-14 19:05:07,659 - MyVoiceApp - INFO - Preloading model for cached active profile: Base (Clone)
+2026-09-14 19:05:07,659 - ModelRegistry - INFO - Loading model: Base (Clone)
+2026-09-14 19:05:07,671 - QwenTTSService - INFO - Prompt is already library VoiceClonePromptItem, returning as-is
+2026-09-14 19:05:07,672 - QwenTTSService - INFO - Voice clone prompt cache: hydrated 1/12 CLONED voices for tier small from disk
+2026-09-14 19:05:07,672 - MyVoiceApp - INFO - Voice clone prompt cache hydration: (1, 12)
+2026-09-14 19:05:07,672 - myvoice.metrics - INFO - metric
+2026-09-14 19:05:07,835 - qwen_tts.core.models.configuration_qwen3_tts - INFO - talker_config is None. Initializing talker model with default values
+2026-09-14 19:05:07,835 - qwen_tts.core.models.configuration_qwen3_tts - INFO - speaker_encoder_config is None. Initializing talker model with default values
+2026-09-14 19:05:07,836 - qwen_tts.core.models.configuration_qwen3_tts - INFO - code_predictor_config is None. Initializing code_predictor model with default values
+2026-09-14 19:05:07,836 - qwen_tts.core.models.configuration_qwen3_tts - INFO - code_predictor_config is None. Initializing code_predictor model with default values
+2026-09-14 19:05:08,159 - MyVoiceApp - INFO - Voice restoration scheduled after initialization delay
+2026-09-14 19:05:08,656 - MyVoiceApp - INFO - Restoring voice selection from saved configuration
+2026-09-14 19:05:08,656 - ConfigurationManager - INFO - Attempting to restore voice selection: Sarira-F
+2026-09-14 19:05:08,656 - ConfigurationManager - INFO - Successfully restored voice selection: Sarira-F
+2026-09-14 19:05:08,657 - VoiceProfileManager - INFO - Set active voice profile: Sarira-F
+2026-09-14 19:05:08,657 - MyVoiceApp - INFO - Successfully restored voice selection: Sarira-F
+2026-09-14 19:05:08,657 - MyVoiceApp - INFO - No voice selection to restore
+2026-09-14 19:05:15,096 - qwen_tts.core.tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 - INFO - encoder_config is None. Initializing encoder with default values
+2026-09-14 19:05:15,096 - qwen_tts.core.tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 - INFO - decoder_config is None. Initializing decoder with default values
+2026-09-14 19:05:19,903 - myvoice.services.tts_streaming.compile_cache - INFO - TORCHINDUCTOR_CACHE_DIR set to C:\Users\AL301\AppData\Local\MyVoice\torch_compile_cache\a7ea1bcfd1233175
+2026-09-14 19:05:20,664 - myvoice.metrics - INFO - metric
+2026-09-14 19:05:20,664 - myvoice.services.tts_streaming.torch_runtime - INFO - torch.compile + CUDA Graph engaged (decode_window_frames=30, cuda_capability=8.6, cache=cold)
+2026-09-14 19:05:20,664 - ModelRegistry - INFO - ModelRegistry model loaded: model_type=Qwen/Qwen3-TTS-12Hz-1.7B-Base, compile_engaged='True', compile_reason='engaged_cold_compile'
+2026-09-14 19:05:20,664 - ModelRegistry - INFO - Model Base (Clone) loaded successfully in 13.01s
+2026-09-14 19:05:20,664 - MyVoiceApp - INFO - Model Base (Clone) preloaded successfully
+2026-09-14 19:05:20,667 - MainWindow - INFO - MainWindow using SessionRegistry for TTS indicator substate
+2026-09-14 19:05:20,699 - ThemeManager - INFO - Successfully loaded theme: dark
+2026-09-14 19:05:20,840 - QuickSpeakService - INFO - QuickSpeakService initialized with profile: default
+2026-09-14 19:05:20,840 - QuickSpeakService - INFO - Loaded 15 Quick Speak entries from CSV
+2026-09-14 19:05:20,840 - MainWindow - INFO - Applying theme from settings: dark
+2026-09-14 19:05:20,845 - MainWindow - INFO - THEME DEBUG: Successfully applied theme from settings: dark
+2026-09-14 19:05:21,000 - ServiceStatusBar - WARNING - Service TTS already exists in status bar
+2026-09-14 19:05:21,000 - MainWindow - INFO - TTS service set for MainWindow: available
+2026-09-14 19:05:21,000 - MainWindow - INFO - Model ready: Base (Clone)
+2026-09-14 19:05:21,000 - MyVoiceApp - INFO - TTS health status callback received: healthy, main_window exists: True
+2026-09-14 19:05:21,001 - MyVoiceApp - INFO - TTS status initialized in UI: healthy
+2026-09-14 19:05:21,001 - MyVoiceApp - INFO - [MIC_DEBUG] ========================================
+2026-09-14 19:05:21,001 - MyVoiceApp - INFO - [MIC_DEBUG] _setup_mic_mixing_from_settings called
+2026-09-14 19:05:21,001 - MyVoiceApp - INFO - [MIC_DEBUG] mic_mixing_enabled: False
+2026-09-14 19:05:21,001 - MyVoiceApp - INFO - [MIC_DEBUG] mic_input_device_id: None
+2026-09-14 19:05:21,001 - MyVoiceApp - INFO - [MIC_DEBUG] virtual_microphone_device_id: None
+2026-09-14 19:05:21,001 - MyVoiceApp - INFO - [MIC_DEBUG] mic_monitor_running: False
+2026-09-14 19:05:21,001 - MyVoiceApp - INFO - [MIC_DEBUG] continuous_passthrough_running: False
+2026-09-14 19:05:21,001 - MyVoiceApp - INFO - [MIC_DEBUG] NOTE: Mic mixing is DISABLED - enable 'Enable Microphone Mixing' in settings
+2026-09-14 19:05:21,001 - MyVoiceApp - INFO - [MIC_DEBUG] ========================================
+2026-09-14 19:05:21,001 - myvoice.services.audio_coordinator - INFO - Mic mixing disabled
+2026-09-14 19:05:21,001 - myvoice.services.device_resilience_manager - INFO - Unregistered microphone device: unknown
+2026-09-14 19:05:21,001 - myvoice.services.audio_coordinator - INFO - Microphone capture stopped
+2026-09-14 19:05:21,001 - MyVoiceApp - INFO - MyVoice application initialization completed successfully
+2026-09-14 19:05:21,218 - __main__ - INFO - Exception handler UI callbacks configured
+2026-09-14 19:05:21,218 - __main__ - INFO - MyVoice application initialized successfully
+2026-09-14 19:06:20,213 - MainWindow - INFO - Starting TTS generation for: Speed testing for Voicemeeter...
+2026-09-14 19:06:20,213 - MyVoiceApp - INFO - TTS generation requested for text: Speed testing for Voicemeeter...
+2026-09-14 19:06:20,213 - MyVoiceApp - INFO - Voice type 'VoiceType.CLONED' does not support emotion, skipping instruct
+2026-09-14 19:06:20,214 - MyVoiceApp - INFO - TTS generation using voice profile: Sarira-F
+2026-09-14 19:06:20,214 - MyVoiceApp - INFO - TTS request for cloned voice 'Sarira-F' (no emotion support)
+2026-09-14 19:06:20,214 - MyVoiceApp - INFO - [DEBUG] Voice type: VoiceType.CLONED (value=cloned)
+2026-09-14 19:06:20,214 - MyVoiceApp - INFO - [DEBUG] file_path: D:\MyVoice\voice_files\Sarira-F.wav
+2026-09-14 19:06:20,214 - MyVoiceApp - INFO - [DEBUG] VoiceType.EMBEDDING = VoiceType.EMBEDDING, comparison = False
+2026-09-14 19:06:20,214 - MyVoiceApp - INFO - Using Base model for cloned voice with ICL mode (transcription available)
+2026-09-14 19:06:20,214 - myvoice.metrics - INFO - metric
+2026-09-14 19:06:20,216 - QwenTTSService - INFO - Starting TTS generation (TRUE_STREAM): model=Base (Clone), text='Speed testing for Voicemeeter...'
+2026-09-14 19:06:20,216 - MainWindow - INFO - Model loading: Loading Base (Clone)...
+2026-09-14 19:06:20,216 - MainWindow - INFO - Model ready: Base (Clone)
+2026-09-14 19:06:20,603 - qwen_tts.core.models.configuration_qwen3_tts - INFO - code_predictor_config is None. Initializing code_predictor model with default values
+2026-09-14 19:06:22,218 - MainWindow - INFO - TTS generation completed (stub) for: Speed testing for Voicemeeter...
+2026-09-14 19:06:31,620 - myvoice.metrics - INFO - metric
+2026-09-14 19:06:31,620 - myvoice.metrics - INFO - metric
+2026-09-14 19:06:31,622 - myvoice.services.audio_coordinator - INFO - Streaming buffer: adaptive pre-buffer ENABLED — text_length=29 chars, T_a_estimate=2.32s, detected_vram=12.0 GiB (< 16 GiB threshold)
+2026-09-14 19:06:31,622 - myvoice.services.monitor_audio_service - INFO - Found 61 monitor devices
+2026-09-14 19:06:31,622 - myvoice.services.audio_coordinator - INFO - [WIN11-DEBUG] Monitor service health check result: True, health=(True, None)
+2026-09-14 19:06:31,622 - myvoice.services.monitor_audio_service - ERROR - Failed to start streaming session: [Errno -9998] Invalid number of channels
+2026-09-14 19:06:31,622 - myvoice.services.audio_coordinator - INFO - [WIN11-DEBUG] Virtual service health check result: True, health=(True, None)
+2026-09-14 19:06:31,623 - myvoice.services.virtual_microphone_service - INFO - Found 44 virtual microphone devices
+2026-09-14 19:06:31,673 - myvoice.services.virtual_microphone_service - INFO - Started virtual mic streaming session vstream_1_1789434391: 1ch, 24000Hz, device=13
+2026-09-14 19:06:31,673 - myvoice.services.audio_coordinator - INFO - Streaming sessions started: {'monitor': None, 'virtual': 'vstream_1_1789434391'}
+2026-09-14 19:06:31,673 - MyVoiceApp - INFO - Progressive playback session opened: sample_rate=24000Hz, monitor_session=None, virtual_session=vstream_1_1789434391
+2026-09-14 19:06:31,673 - myvoice.metrics - INFO - metric
+2026-09-14 19:06:31,673 - myvoice.metrics - INFO - metric
+2026-09-14 19:06:31,677 - myvoice.services.audio_coordinator - INFO - stop_streaming_session called: wait_for_drain=True _streaming_buffer=set _stream_total_bytes=0 _stream_first_write_ts=None _stream_last_chunk_bytes=0
+2026-09-14 19:06:31,683 - myvoice.metrics - INFO - metric
+2026-09-14 19:06:31,683 - QwenTTSService - INFO - TTS generation complete (TRUE_STREAM): 45525 samples, 1 chunks, 11.47s total, 11.41s first chunk
+2026-09-14 19:06:31,685 - MyVoiceApp - INFO - TTS generation completed successfully, 91094 bytes
+2026-09-14 19:06:31,686 - MyVoiceApp - INFO - Starting audio playback via AudioCoordinator
+2026-09-14 19:06:31,686 - MyVoiceApp - INFO - Progressive playback already active; skipping batch dispatch (queue_token=2ae8d544-9f89-40b4-b68f-3c2fd6c2197f)
+2026-09-14 19:06:31,686 - MyVoiceApp - INFO - Audio playback dispatched successfully
+2026-09-14 19:06:33,904 - myvoice.services.audio_coordinator - INFO - Drain calc: last_chunk_bytes=91050 total_bytes=91050 bytes_per_sec=48000 last_chunk_dur=1.897s time_since_last_write=2.234s last_chunk_remaining=0.000s total_audio_dur=1.897s playback_elapsed=2.234s total_queued=0.000s drain_wait=0.800s
+2026-09-14 19:06:34,719 - myvoice.services.audio_coordinator - INFO - Drain wait complete: planned=0.800s actual=0.813s
+2026-09-14 19:06:34,913 - myvoice.services.virtual_microphone_service - INFO - Virtual mic streaming session stopped
+2026-09-14 19:06:34,913 - myvoice.services.audio_coordinator - INFO - Streaming sessions stopped: {'monitor': True, 'virtual': True}
+2026-09-14 19:07:03,535 - myvoice.services.audio_coordinator - ERROR - Error stopping monitor playback: 'MonitorAudioService' object has no attribute 'stop_all_playback'
+2026-09-14 19:07:03,535 - myvoice.services.audio_coordinator - ERROR - Error stopping virtual playback: 'VirtualMicrophoneService' object has no attribute 'stop_all_virtual_microphone_playback'
+2026-09-14 19:07:03,535 - MyVoiceApp - INFO - Starting audio playback via AudioCoordinator
+2026-09-14 19:07:03,535 - myvoice.services.monitor_audio_service - INFO - Found 61 monitor devices
+2026-09-14 19:07:03,535 - MyVoiceApp - INFO - Using default monitor device: Microsoft Sound Mapper - Output
+2026-09-14 19:07:03,536 - myvoice.services.monitor_audio_service - INFO - Monitor audio worker started for monitor_1_1789434423
+2026-09-14 19:07:03,536 - myvoice.services.monitor_audio_service - INFO - Started monitor audio thread for monitor_1_1789434423
+2026-09-14 19:07:03,536 - myvoice.services.monitor_audio_service - INFO - WAV format: 1ch, 24000Hz, 16bit
+2026-09-14 19:07:03,536 - myvoice.services.monitor_audio_service - INFO - Started monitor audio playback task monitor_1_1789434423
+2026-09-14 19:07:03,536 - myvoice.services.monitor_audio_service - INFO - Found data chunk at offset 44, size 91050
+2026-09-14 19:07:03,536 - MyVoiceApp - INFO - Monitor speakers playback started
+2026-09-14 19:07:03,536 - myvoice.services.monitor_audio_service - INFO - Extracted 91050 bytes of raw audio data
+2026-09-14 19:07:03,536 - myvoice.services.monitor_audio_service - INFO - Device 13 uses host API: MME
+2026-09-14 19:07:03,538 - WindowsAudioClient - INFO - Found WASAPI host API at index 2: Windows WASAPI
+2026-09-14 19:07:03,538 - MyVoiceApp - INFO - Clear Comms playback completed successfully
+2026-09-14 19:07:03,538 - myvoice.services.monitor_audio_service - INFO - WASAPI is available at host API index 2
+2026-09-14 19:07:03,538 - myvoice.services.monitor_audio_service - INFO - Opening monitor stream: 1ch, 24000Hz, 16bit on device 13
+2026-09-14 19:07:03,557 - myvoice.services.monitor_audio_service - INFO - Successfully opened monitor audio stream for device 13 - Active: True, Stopped: False
+2026-09-14 19:07:03,557 - myvoice.services.monitor_audio_service - INFO - Audio data - Size: 91050 bytes, Duration: 1.90s, Peak volume: 0.1%
+2026-09-14 19:07:05,498 - myvoice.services.monitor_audio_service - INFO - Monitor audio playback completed for monitor_1_1789434423
+2026-09-14 19:07:06,487 - MainWindow - INFO - Replay last audio requested
+2026-09-14 19:07:06,487 - MyVoiceApp - INFO - Replay last audio requested
+2026-09-14 19:07:06,488 - MyVoiceApp - INFO - Replaying cached audio: 91094 bytes from C:\Users\AL301\AppData\Local\Temp\myvoice_current.wav
+2026-09-14 19:07:06,488 - MyVoiceApp - INFO - Starting audio playback via AudioCoordinator
+2026-09-14 19:07:06,488 - myvoice.services.monitor_audio_service - INFO - Found 61 monitor devices
+2026-09-14 19:07:06,488 - MyVoiceApp - INFO - Using default monitor device: Microsoft Sound Mapper - Output
+2026-09-14 19:07:06,490 - myvoice.services.monitor_audio_service - INFO - Monitor audio worker started for monitor_2_1789434426
+2026-09-14 19:07:06,490 - myvoice.services.monitor_audio_service - INFO - Started monitor audio thread for monitor_2_1789434426
+2026-09-14 19:07:06,490 - myvoice.services.monitor_audio_service - INFO - WAV format: 1ch, 24000Hz, 16bit
+2026-09-14 19:07:06,490 - myvoice.services.monitor_audio_service - INFO - Started monitor audio playback task monitor_2_1789434426
+2026-09-14 19:07:06,490 - myvoice.services.monitor_audio_service - INFO - Found data chunk at offset 44, size 91050
+2026-09-14 19:07:06,490 - MyVoiceApp - INFO - Monitor speakers playback started
+2026-09-14 19:07:06,490 - myvoice.services.monitor_audio_service - INFO - Extracted 91050 bytes of raw audio data
+2026-09-14 19:07:06,490 - myvoice.services.monitor_audio_service - INFO - Device 13 uses host API: MME
+2026-09-14 19:07:06,490 - MyVoiceApp - INFO - Replay playback completed successfully
+2026-09-14 19:07:06,490 - WindowsAudioClient - INFO - Found WASAPI host API at index 2: Windows WASAPI
+2026-09-14 19:07:06,491 - myvoice.services.monitor_audio_service - INFO - WASAPI is available at host API index 2
+2026-09-14 19:07:06,491 - myvoice.services.monitor_audio_service - INFO - Opening monitor stream: 1ch, 24000Hz, 16bit on device 13
+2026-09-14 19:07:06,506 - myvoice.services.monitor_audio_service - INFO - Successfully opened monitor audio stream for device 13 - Active: True, Stopped: False
+2026-09-14 19:07:06,506 - myvoice.services.monitor_audio_service - INFO - Audio data - Size: 91050 bytes, Duration: 1.90s, Peak volume: 0.1%
+2026-09-14 19:07:08,448 - myvoice.services.monitor_audio_service - INFO - Monitor audio playback completed for monitor_2_1789434426
+2026-09-14 19:07:08,897 - MainWindow - INFO - Replay last audio requested
+2026-09-14 19:07:08,897 - MyVoiceApp - INFO - Replay last audio requested
+2026-09-14 19:07:08,897 - MyVoiceApp - INFO - Replaying cached audio: 91094 bytes from C:\Users\AL301\AppData\Local\Temp\myvoice_current.wav
+2026-09-14 19:07:08,897 - MyVoiceApp - INFO - Starting audio playback via AudioCoordinator
+2026-09-14 19:07:08,897 - myvoice.services.monitor_audio_service - INFO - Found 61 monitor devices
+2026-09-14 19:07:08,899 - MyVoiceApp - INFO - Using default monitor device: Microsoft Sound Mapper - Output
+2026-09-14 19:07:08,899 - myvoice.services.monitor_audio_service - INFO - Monitor audio worker started for monitor_3_1789434428
+2026-09-14 19:07:08,899 - myvoice.services.monitor_audio_service - INFO - Started monitor audio thread for monitor_3_1789434428
+2026-09-14 19:07:08,899 - myvoice.services.monitor_audio_service - INFO - WAV format: 1ch, 24000Hz, 16bit
+2026-09-14 19:07:08,899 - myvoice.services.monitor_audio_service - INFO - Started monitor audio playback task monitor_3_1789434428
+2026-09-14 19:07:08,899 - myvoice.services.monitor_audio_service - INFO - Found data chunk at offset 44, size 91050
+2026-09-14 19:07:08,899 - MyVoiceApp - INFO - Monitor speakers playback started
+2026-09-14 19:07:08,899 - myvoice.services.monitor_audio_service - INFO - Extracted 91050 bytes of raw audio data
+2026-09-14 19:07:08,899 - myvoice.services.monitor_audio_service - INFO - Device 13 uses host API: MME
+2026-09-14 19:07:08,900 - MyVoiceApp - INFO - Replay playback completed successfully
+2026-09-14 19:07:08,900 - WindowsAudioClient - INFO - Found WASAPI host API at index 2: Windows WASAPI
+2026-09-14 19:07:08,900 - myvoice.services.monitor_audio_service - INFO - WASAPI is available at host API index 2
+2026-09-14 19:07:08,900 - myvoice.services.monitor_audio_service - INFO - Opening monitor stream: 1ch, 24000Hz, 16bit on device 13
+2026-09-14 19:07:08,916 - myvoice.services.monitor_audio_service - INFO - Successfully opened monitor audio stream for device 13 - Active: True, Stopped: False
+2026-09-14 19:07:08,916 - myvoice.services.monitor_audio_service - INFO - Audio data - Size: 91050 bytes, Duration: 1.90s, Peak volume: 0.1%
+2026-09-14 19:07:10,857 - myvoice.services.monitor_audio_service - INFO - Monitor audio playback completed for monitor_3_1789434428
+2026-09-14 19:07:18,810 - MainWindow - INFO - Starting TTS generation for: Testing Playback...
+2026-09-14 19:07:18,810 - MyVoiceApp - INFO - TTS generation requested for text: Testing Playback...
+2026-09-14 19:07:18,810 - MyVoiceApp - INFO - Voice type 'VoiceType.CLONED' does not support emotion, skipping instruct
+2026-09-14 19:07:18,810 - MyVoiceApp - INFO - TTS generation using voice profile: Sarira-F
+2026-09-14 19:07:18,810 - MyVoiceApp - INFO - TTS request for cloned voice 'Sarira-F' (no emotion support)
+2026-09-14 19:07:18,810 - MyVoiceApp - INFO - [DEBUG] Voice type: VoiceType.CLONED (value=cloned)
+2026-09-14 19:07:18,810 - MyVoiceApp - INFO - [DEBUG] file_path: D:\MyVoice\voice_files\Sarira-F.wav
+2026-09-14 19:07:18,810 - MyVoiceApp - INFO - [DEBUG] VoiceType.EMBEDDING = VoiceType.EMBEDDING, comparison = False
+2026-09-14 19:07:18,810 - MyVoiceApp - INFO - Using Base model for cloned voice with ICL mode (transcription available)
+2026-09-14 19:07:18,812 - myvoice.metrics - INFO - metric
+2026-09-14 19:07:18,813 - QwenTTSService - INFO - Starting TTS generation (TRUE_STREAM): model=Base (Clone), text='Testing Playback...'
+2026-09-14 19:07:18,813 - MainWindow - INFO - Model loading: Loading Base (Clone)...
+2026-09-14 19:07:18,813 - MainWindow - INFO - Model ready: Base (Clone)
+2026-09-14 19:07:18,825 - qwen_tts.core.models.configuration_qwen3_tts - INFO - code_predictor_config is None. Initializing code_predictor model with default values
+2026-09-14 19:07:20,809 - MainWindow - INFO - TTS generation completed (stub) for: Testing Playback...
+2026-09-14 19:07:21,726 - myvoice.metrics - INFO - metric
+2026-09-14 19:07:21,726 - myvoice.metrics - INFO - metric
+2026-09-14 19:07:21,727 - myvoice.services.audio_coordinator - INFO - Streaming buffer: adaptive pre-buffer ENABLED — text_length=16 chars, T_a_estimate=1.28s, detected_vram=12.0 GiB (< 16 GiB threshold)
+2026-09-14 19:07:21,727 - myvoice.services.audio_coordinator - INFO - [WIN11-DEBUG] Monitor service health check result: True, health=(True, None)
+2026-09-14 19:07:21,768 - myvoice.services.monitor_audio_service - INFO - Started streaming session stream_4_1789434441: 1ch, 24000Hz, device=13
+2026-09-14 19:07:21,768 - myvoice.services.audio_coordinator - INFO - [WIN11-DEBUG] Virtual service health check result: True, health=(True, None)
+2026-09-14 19:07:21,769 - myvoice.services.virtual_microphone_service - INFO - Found 44 virtual microphone devices
+2026-09-14 19:07:21,777 - myvoice.services.virtual_microphone_service - INFO - Started virtual mic streaming session vstream_2_1789434441: 1ch, 24000Hz, device=13
+2026-09-14 19:07:21,777 - myvoice.services.audio_coordinator - INFO - Streaming sessions started: {'monitor': 'stream_4_1789434441', 'virtual': 'vstream_2_1789434441'}
+2026-09-14 19:07:21,777 - MyVoiceApp - INFO - Progressive playback session opened: sample_rate=24000Hz, monitor_session=stream_4_1789434441, virtual_session=vstream_2_1789434441
+2026-09-14 19:07:21,777 - myvoice.metrics - INFO - metric
+2026-09-14 19:07:21,777 - myvoice.metrics - INFO - metric
+2026-09-14 19:07:21,784 - myvoice.metrics - INFO - metric
+2026-09-14 19:07:21,784 - QwenTTSService - INFO - TTS generation complete (TRUE_STREAM): 37845 samples, 1 chunks, 2.97s total, 2.91s first chunk
+2026-09-14 19:07:21,784 - MyVoiceApp - INFO - TTS generation completed successfully, 75734 bytes
+2026-09-14 19:07:21,786 - myvoice.services.audio_coordinator - INFO - stop_streaming_session called: wait_for_drain=True _streaming_buffer=set _stream_total_bytes=0 _stream_first_write_ts=None _stream_last_chunk_bytes=0
+2026-09-14 19:07:21,786 - MyVoiceApp - INFO - Starting audio playback via AudioCoordinator
+2026-09-14 19:07:21,786 - MyVoiceApp - INFO - Progressive playback already active; skipping batch dispatch (queue_token=8625736d-0577-4b51-904a-4b4a98027460)
+2026-09-14 19:07:21,786 - MyVoiceApp - INFO - Audio playback dispatched successfully
+2026-09-14 19:07:23,672 - myvoice.services.audio_coordinator - INFO - Drain calc: last_chunk_bytes=75690 total_bytes=75690 bytes_per_sec=48000 last_chunk_dur=1.577s time_since_last_write=1.891s last_chunk_remaining=0.000s total_audio_dur=1.577s playback_elapsed=1.891s total_queued=0.000s drain_wait=0.800s
+2026-09-14 19:07:24,490 - myvoice.services.audio_coordinator - INFO - Drain wait complete: planned=0.800s actual=0.812s
+2026-09-14 19:07:24,681 - myvoice.services.monitor_audio_service - INFO - Streaming session stopped
+2026-09-14 19:07:24,865 - myvoice.services.virtual_microphone_service - INFO - Virtual mic streaming session stopped
+2026-09-14 19:07:24,865 - myvoice.services.audio_coordinator - INFO - Streaming sessions stopped: {'monitor': True, 'virtual': True}
+2026-09-14 19:07:42,129 - MainWindow - INFO - Replay last audio requested
+2026-09-14 19:07:42,129 - MyVoiceApp - INFO - Replay last audio requested
+2026-09-14 19:07:42,129 - MyVoiceApp - INFO - Replaying cached audio: 75734 bytes from C:\Users\AL301\AppData\Local\Temp\myvoice_current.wav
+2026-09-14 19:07:42,129 - MyVoiceApp - INFO - Starting audio playback via AudioCoordinator
+2026-09-14 19:07:42,131 - myvoice.services.monitor_audio_service - INFO - Found 61 monitor devices
+2026-09-14 19:07:42,131 - MyVoiceApp - INFO - Using default monitor device: Microsoft Sound Mapper - Output
+2026-09-14 19:07:42,131 - myvoice.services.monitor_audio_service - INFO - Monitor audio worker started for monitor_5_1789434462
+2026-09-14 19:07:42,131 - myvoice.services.monitor_audio_service - INFO - Started monitor audio thread for monitor_5_1789434462
+2026-09-14 19:07:42,132 - myvoice.services.monitor_audio_service - INFO - WAV format: 1ch, 24000Hz, 16bit
+2026-09-14 19:07:42,132 - myvoice.services.monitor_audio_service - INFO - Started monitor audio playback task monitor_5_1789434462
+2026-09-14 19:07:42,132 - myvoice.services.monitor_audio_service - INFO - Found data chunk at offset 44, size 75690
+2026-09-14 19:07:42,132 - MyVoiceApp - INFO - Monitor speakers playback started
+2026-09-14 19:07:42,132 - myvoice.services.monitor_audio_service - INFO - Extracted 75690 bytes of raw audio data
+2026-09-14 19:07:42,132 - myvoice.services.monitor_audio_service - INFO - Device 13 uses host API: MME
+2026-09-14 19:07:42,132 - WindowsAudioClient - INFO - Found WASAPI host API at index 2: Windows WASAPI
+2026-09-14 19:07:42,132 - myvoice.services.monitor_audio_service - INFO - WASAPI is available at host API index 2
+2026-09-14 19:07:42,132 - MyVoiceApp - INFO - Replay playback completed successfully
+2026-09-14 19:07:42,157 - myvoice.services.monitor_audio_service - INFO - Opening monitor stream: 1ch, 24000Hz, 16bit on device 13
+2026-09-14 19:07:42,189 - myvoice.services.monitor_audio_service - INFO - Successfully opened monitor audio stream for device 13 - Active: True, Stopped: False
+2026-09-14 19:07:42,189 - myvoice.services.monitor_audio_service - INFO - Audio data - Size: 75690 bytes, Duration: 1.58s, Peak volume: 0.4%
+2026-09-14 19:07:43,791 - myvoice.services.monitor_audio_service - INFO - Monitor audio playback completed for monitor_5_1789434462
+2026-09-14 19:07:55,760 - MainWindow - INFO - Replay last audio requested
+2026-09-14 19:07:55,760 - MyVoiceApp - INFO - Replay last audio requested
+2026-09-14 19:07:55,760 - MyVoiceApp - INFO - Replaying cached audio: 75734 bytes from C:\Users\AL301\AppData\Local\Temp\myvoice_current.wav
+2026-09-14 19:07:55,760 - MyVoiceApp - INFO - Starting audio playback via AudioCoordinator
+2026-09-14 19:07:55,762 - myvoice.services.monitor_audio_service - INFO - Found 61 monitor devices
+2026-09-14 19:07:55,762 - MyVoiceApp - INFO - Using default monitor device: Microsoft Sound Mapper - Output
+2026-09-14 19:07:55,762 - myvoice.services.monitor_audio_service - INFO - Monitor audio worker started for monitor_6_1789434475
+2026-09-14 19:07:55,762 - myvoice.services.monitor_audio_service - INFO - Started monitor audio thread for monitor_6_1789434475
+2026-09-14 19:07:55,762 - myvoice.services.monitor_audio_service - INFO - WAV format: 1ch, 24000Hz, 16bit
+2026-09-14 19:07:55,763 - myvoice.services.monitor_audio_service - INFO - Started monitor audio playback task monitor_6_1789434475
+2026-09-14 19:07:55,763 - myvoice.services.monitor_audio_service - INFO - Found data chunk at offset 44, size 75690
+2026-09-14 19:07:55,763 - MyVoiceApp - INFO - Monitor speakers playback started
+2026-09-14 19:07:55,763 - myvoice.services.monitor_audio_service - INFO - Extracted 75690 bytes of raw audio data
+2026-09-14 19:07:55,763 - myvoice.services.monitor_audio_service - INFO - Device 13 uses host API: MME
+2026-09-14 19:07:55,763 - MyVoiceApp - INFO - Replay playback completed successfully
+2026-09-14 19:07:55,763 - WindowsAudioClient - INFO - Found WASAPI host API at index 2: Windows WASAPI
+2026-09-14 19:07:55,763 - myvoice.services.monitor_audio_service - INFO - WASAPI is available at host API index 2
+2026-09-14 19:07:55,795 - myvoice.services.monitor_audio_service - INFO - Opening monitor stream: 1ch, 24000Hz, 16bit on device 13
+2026-09-14 19:07:55,813 - myvoice.services.monitor_audio_service - INFO - Successfully opened monitor audio stream for device 13 - Active: True, Stopped: False
+2026-09-14 19:07:55,813 - myvoice.services.monitor_audio_service - INFO - Audio data - Size: 75690 bytes, Duration: 1.58s, Peak volume: 0.4%
+2026-09-14 19:07:57,404 - myvoice.services.monitor_audio_service - INFO - Monitor audio playback completed for monitor_6_1789434475
+2026-09-14 19:08:15,845 - MainWindow - INFO - Replay last audio requested
+2026-09-14 19:08:15,845 - MyVoiceApp - INFO - Replay last audio requested
+2026-09-14 19:08:15,845 - MyVoiceApp - INFO - Replaying cached audio: 75734 bytes from C:\Users\AL301\AppData\Local\Temp\myvoice_current.wav
+2026-09-14 19:08:15,846 - MyVoiceApp - INFO - Starting audio playback via AudioCoordinator
+2026-09-14 19:08:15,846 - myvoice.services.monitor_audio_service - INFO - Found 61 monitor devices
+2026-09-14 19:08:15,846 - MyVoiceApp - INFO - Using default monitor device: Microsoft Sound Mapper - Output
+2026-09-14 19:08:15,848 - myvoice.services.monitor_audio_service - INFO - Monitor audio worker started for monitor_7_1789434495
+2026-09-14 19:08:15,848 - myvoice.services.monitor_audio_service - INFO - Started monitor audio thread for monitor_7_1789434495
+2026-09-14 19:08:15,848 - myvoice.services.monitor_audio_service - INFO - WAV format: 1ch, 24000Hz, 16bit
+2026-09-14 19:08:15,848 - myvoice.services.monitor_audio_service - INFO - Started monitor audio playback task monitor_7_1789434495
+2026-09-14 19:08:15,848 - myvoice.services.monitor_audio_service - INFO - Found data chunk at offset 44, size 75690
+2026-09-14 19:08:15,848 - MyVoiceApp - INFO - Monitor speakers playback started
+2026-09-14 19:08:15,848 - myvoice.services.monitor_audio_service - INFO - Extracted 75690 bytes of raw audio data
+2026-09-14 19:08:15,848 - myvoice.services.monitor_audio_service - INFO - Device 13 uses host API: MME
+2026-09-14 19:08:15,848 - MyVoiceApp - INFO - Replay playback completed successfully
+2026-09-14 19:08:15,848 - WindowsAudioClient - INFO - Found WASAPI host API at index 2: Windows WASAPI
+2026-09-14 19:08:15,848 - myvoice.services.monitor_audio_service - INFO - WASAPI is available at host API index 2
+2026-09-14 19:08:15,849 - myvoice.services.monitor_audio_service - INFO - Opening monitor stream: 1ch, 24000Hz, 16bit on device 13
+2026-09-14 19:08:15,865 - myvoice.services.monitor_audio_service - INFO - Successfully opened monitor audio stream for device 13 - Active: True, Stopped: False
+2026-09-14 19:08:15,865 - myvoice.services.monitor_audio_service - INFO - Audio data - Size: 75690 bytes, Duration: 1.58s, Peak volume: 0.4%
+2026-09-14 19:08:17,462 - myvoice.services.monitor_audio_service - INFO - Monitor audio playback completed for monitor_7_1789434495
+2026-09-14 19:09:18,745 - MainWindow - INFO - Replay last audio requested
+2026-09-14 19:09:18,745 - MyVoiceApp - INFO - Replay last audio requested
+2026-09-14 19:09:18,745 - MyVoiceApp - INFO - Replaying cached audio: 75734 bytes from C:\Users\AL301\AppData\Local\Temp\myvoice_current.wav
+2026-09-14 19:09:18,745 - MyVoiceApp - INFO - Starting audio playback via AudioCoordinator
+2026-09-14 19:09:18,747 - myvoice.services.monitor_audio_service - INFO - Found 61 monitor devices
+2026-09-14 19:09:18,747 - MyVoiceApp - INFO - Using default monitor device: Microsoft Sound Mapper - Output
+2026-09-14 19:09:18,747 - myvoice.services.monitor_audio_service - INFO - Monitor audio worker started for monitor_8_1789434558
+2026-09-14 19:09:18,747 - myvoice.services.monitor_audio_service - INFO - Started monitor audio thread for monitor_8_1789434558
+2026-09-14 19:09:18,747 - myvoice.services.monitor_audio_service - INFO - WAV format: 1ch, 24000Hz, 16bit
+2026-09-14 19:09:18,747 - myvoice.services.monitor_audio_service - INFO - Started monitor audio playback task monitor_8_1789434558
+2026-09-14 19:09:18,747 - myvoice.services.monitor_audio_service - INFO - Found data chunk at offset 44, size 75690
+2026-09-14 19:09:18,747 - MyVoiceApp - INFO - Monitor speakers playback started
+2026-09-14 19:09:18,748 - myvoice.services.monitor_audio_service - INFO - Extracted 75690 bytes of raw audio data
+2026-09-14 19:09:18,748 - MyVoiceApp - INFO - Replay playback completed successfully
+2026-09-14 19:09:18,748 - myvoice.services.monitor_audio_service - INFO - Device 13 uses host API: MME
+2026-09-14 19:09:18,748 - WindowsAudioClient - INFO - Found WASAPI host API at index 2: Windows WASAPI
+2026-09-14 19:09:18,748 - myvoice.services.monitor_audio_service - INFO - WASAPI is available at host API index 2
+2026-09-14 19:09:18,748 - myvoice.services.monitor_audio_service - INFO - Opening monitor stream: 1ch, 24000Hz, 16bit on device 13
+2026-09-14 19:09:18,766 - myvoice.services.monitor_audio_service - INFO - Successfully opened monitor audio stream for device 13 - Active: True, Stopped: False
+2026-09-14 19:09:18,766 - myvoice.services.monitor_audio_service - INFO - Audio data - Size: 75690 bytes, Duration: 1.58s, Peak volume: 0.4%
+2026-09-14 19:09:20,358 - myvoice.services.monitor_audio_service - INFO - Monitor audio playback completed for monitor_8_1789434558
+2026-09-14 19:09:41,747 - MainWindow - INFO - Replay last audio requested
+2026-09-14 19:09:41,747 - MyVoiceApp - INFO - Replay last audio requested
+2026-09-14 19:09:41,748 - MyVoiceApp - INFO - Replaying cached audio: 75734 bytes from C:\Users\AL301\AppData\Local\Temp\myvoice_current.wav
+2026-09-14 19:09:41,748 - MyVoiceApp - INFO - Starting audio playback via AudioCoordinator
+2026-09-14 19:09:41,748 - myvoice.services.monitor_audio_service - INFO - Found 61 monitor devices
+2026-09-14 19:09:41,748 - MyVoiceApp - INFO - Using default monitor device: Microsoft Sound Mapper - Output
+2026-09-14 19:09:41,750 - myvoice.services.monitor_audio_service - INFO - Monitor audio worker started for monitor_9_1789434581
+2026-09-14 19:09:41,750 - myvoice.services.monitor_audio_service - INFO - Started monitor audio thread for monitor_9_1789434581
+2026-09-14 19:09:41,750 - myvoice.services.monitor_audio_service - INFO - WAV format: 1ch, 24000Hz, 16bit
+2026-09-14 19:09:41,750 - myvoice.services.monitor_audio_service - INFO - Started monitor audio playback task monitor_9_1789434581
+2026-09-14 19:09:41,750 - myvoice.services.monitor_audio_service - INFO - Found data chunk at offset 44, size 75690
+2026-09-14 19:09:41,750 - MyVoiceApp - INFO - Monitor speakers playback started
+2026-09-14 19:09:41,750 - myvoice.services.monitor_audio_service - INFO - Extracted 75690 bytes of raw audio data
+2026-09-14 19:09:41,750 - myvoice.services.monitor_audio_service - INFO - Device 13 uses host API: MME
+2026-09-14 19:09:41,750 - WindowsAudioClient - INFO - Found WASAPI host API at index 2: Windows WASAPI
+2026-09-14 19:09:41,750 - MyVoiceApp - INFO - Replay playback completed successfully
+2026-09-14 19:09:41,751 - myvoice.services.monitor_audio_service - INFO - WASAPI is available at host API index 2
+2026-09-14 19:09:41,751 - myvoice.services.monitor_audio_service - INFO - Opening monitor stream: 1ch, 24000Hz, 16bit on device 13
+2026-09-14 19:09:41,766 - myvoice.services.monitor_audio_service - INFO - Successfully opened monitor audio stream for device 13 - Active: True, Stopped: False
+2026-09-14 19:09:41,766 - myvoice.services.monitor_audio_service - INFO - Audio data - Size: 75690 bytes, Duration: 1.58s, Peak volume: 0.4%
+2026-09-14 19:09:43,356 - myvoice.services.monitor_audio_service - INFO - Monitor audio playback completed for monitor_9_1789434581
+2026-09-14 19:10:17,853 - MainWindow - INFO - Starting TTS generation for: Testing TTFA on the RTX 30 60 to see how long this...
+2026-09-14 19:10:17,855 - MyVoiceApp - INFO - TTS generation requested for text: Testing TTFA on the RTX 30 60 to see how long this...
+2026-09-14 19:10:17,855 - MyVoiceApp - INFO - Voice type 'VoiceType.CLONED' does not support emotion, skipping instruct
+2026-09-14 19:10:17,855 - MyVoiceApp - INFO - TTS generation using voice profile: Sarira-F
+2026-09-14 19:10:17,855 - MyVoiceApp - INFO - TTS request for cloned voice 'Sarira-F' (no emotion support)
+2026-09-14 19:10:17,855 - MyVoiceApp - INFO - [DEBUG] Voice type: VoiceType.CLONED (value=cloned)
+2026-09-14 19:10:17,855 - MyVoiceApp - INFO - [DEBUG] file_path: D:\MyVoice\voice_files\Sarira-F.wav
+2026-09-14 19:10:17,855 - MyVoiceApp - INFO - [DEBUG] VoiceType.EMBEDDING = VoiceType.EMBEDDING, comparison = False
+2026-09-14 19:10:17,855 - MyVoiceApp - INFO - Using Base model for cloned voice with ICL mode (transcription available)
+2026-09-14 19:10:17,856 - myvoice.metrics - INFO - metric
+2026-09-14 19:10:17,856 - QwenTTSService - INFO - Starting TTS generation (TRUE_STREAM): model=Base (Clone), text='Testing TTFA on the RTX 30 60 to see how long this...'
+2026-09-14 19:10:17,856 - MainWindow - INFO - Model loading: Loading Base (Clone)...
+2026-09-14 19:10:17,856 - MainWindow - INFO - Model ready: Base (Clone)
+2026-09-14 19:10:17,870 - qwen_tts.core.models.configuration_qwen3_tts - INFO - code_predictor_config is None. Initializing code_predictor model with default values
+2026-09-14 19:10:19,857 - MainWindow - INFO - TTS generation completed (stub) for: Testing TTFA on the RTX 30 60 ...
+2026-09-14 19:10:22,007 - myvoice.metrics - INFO - metric
+2026-09-14 19:10:22,007 - myvoice.metrics - INFO - metric
+2026-09-14 19:10:22,007 - myvoice.services.audio_coordinator - INFO - Streaming buffer: adaptive pre-buffer ENABLED — text_length=57 chars, T_a_estimate=4.56s, detected_vram=12.0 GiB (< 16 GiB threshold)
+2026-09-14 19:10:22,007 - myvoice.services.audio_coordinator - INFO - [WIN11-DEBUG] Monitor service health check result: True, health=(True, None)
+2026-09-14 19:10:22,023 - myvoice.services.monitor_audio_service - INFO - Started streaming session stream_10_1789434622: 1ch, 24000Hz, device=13
+2026-09-14 19:10:22,023 - myvoice.services.audio_coordinator - INFO - [WIN11-DEBUG] Virtual service health check result: True, health=(True, None)
+2026-09-14 19:10:22,025 - myvoice.services.virtual_microphone_service - INFO - Found 44 virtual microphone devices
+2026-09-14 19:10:22,033 - myvoice.services.virtual_microphone_service - INFO - Started virtual mic streaming session vstream_3_1789434622: 1ch, 24000Hz, device=13
+2026-09-14 19:10:22,033 - myvoice.services.audio_coordinator - INFO - Streaming sessions started: {'monitor': 'stream_10_1789434622', 'virtual': 'vstream_3_1789434622'}
+2026-09-14 19:10:22,033 - MyVoiceApp - INFO - Progressive playback session opened: sample_rate=24000Hz, monitor_session=stream_10_1789434622, virtual_session=vstream_3_1789434622
+2026-09-14 19:10:22,033 - myvoice.metrics - INFO - metric
+2026-09-14 19:10:22,033 - myvoice.metrics - INFO - metric
+2026-09-14 19:10:24,146 - myvoice.metrics - INFO - metric
+2026-09-14 19:10:24,146 - myvoice.metrics - INFO - metric
+2026-09-14 19:10:24,146 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=95074 dispatched_bytes=190148 is_final=False batch_idx=0/1 total_bytes_so_far=190148
+2026-09-14 19:10:26,249 - myvoice.metrics - INFO - metric
+2026-09-14 19:10:26,249 - myvoice.metrics - INFO - metric
+2026-09-14 19:10:26,258 - myvoice.metrics - INFO - metric
+2026-09-14 19:10:26,258 - QwenTTSService - INFO - TTS generation complete (TRUE_STREAM): 134839 samples, 3 chunks, 8.40s total, 4.15s first chunk
+2026-09-14 19:10:26,259 - MyVoiceApp - INFO - TTS generation completed successfully, 269722 bytes
+2026-09-14 19:10:26,259 - MyVoiceApp - INFO - Starting audio playback via AudioCoordinator
+2026-09-14 19:10:26,259 - MyVoiceApp - INFO - Progressive playback already active; skipping batch dispatch (queue_token=f1b6c5a2-f623-4bfd-8368-62f6ad90d719)
+2026-09-14 19:10:26,259 - MyVoiceApp - INFO - Audio playback dispatched successfully
+2026-09-14 19:10:27,939 - myvoice.metrics - INFO - metric
+2026-09-14 19:10:27,939 - myvoice.metrics - INFO - metric
+2026-09-14 19:10:27,939 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=79530 dispatched_bytes=79530 is_final=False batch_idx=0/1 total_bytes_so_far=269678
+2026-09-14 19:10:29,478 - myvoice.metrics - INFO - metric
+2026-09-14 19:10:29,478 - myvoice.metrics - INFO - metric
+2026-09-14 19:10:29,478 - myvoice.services.audio_coordinator - INFO - stop_streaming_session called: wait_for_drain=True _streaming_buffer=set _stream_total_bytes=269678 _stream_first_write_ts=set _stream_last_chunk_bytes=79530
+2026-09-14 19:10:29,818 - myvoice.services.audio_coordinator - INFO - Drain calc: last_chunk_bytes=79530 total_bytes=269678 bytes_per_sec=48000 last_chunk_dur=1.657s time_since_last_write=1.875s last_chunk_remaining=0.000s total_audio_dur=5.618s playback_elapsed=5.671s total_queued=0.000s drain_wait=0.800s
+2026-09-14 19:10:30,619 - myvoice.services.audio_coordinator - INFO - Drain wait complete: planned=0.800s actual=0.813s
+2026-09-14 19:10:30,810 - myvoice.services.monitor_audio_service - INFO - Streaming session stopped
+2026-09-14 19:10:31,006 - myvoice.services.virtual_microphone_service - INFO - Virtual mic streaming session stopped
+2026-09-14 19:10:31,006 - myvoice.services.audio_coordinator - INFO - Streaming sessions stopped: {'monitor': True, 'virtual': True}
+2026-09-14 19:11:03,968 - MainWindow - INFO - Starting TTS generation for: Testing with a much longer sentence. Matter of fac...
+2026-09-14 19:11:03,969 - MyVoiceApp - INFO - TTS generation requested for text: Testing with a much longer sentence. Matter of fac...
+2026-09-14 19:11:03,969 - MyVoiceApp - INFO - Voice type 'VoiceType.CLONED' does not support emotion, skipping instruct
+2026-09-14 19:11:03,969 - MyVoiceApp - INFO - TTS generation using voice profile: Sarira-F
+2026-09-14 19:11:03,969 - MyVoiceApp - INFO - TTS request for cloned voice 'Sarira-F' (no emotion support)
+2026-09-14 19:11:03,969 - MyVoiceApp - INFO - [DEBUG] Voice type: VoiceType.CLONED (value=cloned)
+2026-09-14 19:11:03,969 - MyVoiceApp - INFO - [DEBUG] file_path: D:\MyVoice\voice_files\Sarira-F.wav
+2026-09-14 19:11:03,969 - MyVoiceApp - INFO - [DEBUG] VoiceType.EMBEDDING = VoiceType.EMBEDDING, comparison = False
+2026-09-14 19:11:03,969 - MyVoiceApp - INFO - Using Base model for cloned voice with ICL mode (transcription available)
+2026-09-14 19:11:03,969 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:03,971 - QwenTTSService - INFO - Starting TTS generation (TRUE_STREAM): model=Base (Clone), text='Testing with a much longer sentence. Matter of fac...'
+2026-09-14 19:11:03,971 - MainWindow - INFO - Model loading: Loading Base (Clone)...
+2026-09-14 19:11:03,971 - MainWindow - INFO - Model ready: Base (Clone)
+2026-09-14 19:11:03,991 - qwen_tts.core.models.configuration_qwen3_tts - INFO - code_predictor_config is None. Initializing code_predictor model with default values
+2026-09-14 19:11:05,968 - MainWindow - INFO - TTS generation completed (stub) for: Testing with a much longer sen...
+2026-09-14 19:11:08,294 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:08,295 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:08,295 - myvoice.services.audio_coordinator - INFO - Streaming buffer: adaptive pre-buffer ENABLED — text_length=158 chars, T_a_estimate=12.64s, detected_vram=12.0 GiB (< 16 GiB threshold)
+2026-09-14 19:11:08,295 - myvoice.services.audio_coordinator - INFO - [WIN11-DEBUG] Monitor service health check result: True, health=(True, None)
+2026-09-14 19:11:08,324 - myvoice.services.monitor_audio_service - INFO - Started streaming session stream_11_1789434668: 1ch, 24000Hz, device=13
+2026-09-14 19:11:08,324 - myvoice.services.audio_coordinator - INFO - [WIN11-DEBUG] Virtual service health check result: True, health=(True, None)
+2026-09-14 19:11:08,326 - myvoice.services.virtual_microphone_service - INFO - Found 44 virtual microphone devices
+2026-09-14 19:11:08,333 - myvoice.services.virtual_microphone_service - INFO - Started virtual mic streaming session vstream_4_1789434668: 1ch, 24000Hz, device=13
+2026-09-14 19:11:08,333 - myvoice.services.audio_coordinator - INFO - Streaming sessions started: {'monitor': 'stream_11_1789434668', 'virtual': 'vstream_4_1789434668'}
+2026-09-14 19:11:08,333 - MyVoiceApp - INFO - Progressive playback session opened: sample_rate=24000Hz, monitor_session=stream_11_1789434668, virtual_session=vstream_4_1789434668
+2026-09-14 19:11:08,333 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:08,333 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:10,138 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:10,138 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:10,138 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=95074 dispatched_bytes=190148 is_final=False batch_idx=0/1 total_bytes_so_far=190148
+2026-09-14 19:11:12,643 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:12,643 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:13,931 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:13,931 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:13,933 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=95074 dispatched_bytes=95074 is_final=False batch_idx=0/1 total_bytes_so_far=285222
+2026-09-14 19:11:15,636 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:15,637 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:15,811 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:15,811 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:15,811 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=95074 dispatched_bytes=95074 is_final=False batch_idx=0/1 total_bytes_so_far=380296
+2026-09-14 19:11:17,860 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:17,860 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:19,044 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:19,044 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:19,044 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=95074 dispatched_bytes=95074 is_final=False batch_idx=0/1 total_bytes_so_far=475370
+2026-09-14 19:11:19,434 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:19,434 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:19,447 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:19,447 - QwenTTSService - INFO - TTS generation complete (TRUE_STREAM): 246730 samples, 6 chunks, 15.48s total, 4.32s first chunk
+2026-09-14 19:11:19,448 - MyVoiceApp - INFO - TTS generation completed successfully, 493504 bytes
+2026-09-14 19:11:19,448 - MyVoiceApp - INFO - Starting audio playback via AudioCoordinator
+2026-09-14 19:11:19,448 - MyVoiceApp - INFO - Progressive playback already active; skipping batch dispatch (queue_token=16c677dd-526d-4f05-9d3e-c4409ea7b13f)
+2026-09-14 19:11:19,448 - MyVoiceApp - INFO - Audio playback dispatched successfully
+2026-09-14 19:11:20,967 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:20,967 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:20,967 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=18090 dispatched_bytes=18090 is_final=False batch_idx=0/1 total_bytes_so_far=493460
+2026-09-14 19:11:21,307 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:21,307 - myvoice.metrics - INFO - metric
+2026-09-14 19:11:21,307 - myvoice.services.audio_coordinator - INFO - stop_streaming_session called: wait_for_drain=True _streaming_buffer=set _stream_total_bytes=493460 _stream_first_write_ts=set _stream_last_chunk_bytes=18090
+2026-09-14 19:11:21,476 - myvoice.services.audio_coordinator - INFO - Drain calc: last_chunk_bytes=18090 total_bytes=493460 bytes_per_sec=48000 last_chunk_dur=0.377s time_since_last_write=0.500s last_chunk_remaining=0.000s total_audio_dur=10.280s playback_elapsed=11.328s total_queued=0.000s drain_wait=0.800s
+2026-09-14 19:11:22,276 - myvoice.services.audio_coordinator - INFO - Drain wait complete: planned=0.800s actual=0.812s
+2026-09-14 19:11:22,466 - myvoice.services.monitor_audio_service - INFO - Streaming session stopped
+2026-09-14 19:11:22,661 - myvoice.services.virtual_microphone_service - INFO - Virtual mic streaming session stopped
+2026-09-14 19:11:22,661 - myvoice.services.audio_coordinator - INFO - Streaming sessions stopped: {'monitor': True, 'virtual': True}
+2026-09-14 19:11:29,638 - MainWindow - INFO - MainWindow closing
+2026-09-14 19:11:29,640 - MainWindow - INFO - Background process cleanup completed
+2026-09-14 19:11:29,646 - __main__ - INFO - Force exit failsafe armed (10s timeout)
+2026-09-14 19:11:29,646 - __main__ - INFO - Application shutting down - cleaning up services...
+2026-09-14 19:11:29,646 - MyVoiceApp - INFO - Starting async cleanup - stopping services...
+2026-09-14 19:11:29,646 - QwenTTSService - INFO - Service 'QwenTTSService' status changed: running -> stopping
+2026-09-14 19:11:29,646 - QwenTTSService - INFO - Stopping QwenTTSService
+2026-09-14 19:11:29,646 - ModelRegistry - INFO - Unloading model: Base (Clone)
+2026-09-14 19:11:29,906 - ModelRegistry - INFO - Model Base (Clone) unloaded
+2026-09-14 19:11:29,906 - ModelRegistry - INFO - Shutting down ModelRegistry
+2026-09-14 19:11:30,107 - ModelRegistry - INFO - ModelRegistry shutdown complete
+2026-09-14 19:11:30,107 - QwenTTSService - INFO - Service 'QwenTTSService' status changed: stopping -> stopped
+2026-09-14 19:11:30,107 - QwenTTSService - INFO - QwenTTSService stopped
+2026-09-14 19:11:30,107 - MyVoiceApp - INFO - TTS service stopped
+2026-09-14 19:11:30,108 - ConfigurationManager - INFO - Service 'ConfigurationManager' status changed: running -> stopping
+2026-09-14 19:11:30,108 - ConfigurationManager - INFO - Stopping ConfigurationManager service
+2026-09-14 19:11:30,113 - ConfigurationManager - INFO - Settings saved successfully to D:\MyVoice\config\settings.json in 0.005s
+2026-09-14 19:11:30,113 - ConfigurationManager - INFO - Service 'ConfigurationManager' status changed: stopping -> stopped
+2026-09-14 19:11:30,114 - ConfigurationManager - INFO - ConfigurationManager service stopped successfully
+2026-09-14 19:11:30,114 - VoiceProfileManager - INFO - Service 'VoiceProfileManager' status changed: running -> stopping
+2026-09-14 19:11:30,114 - VoiceProfileManager - INFO - Stopping VoiceProfileManager service
+2026-09-14 19:11:30,116 - VoiceProfileManager - INFO - Service 'VoiceProfileManager' status changed: stopping -> stopped
+2026-09-14 19:11:30,116 - VoiceProfileManager - INFO - VoiceProfileManager service stopped successfully
+2026-09-14 19:11:30,116 - myvoice.services.audio_coordinator - INFO - Shutting down AudioCoordinator
+2026-09-14 19:11:30,116 - myvoice.services.monitor_audio_service - INFO - Shutting down MonitorAudioService
+2026-09-14 19:11:30,116 - myvoice.services.monitor_audio_service - ERROR - Error stopping monitor playback monitor_1_1789434423: STOPPED
+2026-09-14 19:11:30,116 - myvoice.services.monitor_audio_service - ERROR - Error stopping monitor playback monitor_2_1789434426: STOPPED
+2026-09-14 19:11:30,116 - myvoice.services.monitor_audio_service - ERROR - Error stopping monitor playback monitor_3_1789434428: STOPPED
+2026-09-14 19:11:30,116 - myvoice.services.monitor_audio_service - ERROR - Error stopping monitor playback monitor_5_1789434462: STOPPED
+2026-09-14 19:11:30,117 - myvoice.services.monitor_audio_service - ERROR - Error stopping monitor playback monitor_6_1789434475: STOPPED
+2026-09-14 19:11:30,117 - myvoice.services.monitor_audio_service - ERROR - Error stopping monitor playback monitor_7_1789434495: STOPPED
+2026-09-14 19:11:30,117 - myvoice.services.monitor_audio_service - ERROR - Error stopping monitor playback monitor_8_1789434558: STOPPED
+2026-09-14 19:11:30,117 - myvoice.services.monitor_audio_service - ERROR - Error stopping monitor playback monitor_9_1789434581: STOPPED
+2026-09-14 19:11:30,117 - myvoice.services.monitor_audio_service - INFO - MonitorAudioService shutdown complete
+2026-09-14 19:11:30,117 - myvoice.services.virtual_microphone_service - INFO - Shutting down VirtualMicrophoneService
+2026-09-14 19:11:30,117 - myvoice.services.virtual_microphone_service - INFO - VirtualMicrophoneService shutdown complete
+2026-09-14 19:11:30,117 - myvoice.services.microphone_capture_service - INFO - Shutting down MicrophoneCaptureService
+2026-09-14 19:11:30,117 - myvoice.services.microphone_capture_service - INFO - MicrophoneCaptureService shutdown complete
+2026-09-14 19:11:30,117 - myvoice.services.audio_coordinator - INFO - Monitor service shutdown successful
+2026-09-14 19:11:30,117 - myvoice.services.audio_coordinator - INFO - Virtual service shutdown successful
+2026-09-14 19:11:30,117 - myvoice.services.audio_coordinator - INFO - MicCapture service shutdown successful
+2026-09-14 19:11:30,117 - myvoice.services.device_resilience_manager - INFO - Shutting down DeviceResilienceManager
+2026-09-14 19:11:30,117 - WindowsAudioClient - INFO - Stopping audio device monitoring
+2026-09-14 19:11:30,117 - WindowsAudioClient - INFO - Closing Windows Audio Client
+2026-09-14 19:11:30,117 - myvoice.services.device_resilience_manager - INFO - DeviceResilienceManager shutdown complete
+2026-09-14 19:11:30,117 - myvoice.services.audio_coordinator - INFO - AudioCoordinator shutdown complete
+2026-09-14 19:11:30,117 - MyVoiceApp - INFO - Releasing service references...
+2026-09-14 19:11:30,117 - MyVoiceApp - INFO - Running garbage collection...
+2026-09-14 19:11:30,756 - MyVoiceApp - INFO - CUDA cache cleared
+2026-09-14 19:11:30,756 - MyVoiceApp - INFO - Async cleanup complete
+2026-09-14 19:11:30,756 - __main__ - INFO - Cleanup complete, exiting normally...
+2026-09-14 19:11:30,756 - MyVoiceApp - INFO - Application shutting down
+2026-09-14 19:11:30,756 - MyVoiceApp - WARNING - _cleanup_services() is deprecated - use cleanup_async() instead
+2026-09-14 19:11:30,774 - __main__ - INFO - MyVoice application exited with code: 0
+2026-09-14 19:11:30,774 - __main__ - INFO - Forcing process termination...
+2026-09-14 19:16:45,136 - __main__ - INFO - Starting MyVoice V2 application with qasync event loop
+2026-09-14 19:16:45,150 - myvoice.metrics - INFO - metric
+2026-09-14 19:16:45,151 - myvoice.services.tts_streaming.torch_runtime - INFO - TF32 + cuDNN benchmark enabled (device_capability=8.6)
+2026-09-14 19:16:45,151 - GlobalExceptionHandler - INFO - Global exception handler installed
+2026-09-14 19:16:45,151 - __main__ - INFO - Global exception handler installed
+2026-09-14 19:16:45,182 - __main__ - INFO - qasync event loop created and set as default
+2026-09-14 19:16:46,269 - MyVoiceApp - INFO - Initializing MyVoice application components asynchronously
+2026-09-14 19:16:46,269 - myvoice.utils.portable_paths - INFO - === Portable Mode Diagnostics ===
+2026-09-14 19:16:46,269 - myvoice.utils.portable_paths - INFO - Portable mode: True
+2026-09-14 19:16:46,269 - myvoice.utils.portable_paths - INFO - Application root: D:\MyVoice
+2026-09-14 19:16:46,269 - myvoice.utils.portable_paths - INFO - Data root: D:\MyVoice
+2026-09-14 19:16:46,271 - myvoice.utils.portable_paths - INFO - Config path: D:\MyVoice\config
+2026-09-14 19:16:46,271 - myvoice.utils.portable_paths - INFO - Logs path: D:\MyVoice\logs
+2026-09-14 19:16:46,271 - myvoice.utils.portable_paths - INFO - Voice files path: D:\MyVoice\voice_files
+2026-09-14 19:16:46,271 - myvoice.utils.portable_paths - INFO - FFmpeg path: D:\MyVoice\_internal\ffmpeg
+2026-09-14 19:16:46,271 - myvoice.utils.portable_paths - INFO - === End Diagnostics ===
+2026-09-14 19:16:46,272 - myvoice.utils.portable_paths - INFO - Initialized directory: D:\MyVoice\config
+2026-09-14 19:16:46,272 - myvoice.utils.portable_paths - INFO - Initialized directory: D:\MyVoice\logs
+2026-09-14 19:16:46,272 - myvoice.utils.portable_paths - INFO - Initialized directory: D:\MyVoice\voice_files
+2026-09-14 19:16:46,272 - myvoice.utils.portable_paths - INFO - Initialized directory: D:\MyVoice\whisper_models
+2026-09-14 19:16:46,274 - myvoice.utils.portable_paths - INFO - FFmpeg found at: D:\MyVoice\_internal\ffmpeg
+2026-09-14 19:16:46,275 - MyVoiceApp - INFO - Using portable config path: D:\MyVoice\config\settings.json
+2026-09-14 19:16:46,275 - ConfigurationManager - INFO - Service 'ConfigurationManager' status changed: stopped -> starting
+2026-09-14 19:16:46,275 - ConfigurationManager - INFO - Starting ConfigurationManager service
+2026-09-14 19:16:46,276 - ConfigurationManager - INFO - Loading settings from: D:\MyVoice\config\settings.json
+2026-09-14 19:16:46,276 - ConfigurationManager - INFO - Settings loaded successfully from D:\MyVoice\config\settings.json
+2026-09-14 19:16:46,276 - ConfigurationManager - INFO - Settings loading completed in 0.001s
+2026-09-14 19:16:46,276 - ConfigurationManager - INFO - Service 'ConfigurationManager' status changed: starting -> running
+2026-09-14 19:16:46,278 - ConfigurationManager - INFO - ConfigurationManager service started successfully
+2026-09-14 19:16:46,278 - MyVoiceApp - INFO - Configuration service started successfully
+2026-09-14 19:16:46,278 - MyVoiceApp - INFO - Loading application settings during startup
+2026-09-14 19:16:46,278 - ConfigurationManager - INFO - Loading settings from: D:\MyVoice\config\settings.json
+2026-09-14 19:16:46,278 - ConfigurationManager - INFO - Settings loaded successfully from D:\MyVoice\config\settings.json
+2026-09-14 19:16:46,278 - ConfigurationManager - INFO - Settings loading completed in 0.000s
+2026-09-14 19:16:46,278 - MyVoiceApp - INFO - Application settings loaded successfully
+2026-09-14 19:16:46,278 - MyVoiceApp - INFO - Application settings loaded and applied
+2026-09-14 19:16:46,278 - MyVoiceApp - INFO - SessionRegistry constructed on Qt main thread
+2026-09-14 19:16:46,278 - MyVoiceApp - INFO - PlaybackQueue constructed on Qt main thread
+2026-09-14 19:16:46,294 - myvoice.services.audio_coordinator - INFO - AudioCoordinator using SessionRegistry
+2026-09-14 19:16:46,294 - myvoice.services.audio_coordinator - INFO - AudioCoordinator initialized
+2026-09-14 19:16:46,294 - myvoice.services.audio_coordinator - INFO - Initializing AudioCoordinator with dual services
+2026-09-14 19:16:46,294 - myvoice.services.device_resilience_manager - INFO - DeviceResilienceManager initialized
+2026-09-14 19:16:46,294 - myvoice.services.device_resilience_manager - INFO - Initializing DeviceResilienceManager
+2026-09-14 19:16:46,294 - WindowsAudioClient - INFO - Using audio backend: PyAudio
+2026-09-14 19:16:46,294 - myvoice.services.integrations.audio_backend - INFO - Audio backend initialized: PyAudio
+2026-09-14 19:16:46,294 - myvoice.services.integrations.audio_backend - WARNING - Using standard PyAudio - WASAPI loopback not available. Consider installing PyAudioWPatch for better Windows 11 support
+2026-09-14 19:16:46,572 - myvoice.services.integrations.audio_backend - INFO - ============================================================
+2026-09-14 19:16:46,573 - myvoice.services.integrations.audio_backend - INFO - Audio Backend Information
+2026-09-14 19:16:46,573 - myvoice.services.integrations.audio_backend - INFO - ============================================================
+2026-09-14 19:16:46,573 - myvoice.services.integrations.audio_backend - INFO - Backend: PyAudio
+2026-09-14 19:16:46,573 - myvoice.services.integrations.audio_backend - INFO - PortAudio Version: PortAudio V19.7.0-devel, revision unknown (1246976)
+2026-09-14 19:16:46,573 - myvoice.services.integrations.audio_backend - INFO - WASAPI Loopback Support: False
+2026-09-14 19:16:46,573 - myvoice.services.integrations.audio_backend - INFO - Context Manager Support: False
+2026-09-14 19:16:46,573 - myvoice.services.integrations.audio_backend - INFO - ============================================================
+2026-09-14 19:16:46,573 - WindowsAudioClient - INFO - Windows Audio Client initialized
+2026-09-14 19:16:46,573 - WindowsAudioClient - INFO - Starting audio device monitoring
+2026-09-14 19:16:46,613 - WindowsAudioClient - INFO - Found 123 audio devices
+2026-09-14 19:16:46,613 - WindowsAudioClient - WARNING - Device monitoring is already active
+2026-09-14 19:16:46,613 - myvoice.services.device_resilience_manager - INFO - Device monitoring started (interval: 2.0s)
+2026-09-14 19:16:46,613 - myvoice.services.device_resilience_manager - INFO - DeviceResilienceManager initialized successfully
+2026-09-14 19:16:46,613 - myvoice.services.audio_coordinator - INFO - DeviceResilienceManager initialized successfully
+2026-09-14 19:16:46,613 - myvoice.services.monitor_audio_service - INFO - MonitorAudioService initialized
+2026-09-14 19:16:46,613 - WindowsAudioClient - INFO - Using audio backend: PyAudio
+2026-09-14 19:16:46,615 - myvoice.services.integrations.audio_backend - INFO - Audio backend initialized: PyAudio
+2026-09-14 19:16:46,615 - myvoice.services.integrations.audio_backend - WARNING - Using standard PyAudio - WASAPI loopback not available. Consider installing PyAudioWPatch for better Windows 11 support
+2026-09-14 19:16:46,615 - myvoice.services.integrations.audio_backend - INFO - ============================================================
+2026-09-14 19:16:46,615 - myvoice.services.integrations.audio_backend - INFO - Audio Backend Information
+2026-09-14 19:16:46,615 - myvoice.services.integrations.audio_backend - INFO - ============================================================
+2026-09-14 19:16:46,615 - myvoice.services.integrations.audio_backend - INFO - Backend: PyAudio
+2026-09-14 19:16:46,615 - myvoice.services.integrations.audio_backend - INFO - PortAudio Version: PortAudio V19.7.0-devel, revision unknown (1246976)
+2026-09-14 19:16:46,615 - myvoice.services.integrations.audio_backend - INFO - WASAPI Loopback Support: False
+2026-09-14 19:16:46,615 - myvoice.services.integrations.audio_backend - INFO - Context Manager Support: False
+2026-09-14 19:16:46,615 - myvoice.services.integrations.audio_backend - INFO - ============================================================
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO - Windows Audio Client initialized
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO - ============================================================
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO - Audio System Information
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO - ============================================================
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO - PortAudio Version: PortAudio V19.7.0-devel, revision unknown (1246976)
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO - 
+Available Host APIs: 4
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO -   [0] MME
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO -       Devices: 29
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO -       Default Input: 1
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO -       Default Output: 14
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO -   [1] Windows DirectSound
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO -       Devices: 29
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO -       Default Input: 29
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO -       Default Output: 42
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO -   [2] Windows WASAPI
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO -       Devices: 27
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO -       Default Input: 77
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO -       Default Output: 72
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO -   [3] Windows WDM-KS
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO -       Devices: 38
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO -       Default Input: 93
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO -       Default Output: 114
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO - 
+Default Devices:
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO -   Input: Voicemeeter Out B1 (VB-Audio Vo (index 1)
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO -   Output: Voicemeeter AUX Input (VB-Audio (index 14)
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO - 
+WASAPI Support:
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO - Found WASAPI host API at index 2: Windows WASAPI
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO -   WASAPI is AVAILABLE at host API index 2
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO -   DirectSound is available at host API index 1
+2026-09-14 19:16:46,615 - WindowsAudioClient - INFO - ============================================================
+2026-09-14 19:16:46,615 - myvoice.services.monitor_audio_service - INFO - MonitorAudioService initialized successfully
+2026-09-14 19:16:46,615 - myvoice.services.audio_coordinator - INFO - MonitorAudioService initialized successfully
+2026-09-14 19:16:46,617 - myvoice.services.virtual_microphone_service - INFO - VirtualMicrophoneService initialized
+2026-09-14 19:16:46,617 - myvoice.services.virtual_microphone_service - ERROR - Virtual device -1 validation failed: [Errno -9996] Invalid device info
+2026-09-14 19:16:46,617 - myvoice.services.virtual_microphone_service - WARNING - Default virtual device -1 not available
+2026-09-14 19:16:46,617 - myvoice.services.virtual_microphone_service - INFO - VirtualMicrophoneService initialized successfully
+2026-09-14 19:16:46,617 - myvoice.services.audio_coordinator - INFO - VirtualMicrophoneService initialized successfully
+2026-09-14 19:16:46,617 - myvoice.services.microphone_capture_service - INFO - MicrophoneCaptureService initialized
+2026-09-14 19:16:46,617 - myvoice.services.microphone_capture_service - INFO - MicrophoneCaptureService initialized successfully
+2026-09-14 19:16:46,617 - myvoice.services.audio_coordinator - INFO - MicrophoneCaptureService initialized successfully
+2026-09-14 19:16:46,617 - myvoice.services.audio_mixer_service - INFO - AudioMixerService initialized
+2026-09-14 19:16:46,617 - myvoice.services.audio_coordinator - INFO - AudioMixerService initialized
+2026-09-14 19:16:46,617 - myvoice.services.audio_coordinator - INFO - AudioCoordinator initialized - Monitor: OK, Virtual: OK
+2026-09-14 19:16:46,617 - MyVoiceApp - INFO - Audio coordinator started successfully
+2026-09-14 19:16:46,617 - MyVoiceApp - INFO - Audio coordinator started successfully
+2026-09-14 19:16:46,617 - MyVoiceApp - INFO - First boot detected - attempting VB-Cable auto-detection
+2026-09-14 19:16:46,618 - VirtualDeviceCompatibilityService - INFO - Virtual Device Compatibility Service initialized
+2026-09-14 19:16:46,618 - VirtualDeviceCompatibilityService - INFO - Service 'VirtualDeviceCompatibilityService' status changed: stopped -> starting
+2026-09-14 19:16:46,618 - VirtualDeviceCompatibilityService - INFO - Detecting virtual audio drivers
+2026-09-14 19:16:46,618 - VirtualDeviceCompatibilityService - INFO - Virtual driver detection complete: 0 drivers installed
+2026-09-14 19:16:46,618 - VirtualDeviceCompatibilityService - INFO - Service 'VirtualDeviceCompatibilityService' status changed: starting -> running
+2026-09-14 19:16:46,618 - VirtualDeviceCompatibilityService - INFO - Virtual Device Compatibility Service started
+2026-09-14 19:16:46,618 - VirtualDeviceCompatibilityService - INFO - Auto-detecting VB-Cable device
+2026-09-14 19:16:46,620 - VirtualDeviceCompatibilityService - INFO - VB-Cable driver not detected as installed
+2026-09-14 19:16:46,620 - MyVoiceApp - INFO - VB-Cable device not detected - virtual microphone not configured
+2026-09-14 19:16:46,620 - VirtualDeviceCompatibilityService - INFO - Service 'VirtualDeviceCompatibilityService' status changed: running -> stopping
+2026-09-14 19:16:46,620 - VirtualDeviceCompatibilityService - INFO - Service 'VirtualDeviceCompatibilityService' status changed: stopping -> stopped
+2026-09-14 19:16:46,620 - VirtualDeviceCompatibilityService - INFO - Virtual Device Compatibility Service stopped
+2026-09-14 19:16:46,620 - MyVoiceApp - INFO - Initializing TTS service with quality tier: small
+2026-09-14 19:16:46,620 - QwenTTSService - INFO - QwenTTSService using SessionRegistry
+2026-09-14 19:16:46,620 - myvoice.metrics - INFO - metric
+2026-09-14 19:16:46,620 - ModelRegistry - INFO - ModelRegistry initialized: device=cuda:0, dtype=torch.bfloat16, precision_source='app_settings_auto_ampere', quality_tier=small, compile_engaged='deferred'
+2026-09-14 19:16:46,620 - QwenTTSService - INFO - QwenTTSService initialized: device=auto, cache_dir=C:\Users\AL301\AppData\Local\Temp
+2026-09-14 19:16:46,620 - QwenTTSService - INFO - Service 'QwenTTSService' status changed: stopped -> starting
+2026-09-14 19:16:46,620 - QwenTTSService - INFO - Starting QwenTTSService
+2026-09-14 19:16:46,620 - QwenTTSService - INFO - Service 'QwenTTSService' status changed: starting -> running
+2026-09-14 19:16:46,620 - QwenTTSService - INFO - QwenTTSService started (models will load on first use)
+2026-09-14 19:16:46,620 - MyVoiceApp - INFO - TTS health status callback received: healthy, main_window exists: False
+2026-09-14 19:16:46,620 - MyVoiceApp - WARNING - Main window not initialized yet, cannot update TTS status
+2026-09-14 19:16:46,620 - MyVoiceApp - INFO - TTS service started successfully
+2026-09-14 19:16:46,620 - MyVoiceApp - INFO - TTS service started successfully
+2026-09-14 19:16:46,621 - MyVoiceApp - INFO - Using voice directory: D:\MyVoice\voice_files
+2026-09-14 19:16:46,621 - VoiceProfileManager - INFO - Service 'VoiceProfileManager' status changed: stopped -> starting
+2026-09-14 19:16:46,621 - VoiceProfileManager - INFO - Starting VoiceProfileManager service
+2026-09-14 19:16:46,624 - VoiceProfileManager - INFO - Loaded 12 profiles from cache, invalidated 0
+2026-09-14 19:16:46,624 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Vivian (Bright, slightly edgy young female)
+2026-09-14 19:16:46,624 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Serena (Warm, gentle young female)
+2026-09-14 19:16:46,624 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Uncle_Fu (Seasoned male, low and mellow voice)
+2026-09-14 19:16:46,624 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Dylan (Youthful Beijing male)
+2026-09-14 19:16:46,624 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Eric (Lively Chengdu male)
+2026-09-14 19:16:46,624 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Ryan (Dynamic male with strong rhythm)
+2026-09-14 19:16:46,626 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Aiden (Sunny American male)
+2026-09-14 19:16:46,626 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Ono_Anna (Playful Japanese female)
+2026-09-14 19:16:46,626 - myvoice.models.voice_profile - INFO - Created bundled voice profile: Sohee (Warm Korean female)
+2026-09-14 19:16:46,626 - VoiceProfileManager - INFO - Initialized 9 bundled voice profiles
+2026-09-14 19:16:46,626 - VoiceProfileManager - INFO - Performing initial directory scan
+2026-09-14 19:16:46,626 - VoiceProfileManager - INFO - Scanning voice directory: D:\MyVoice\voice_files (incremental=True)
+2026-09-14 19:16:46,627 - VoiceProfileManager - INFO - Found 12 WAV files, processing 12 (cached: 0)
+2026-09-14 19:16:46,627 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Anna-F (7.4s) - Anna-F.wav
+2026-09-14 19:16:46,629 - MyVoiceApp - INFO - Setting up device change monitoring
+2026-09-14 19:16:46,629 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Autumn-Southern-F (8.2s) - Autumn-Southern-F.wav
+2026-09-14 19:16:46,629 - myvoice.services.audio_coordinator - INFO - Starting device monitoring
+2026-09-14 19:16:46,629 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Bella-F (9.2s) - Bella-F.wav
+2026-09-14 19:16:46,631 - myvoice.services.audio_coordinator - INFO - Device monitoring started
+2026-09-14 19:16:46,631 - MyVoiceApp - INFO - Device change monitoring started successfully
+2026-09-14 19:16:46,631 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Crissy-Brit-F (8.7s) - Crissy-Brit-F.wav
+2026-09-14 19:16:46,632 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Eddy-Brit-M (3.9s) - Eddy-Brit-M.wav
+2026-09-14 19:16:46,632 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Elliot-Brit-M (8.4s) - Elliot-Brit-M.wav
+2026-09-14 19:16:46,632 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Jules-Brit-M (9.5s) - Jules-Brit-M.wav
+2026-09-14 19:16:46,634 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] June-Southern-F (8.3s) - June-Southern-F.wav
+2026-09-14 19:16:46,634 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Sally-Southern-F (9.1s) - Sally-Southern-F.wav
+2026-09-14 19:16:46,634 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Sarira-F (9.7s) - Sarira-F.wav
+2026-09-14 19:16:46,635 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Suspense-M (8.7s) - Suspense-M.wav
+2026-09-14 19:16:46,635 - myvoice.models.voice_profile - INFO - Created voice profile: [VALID] Trixie-Southern-F (9.6s) - Trixie-Southern-F.wav
+2026-09-14 19:16:46,637 - VoiceProfileManager - INFO - Directory scan completed: 12/12 valid profiles (12 processed, 0 cached) in 0.01s
+2026-09-14 19:16:46,638 - VoiceProfileManager - INFO - Service 'VoiceProfileManager' status changed: starting -> running
+2026-09-14 19:16:46,638 - VoiceProfileManager - INFO - VoiceProfileManager service started successfully
+2026-09-14 19:16:46,638 - MyVoiceApp - INFO - Voice profile service started successfully
+2026-09-14 19:16:46,638 - MyVoiceApp - INFO - Voice profile service started successfully
+2026-09-14 19:16:46,638 - MyVoiceApp - INFO - Preloading model for cached active profile: Base (Clone)
+2026-09-14 19:16:46,638 - ModelRegistry - INFO - Loading model: Base (Clone)
+2026-09-14 19:16:46,638 - MyVoiceApp - INFO - voice restoration handed off to the event loop (deferred 0 loop pass(es) for qasync re-entrancy safety)
+2026-09-14 19:16:46,644 - QwenTTSService - INFO - Voice clone prompt cache: hydrated 0/12 CLONED voices for tier small from disk
+2026-09-14 19:16:46,644 - MyVoiceApp - INFO - Voice clone prompt cache hydration: (0, 12)
+2026-09-14 19:16:46,644 - MyVoiceApp - INFO - Restoring voice selection from saved configuration
+2026-09-14 19:16:46,644 - ConfigurationManager - INFO - Attempting to restore voice selection: Sarira-F
+2026-09-14 19:16:46,644 - ConfigurationManager - INFO - Successfully restored voice selection: Sarira-F
+2026-09-14 19:16:46,644 - VoiceProfileManager - INFO - Set active voice profile: Sarira-F
+2026-09-14 19:16:46,644 - MyVoiceApp - INFO - Successfully restored voice selection: Sarira-F
+2026-09-14 19:16:46,646 - MyVoiceApp - INFO - No voice selection to restore
+2026-09-14 19:16:46,857 - qwen_tts.core.models.configuration_qwen3_tts - INFO - talker_config is None. Initializing talker model with default values
+2026-09-14 19:16:46,857 - qwen_tts.core.models.configuration_qwen3_tts - INFO - speaker_encoder_config is None. Initializing talker model with default values
+2026-09-14 19:16:46,857 - qwen_tts.core.models.configuration_qwen3_tts - INFO - code_predictor_config is None. Initializing code_predictor model with default values
+2026-09-14 19:16:46,857 - qwen_tts.core.models.configuration_qwen3_tts - INFO - code_predictor_config is None. Initializing code_predictor model with default values
+2026-09-14 19:16:48,355 - qwen_tts.core.tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 - INFO - encoder_config is None. Initializing encoder with default values
+2026-09-14 19:16:48,355 - qwen_tts.core.tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 - INFO - decoder_config is None. Initializing decoder with default values
+2026-09-14 19:16:50,661 - myvoice.services.tts_streaming.compile_cache - INFO - TORCHINDUCTOR_CACHE_DIR set to C:\Users\AL301\AppData\Local\MyVoice\torch_compile_cache\8384a5dfa0da64f5
+2026-09-14 19:16:51,334 - myvoice.metrics - INFO - metric
+2026-09-14 19:16:51,334 - myvoice.services.tts_streaming.torch_runtime - INFO - torch.compile + CUDA Graph engaged (decode_window_frames=10, cuda_capability=8.6, cache=cold)
+2026-09-14 19:16:51,334 - ModelRegistry - INFO - ModelRegistry model loaded: model_type=Qwen/Qwen3-TTS-12Hz-1.7B-Base, compile_engaged='True', compile_reason='engaged_cold_compile'
+2026-09-14 19:16:51,334 - ModelRegistry - INFO - Model Base (Clone) loaded successfully in 4.70s
+2026-09-14 19:16:51,336 - MyVoiceApp - INFO - Model Base (Clone) preloaded successfully
+2026-09-14 19:16:51,336 - MainWindow - INFO - MainWindow using SessionRegistry for TTS indicator substate
+2026-09-14 19:16:51,350 - ThemeManager - INFO - Successfully loaded theme: dark
+2026-09-14 19:16:51,478 - QuickSpeakService - INFO - QuickSpeakService initialized with profile: default
+2026-09-14 19:16:51,480 - QuickSpeakService - INFO - Loaded 15 Quick Speak entries from CSV
+2026-09-14 19:16:51,480 - MainWindow - INFO - Applying theme from settings: dark
+2026-09-14 19:16:51,484 - MainWindow - INFO - THEME DEBUG: Successfully applied theme from settings: dark
+2026-09-14 19:16:51,535 - ServiceStatusBar - WARNING - Service TTS already exists in status bar
+2026-09-14 19:16:51,535 - MainWindow - INFO - TTS service set for MainWindow: available
+2026-09-14 19:16:51,535 - MainWindow - INFO - Model ready: Base (Clone)
+2026-09-14 19:16:51,535 - MyVoiceApp - INFO - TTS health status callback received: healthy, main_window exists: True
+2026-09-14 19:16:51,535 - MyVoiceApp - INFO - TTS status initialized in UI: healthy
+2026-09-14 19:16:51,535 - MyVoiceApp - INFO - [MIC_DEBUG] ========================================
+2026-09-14 19:16:51,535 - MyVoiceApp - INFO - [MIC_DEBUG] _setup_mic_mixing_from_settings called
+2026-09-14 19:16:51,535 - MyVoiceApp - INFO - [MIC_DEBUG] mic_mixing_enabled: False
+2026-09-14 19:16:51,535 - MyVoiceApp - INFO - [MIC_DEBUG] mic_input_device_id: None
+2026-09-14 19:16:51,535 - MyVoiceApp - INFO - [MIC_DEBUG] virtual_microphone_device_id: None
+2026-09-14 19:16:51,536 - MyVoiceApp - INFO - [MIC_DEBUG] mic_monitor_running: False
+2026-09-14 19:16:51,536 - MyVoiceApp - INFO - [MIC_DEBUG] continuous_passthrough_running: False
+2026-09-14 19:16:51,536 - MyVoiceApp - INFO - [MIC_DEBUG] NOTE: Mic mixing is DISABLED - enable 'Enable Microphone Mixing' in settings
+2026-09-14 19:16:51,536 - MyVoiceApp - INFO - [MIC_DEBUG] ========================================
+2026-09-14 19:16:51,536 - myvoice.services.audio_coordinator - INFO - Mic mixing disabled
+2026-09-14 19:16:51,536 - myvoice.services.device_resilience_manager - INFO - Unregistered microphone device: unknown
+2026-09-14 19:16:51,536 - myvoice.services.audio_coordinator - INFO - Microphone capture stopped
+2026-09-14 19:16:51,734 - MyVoiceApp - INFO - MyVoice application initialization completed successfully
+2026-09-14 19:16:51,884 - __main__ - INFO - Exception handler UI callbacks configured
+2026-09-14 19:16:51,884 - __main__ - INFO - MyVoice application initialized successfully
+2026-09-14 19:16:51,884 - MyVoiceApp - INFO - torch.compile warmup handed off to the event loop (deferred 2 loop pass(es) for qasync re-entrancy safety)
+2026-09-14 19:16:51,887 - QwenTTSService - INFO - Compile-priming Generate gate: ENGAGED (Generate disabled while priming holds the request semaphore)
+2026-09-14 19:16:51,887 - QwenTTSService - INFO - Compile warmup priming skipped (no_priming_prompt): BASE is resident but the active profile has no cached voice_clone_prompt; skipping rather than switching models; cache stays cold
+2026-09-14 19:16:51,887 - myvoice.metrics - INFO - metric
+2026-09-14 19:16:51,887 - QwenTTSService - INFO - Compile-priming Generate gate: RELEASED (Generate re-enabled)
+2026-09-14 19:16:58,197 - MainWindow - INFO - Starting TTS generation for: Testing TTFA on the RTX 30 60 to see how long this...
+2026-09-14 19:16:58,198 - MyVoiceApp - INFO - TTS generation requested for text: Testing TTFA on the RTX 30 60 to see how long this...
+2026-09-14 19:16:58,198 - MyVoiceApp - INFO - Voice type 'VoiceType.CLONED' does not support emotion, skipping instruct
+2026-09-14 19:16:58,198 - MyVoiceApp - INFO - TTS generation using voice profile: Sarira-F
+2026-09-14 19:16:58,198 - MyVoiceApp - INFO - TTS request for cloned voice 'Sarira-F' (no emotion support)
+2026-09-14 19:16:58,198 - MyVoiceApp - INFO - [DEBUG] Voice type: VoiceType.CLONED (value=cloned)
+2026-09-14 19:16:58,198 - MyVoiceApp - INFO - [DEBUG] file_path: D:\MyVoice\voice_files\Sarira-F.wav
+2026-09-14 19:16:58,198 - MyVoiceApp - INFO - [DEBUG] VoiceType.EMBEDDING = VoiceType.EMBEDDING, comparison = False
+2026-09-14 19:16:58,198 - MyVoiceApp - INFO - Using Base model for cloned voice with ICL mode (transcription available)
+2026-09-14 19:16:58,200 - QwenTTSService - INFO - Voice clone prompt cache miss for D:\MyVoice\voice_files\Sarira-F.wav (tier=small); computing
+2026-09-14 19:16:58,201 - QwenTTSService - INFO - Creating voice clone prompt for 0.6B tier from D:\MyVoice\voice_files\Sarira-F.wav
+2026-09-14 19:16:58,201 - ModelRegistry - INFO - Unloading model: Base (Clone)
+2026-09-14 19:16:58,404 - myvoice.metrics - INFO - metric
+2026-09-14 19:16:58,404 - myvoice.reload_compile_diag - INFO - reload_compile_diagnostic value=0.0 stage='post_unload' cycle_idx=1 is_available=True device_count=1 in_bad_fork=False initialized=True last_cuda_error='AttributeError' cuda_path_present=True path_has_cuda_redist=True
+2026-09-14 19:16:58,404 - ModelRegistry - INFO - Model Base (Clone) unloaded
+2026-09-14 19:16:58,405 - MainWindow - INFO - Model loading: Loading Base (Clone)...
+2026-09-14 19:16:58,405 - ModelRegistry - INFO - Loading model: Base (Clone)
+2026-09-14 19:16:58,405 - MainWindow - INFO - Model loading: Loading Base (Clone) from cache...
+2026-09-14 19:16:58,405 - ModelRegistry - INFO - Using tier override: small
+2026-09-14 19:16:58,490 - qwen_tts.core.models.configuration_qwen3_tts - INFO - talker_config is None. Initializing talker model with default values
+2026-09-14 19:16:58,490 - qwen_tts.core.models.configuration_qwen3_tts - INFO - speaker_encoder_config is None. Initializing talker model with default values
+2026-09-14 19:16:58,490 - qwen_tts.core.models.configuration_qwen3_tts - INFO - code_predictor_config is None. Initializing code_predictor model with default values
+2026-09-14 19:16:58,491 - qwen_tts.core.models.configuration_qwen3_tts - INFO - code_predictor_config is None. Initializing code_predictor model with default values
+2026-09-14 19:16:59,886 - qwen_tts.core.tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 - INFO - encoder_config is None. Initializing encoder with default values
+2026-09-14 19:16:59,886 - qwen_tts.core.tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 - INFO - decoder_config is None. Initializing decoder with default values
+2026-09-14 19:17:00,206 - MainWindow - INFO - TTS generation completed (stub) for: Testing TTFA on the RTX 30 60 ...
+2026-09-14 19:17:02,051 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:02,051 - myvoice.services.tts_streaming.torch_runtime - INFO - torch.compile + CUDA Graph engaged (decode_window_frames=10, cuda_capability=8.6, cache=cold)
+2026-09-14 19:17:02,051 - ModelRegistry - INFO - ModelRegistry model loaded: model_type=Qwen/Qwen3-TTS-12Hz-1.7B-Base, compile_engaged='True', compile_reason='engaged_cold_compile'
+2026-09-14 19:17:02,051 - MainWindow - INFO - Model ready: Base (Clone)
+2026-09-14 19:17:02,051 - ModelRegistry - INFO - Model Base (Clone) loaded successfully in 3.65s
+2026-09-14 19:17:02,053 - QwenTTSService - INFO - Creating voice clone prompt from D:\MyVoice\voice_files\Sarira-F.wav with transcript: In a quiet town, nestled between two hills, there ...
+2026-09-14 19:17:15,334 - QwenTTSService - INFO - Voice clone prompt created successfully
+2026-09-14 19:17:15,334 - QwenTTSService - INFO - Normalizing list result (len=1, types=['VoiceClonePromptItem'])
+2026-09-14 19:17:15,334 - QwenTTSService - INFO - Single element type: VoiceClonePromptItem, module: qwen_tts.inference.qwen3_tts_model
+2026-09-14 19:17:15,334 - QwenTTSService - INFO - Single element is library VoiceClonePromptItem, returning as-is
+2026-09-14 19:17:15,334 - QwenTTSService - INFO - Created 0.6B voice clone prompt successfully
+2026-09-14 19:17:15,338 - QwenTTSService - INFO - Prompt is already library VoiceClonePromptItem, returning as-is
+2026-09-14 19:17:15,338 - QwenTTSService - INFO - Voice clone prompt persisted to D:\MyVoice\voice_files\Sarira-F.small.pt
+2026-09-14 19:17:15,338 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:15,338 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:15,338 - QwenTTSService - INFO - Starting TTS generation (TRUE_STREAM): model=Base (Clone), text='Testing TTFA on the RTX 30 60 to see how long this...'
+2026-09-14 19:17:15,338 - MainWindow - INFO - Model loading: Loading Base (Clone)...
+2026-09-14 19:17:15,338 - MainWindow - INFO - Model ready: Base (Clone)
+2026-09-14 19:17:16,586 - QwenTTSService - INFO - [CodecStateCache] self-test passed: traversal 0.000e+00 (bit-exact target), chunked 4.223e-02 <= 1.5e-01, lengths 22485+23040 exact (dtype=torch.bfloat16)
+2026-09-14 19:17:16,586 - QwenTTSService - INFO - [QwenTTS] codec state cache enabled (chunk_size=10 lookahead=0, was 5) — chunk boundaries carry real codec state and the lookahead is retired (Story 20.6)
+2026-09-14 19:17:16,586 - QwenTTSService - INFO - [QwenTTS] TRUE_STREAM geometry: chunk_size=10 lookahead=0 (carries_codec_state=True)
+2026-09-14 19:17:16,587 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:16,599 - qwen_tts.core.models.configuration_qwen3_tts - INFO - code_predictor_config is None. Initializing code_predictor model with default values
+2026-09-14 19:17:46,379 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:47,649 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:48,352 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:48,352 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:48,352 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:48,354 - myvoice.services.audio_coordinator - INFO - Streaming buffer: adaptive pre-buffer ENABLED — text_length=57 chars, T_a_estimate=3.64s, cushion_budget=2.0s, detected_vram=12.0 GiB (< 16 GiB threshold)
+2026-09-14 19:17:48,354 - myvoice.services.audio_coordinator - INFO - Streaming buffer: consumer cross-fade 0 samples (default 64) - the producer declared this chunk stream sample-continuous, so a cross-dissolve between consecutive chunks would comb rather than repair
+2026-09-14 19:17:48,354 - myvoice.services.monitor_audio_service - INFO - Found 61 monitor devices
+2026-09-14 19:17:48,354 - myvoice.services.audio_coordinator - INFO - [WIN11-DEBUG] Monitor service health check result: True, health=(True, None)
+2026-09-14 19:17:48,354 - myvoice.services.monitor_audio_service - INFO - Using OS default output device for monitor: index=14 name='Voicemeeter AUX Input (VB-Audio'
+2026-09-14 19:17:48,424 - myvoice.services.monitor_audio_service - INFO - Started streaming session stream_1_1789435068: 1ch, 24000Hz, device=14
+2026-09-14 19:17:48,424 - myvoice.services.audio_coordinator - INFO - [WIN11-DEBUG] Virtual service health check result: True, health=(True, None)
+2026-09-14 19:17:48,426 - myvoice.services.virtual_microphone_service - INFO - Found 39 virtual microphone devices
+2026-09-14 19:17:48,432 - myvoice.services.virtual_microphone_service - INFO - Started virtual mic streaming session vstream_1_1789435068: 1ch, 24000Hz, device=14
+2026-09-14 19:17:48,432 - myvoice.services.audio_coordinator - INFO - Streaming sessions started: {'monitor': 'stream_1_1789435068', 'virtual': 'vstream_1_1789435068'}
+2026-09-14 19:17:48,432 - MyVoiceApp - INFO - Progressive playback session opened: sample_rate=24000Hz, monitor_session=stream_1_1789435068, virtual_session=vstream_1_1789435068
+2026-09-14 19:17:48,433 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:48,433 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:49,283 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:49,283 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:49,284 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=75690 is_final=False batch_idx=0/1 total_bytes_so_far=75690
+2026-09-14 19:17:49,284 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:50,094 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:50,094 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:50,689 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:50,689 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:50,690 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=38400 is_final=False batch_idx=0/1 total_bytes_so_far=114090
+2026-09-14 19:17:51,105 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:51,105 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:51,378 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:51,378 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:51,378 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=38400 is_final=False batch_idx=0/1 total_bytes_so_far=152490
+2026-09-14 19:17:52,165 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:52,165 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:52,228 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:52,228 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:52,229 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=38400 is_final=False batch_idx=0/1 total_bytes_so_far=190890
+2026-09-14 19:17:53,077 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:53,077 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:53,201 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:53,201 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:53,201 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=38400 is_final=False batch_idx=0/1 total_bytes_so_far=229290
+2026-09-14 19:17:53,695 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:53,697 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:53,702 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:53,702 - QwenTTSService - INFO - TTS generation complete (TRUE_STREAM): 118485 samples, 7 chunks, 38.36s total, 33.01s first chunk
+2026-09-14 19:17:53,702 - MyVoiceApp - INFO - TTS generation completed successfully, 237014 bytes
+2026-09-14 19:17:53,703 - MyVoiceApp - INFO - Starting audio playback via AudioCoordinator
+2026-09-14 19:17:53,703 - MyVoiceApp - INFO - Progressive playback already active; skipping batch dispatch (queue_token=e65791af-36e5-424b-95b0-34ff6ec7670a)
+2026-09-14 19:17:53,703 - MyVoiceApp - INFO - Audio playback dispatched successfully
+2026-09-14 19:17:53,758 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:53,758 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:53,758 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=7680 dispatched_bytes=7680 is_final=False batch_idx=0/1 total_bytes_so_far=236970
+2026-09-14 19:17:53,928 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:53,928 - myvoice.metrics - INFO - metric
+2026-09-14 19:17:53,928 - myvoice.services.audio_coordinator - INFO - stop_streaming_session called: wait_for_drain=True _streaming_buffer=set _stream_total_bytes=236970 _stream_first_write_ts=set _stream_last_chunk_bytes=7680
+2026-09-14 19:17:54,278 - myvoice.services.audio_coordinator - INFO - Drain calc: last_chunk_bytes=7680 total_bytes=236970 bytes_per_sec=48000 last_chunk_dur=0.160s time_since_last_write=0.531s last_chunk_remaining=0.000s total_audio_dur=4.937s playback_elapsed=5.000s total_queued=0.000s drain_wait=0.800s
+2026-09-14 19:17:55,100 - myvoice.services.audio_coordinator - INFO - Drain wait complete: planned=0.800s actual=0.813s
+2026-09-14 19:17:55,291 - myvoice.services.monitor_audio_service - INFO - Streaming session stopped
+2026-09-14 19:17:55,484 - myvoice.services.virtual_microphone_service - INFO - Virtual mic streaming session stopped
+2026-09-14 19:17:55,484 - myvoice.services.audio_coordinator - INFO - Streaming sessions stopped: {'monitor': True, 'virtual': True}
+2026-09-14 19:18:24,302 - MainWindow - INFO - Starting TTS generation for: Alright so that was the first generation, cold cac...
+2026-09-14 19:18:24,304 - MyVoiceApp - INFO - TTS generation requested for text: Alright so that was the first generation, cold cac...
+2026-09-14 19:18:24,304 - MyVoiceApp - INFO - Voice type 'VoiceType.CLONED' does not support emotion, skipping instruct
+2026-09-14 19:18:24,304 - MyVoiceApp - INFO - TTS generation using voice profile: Sarira-F
+2026-09-14 19:18:24,304 - MyVoiceApp - INFO - TTS request for cloned voice 'Sarira-F' (no emotion support)
+2026-09-14 19:18:24,304 - MyVoiceApp - INFO - [DEBUG] Voice type: VoiceType.CLONED (value=cloned)
+2026-09-14 19:18:24,304 - MyVoiceApp - INFO - [DEBUG] file_path: D:\MyVoice\voice_files\Sarira-F.wav
+2026-09-14 19:18:24,304 - MyVoiceApp - INFO - [DEBUG] VoiceType.EMBEDDING = VoiceType.EMBEDDING, comparison = False
+2026-09-14 19:18:24,304 - MyVoiceApp - INFO - Using Base model for cloned voice with ICL mode (transcription available)
+2026-09-14 19:18:24,305 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:24,305 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:24,305 - QwenTTSService - INFO - Starting TTS generation (TRUE_STREAM): model=Base (Clone), text='Alright so that was the first generation, cold cac...'
+2026-09-14 19:18:24,305 - MainWindow - INFO - Model loading: Loading Base (Clone)...
+2026-09-14 19:18:24,306 - MainWindow - INFO - Model ready: Base (Clone)
+2026-09-14 19:18:24,306 - QwenTTSService - INFO - [QwenTTS] codec state cache enabled (chunk_size=10 lookahead=0, was 5) — chunk boundaries carry real codec state and the lookahead is retired (Story 20.6)
+2026-09-14 19:18:24,306 - QwenTTSService - INFO - [QwenTTS] TRUE_STREAM geometry: chunk_size=10 lookahead=0 (carries_codec_state=True)
+2026-09-14 19:18:24,306 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:24,322 - qwen_tts.core.models.configuration_qwen3_tts - INFO - code_predictor_config is None. Initializing code_predictor model with default values
+2026-09-14 19:18:24,610 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:25,491 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:26,156 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:26,156 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:26,156 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:26,156 - myvoice.services.audio_coordinator - INFO - Streaming buffer: adaptive pre-buffer ENABLED — text_length=155 chars, T_a_estimate=9.03s, cushion_budget=2.0s, detected_vram=12.0 GiB (< 16 GiB threshold)
+2026-09-14 19:18:26,156 - myvoice.services.audio_coordinator - INFO - Streaming buffer: consumer cross-fade 0 samples (default 64) - the producer declared this chunk stream sample-continuous, so a cross-dissolve between consecutive chunks would comb rather than repair
+2026-09-14 19:18:26,157 - myvoice.services.monitor_audio_service - INFO - Found 61 monitor devices
+2026-09-14 19:18:26,157 - myvoice.services.audio_coordinator - INFO - [WIN11-DEBUG] Monitor service health check result: True, health=(True, None)
+2026-09-14 19:18:26,157 - myvoice.services.monitor_audio_service - INFO - Using OS default output device for monitor: index=14 name='Voicemeeter AUX Input (VB-Audio'
+2026-09-14 19:18:26,178 - myvoice.services.monitor_audio_service - INFO - Started streaming session stream_2_1789435106: 1ch, 24000Hz, device=14
+2026-09-14 19:18:26,178 - myvoice.services.audio_coordinator - INFO - [WIN11-DEBUG] Virtual service health check result: True, health=(True, None)
+2026-09-14 19:18:26,178 - myvoice.services.virtual_microphone_service - INFO - Found 39 virtual microphone devices
+2026-09-14 19:18:26,186 - myvoice.services.virtual_microphone_service - INFO - Started virtual mic streaming session vstream_2_1789435106: 1ch, 24000Hz, device=14
+2026-09-14 19:18:26,186 - myvoice.services.audio_coordinator - INFO - Streaming sessions started: {'monitor': 'stream_2_1789435106', 'virtual': 'vstream_2_1789435106'}
+2026-09-14 19:18:26,186 - MyVoiceApp - INFO - Progressive playback session opened: sample_rate=24000Hz, monitor_session=stream_2_1789435106, virtual_session=vstream_2_1789435106
+2026-09-14 19:18:26,186 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:26,187 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:26,296 - MainWindow - INFO - TTS generation completed (stub) for: Alright so that was the first ...
+2026-09-14 19:18:27,101 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:27,102 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:27,102 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=75690 is_final=False batch_idx=0/1 total_bytes_so_far=75690
+2026-09-14 19:18:27,102 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:27,697 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:27,697 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:28,512 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:28,512 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:28,514 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=38400 is_final=False batch_idx=0/1 total_bytes_so_far=114090
+2026-09-14 19:18:28,698 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:28,698 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:29,192 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:29,192 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:29,192 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=38400 is_final=False batch_idx=0/1 total_bytes_so_far=152490
+2026-09-14 19:18:29,703 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:29,703 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:30,053 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:30,053 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:30,053 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=38400 is_final=False batch_idx=0/1 total_bytes_so_far=190890
+2026-09-14 19:18:30,690 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:30,690 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:30,903 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:30,903 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:30,903 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=38400 is_final=False batch_idx=0/1 total_bytes_so_far=229290
+2026-09-14 19:18:31,583 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:31,583 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:31,672 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:31,672 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:31,672 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=38400 is_final=False batch_idx=0/1 total_bytes_so_far=267690
+2026-09-14 19:18:32,433 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:32,433 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:32,651 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:32,651 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:32,652 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=38400 is_final=False batch_idx=0/1 total_bytes_so_far=306090
+2026-09-14 19:18:33,385 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:33,385 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:33,650 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:33,650 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:33,650 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=38400 is_final=False batch_idx=0/1 total_bytes_so_far=344490
+2026-09-14 19:18:34,372 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:34,372 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:34,723 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:34,723 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:34,723 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=38400 is_final=False batch_idx=0/1 total_bytes_so_far=382890
+2026-09-14 19:18:35,275 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:35,275 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:35,886 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:35,886 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:35,887 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=38400 is_final=False batch_idx=0/1 total_bytes_so_far=421290
+2026-09-14 19:18:36,571 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:36,571 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:36,587 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:36,587 - QwenTTSService - INFO - TTS generation complete (TRUE_STREAM): 216405 samples, 12 chunks, 12.28s total, 1.85s first chunk
+2026-09-14 19:18:36,589 - MyVoiceApp - INFO - TTS generation completed successfully, 432854 bytes
+2026-09-14 19:18:36,589 - MyVoiceApp - INFO - Starting audio playback via AudioCoordinator
+2026-09-14 19:18:36,589 - MyVoiceApp - INFO - Progressive playback already active; skipping batch dispatch (queue_token=f2186505-af98-4147-9f9c-3f5abb84140d)
+2026-09-14 19:18:36,589 - MyVoiceApp - INFO - Audio playback dispatched successfully
+2026-09-14 19:18:36,619 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:36,619 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:36,619 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=11520 dispatched_bytes=11520 is_final=False batch_idx=0/1 total_bytes_so_far=432810
+2026-09-14 19:18:36,788 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:36,788 - myvoice.metrics - INFO - metric
+2026-09-14 19:18:36,788 - myvoice.services.audio_coordinator - INFO - stop_streaming_session called: wait_for_drain=True _streaming_buffer=set _stream_total_bytes=432810 _stream_first_write_ts=set _stream_last_chunk_bytes=11520
+2026-09-14 19:18:37,128 - myvoice.services.audio_coordinator - INFO - Drain calc: last_chunk_bytes=11520 total_bytes=432810 bytes_per_sec=48000 last_chunk_dur=0.240s time_since_last_write=0.500s last_chunk_remaining=0.000s total_audio_dur=9.017s playback_elapsed=10.031s total_queued=0.000s drain_wait=0.800s
+2026-09-14 19:18:37,941 - myvoice.services.audio_coordinator - INFO - Drain wait complete: planned=0.800s actual=0.812s
+2026-09-14 19:18:38,133 - myvoice.services.monitor_audio_service - INFO - Streaming session stopped
+2026-09-14 19:18:38,316 - myvoice.services.virtual_microphone_service - INFO - Virtual mic streaming session stopped
+2026-09-14 19:18:38,316 - myvoice.services.audio_coordinator - INFO - Streaming sessions stopped: {'monitor': True, 'virtual': True}
+2026-09-14 19:19:09,092 - MainWindow - INFO - Starting TTS generation for: Alright so when you start to get into longer sente...
+2026-09-14 19:19:09,094 - MyVoiceApp - INFO - TTS generation requested for text: Alright so when you start to get into longer sente...
+2026-09-14 19:19:09,094 - MyVoiceApp - INFO - Voice type 'VoiceType.CLONED' does not support emotion, skipping instruct
+2026-09-14 19:19:09,094 - MyVoiceApp - INFO - TTS generation using voice profile: Sarira-F
+2026-09-14 19:19:09,094 - MyVoiceApp - INFO - TTS request for cloned voice 'Sarira-F' (no emotion support)
+2026-09-14 19:19:09,094 - MyVoiceApp - INFO - [DEBUG] Voice type: VoiceType.CLONED (value=cloned)
+2026-09-14 19:19:09,094 - MyVoiceApp - INFO - [DEBUG] file_path: D:\MyVoice\voice_files\Sarira-F.wav
+2026-09-14 19:19:09,094 - MyVoiceApp - INFO - [DEBUG] VoiceType.EMBEDDING = VoiceType.EMBEDDING, comparison = False
+2026-09-14 19:19:09,094 - MyVoiceApp - INFO - Using Base model for cloned voice with ICL mode (transcription available)
+2026-09-14 19:19:09,096 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:09,096 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:09,096 - QwenTTSService - INFO - Starting TTS generation (TRUE_STREAM): model=Base (Clone), text='Alright so when you start to get into longer sente...'
+2026-09-14 19:19:09,096 - MainWindow - INFO - Model loading: Loading Base (Clone)...
+2026-09-14 19:19:09,096 - MainWindow - INFO - Model ready: Base (Clone)
+2026-09-14 19:19:09,096 - QwenTTSService - INFO - [QwenTTS] codec state cache enabled (chunk_size=10 lookahead=0, was 5) — chunk boundaries carry real codec state and the lookahead is retired (Story 20.6)
+2026-09-14 19:19:09,096 - QwenTTSService - INFO - [QwenTTS] TRUE_STREAM geometry: chunk_size=10 lookahead=0 (carries_codec_state=True)
+2026-09-14 19:19:09,097 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:09,115 - qwen_tts.core.models.configuration_qwen3_tts - INFO - code_predictor_config is None. Initializing code_predictor model with default values
+2026-09-14 19:19:09,387 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:10,276 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:10,921 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:10,921 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:10,921 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:10,921 - myvoice.services.audio_coordinator - INFO - Streaming buffer: adaptive pre-buffer ENABLED — text_length=181 chars, T_a_estimate=10.46s, cushion_budget=2.0s, detected_vram=12.0 GiB (< 16 GiB threshold)
+2026-09-14 19:19:10,921 - myvoice.services.audio_coordinator - INFO - Streaming buffer: consumer cross-fade 0 samples (default 64) - the producer declared this chunk stream sample-continuous, so a cross-dissolve between consecutive chunks would comb rather than repair
+2026-09-14 19:19:10,922 - myvoice.services.monitor_audio_service - INFO - Found 61 monitor devices
+2026-09-14 19:19:10,922 - myvoice.services.audio_coordinator - INFO - [WIN11-DEBUG] Monitor service health check result: True, health=(True, None)
+2026-09-14 19:19:10,922 - myvoice.services.monitor_audio_service - INFO - Using OS default output device for monitor: index=14 name='Voicemeeter AUX Input (VB-Audio'
+2026-09-14 19:19:10,944 - myvoice.services.monitor_audio_service - INFO - Started streaming session stream_3_1789435150: 1ch, 24000Hz, device=14
+2026-09-14 19:19:10,944 - myvoice.services.audio_coordinator - INFO - [WIN11-DEBUG] Virtual service health check result: True, health=(True, None)
+2026-09-14 19:19:10,944 - myvoice.services.virtual_microphone_service - INFO - Found 39 virtual microphone devices
+2026-09-14 19:19:10,950 - myvoice.services.virtual_microphone_service - INFO - Started virtual mic streaming session vstream_3_1789435150: 1ch, 24000Hz, device=14
+2026-09-14 19:19:10,951 - myvoice.services.audio_coordinator - INFO - Streaming sessions started: {'monitor': 'stream_3_1789435150', 'virtual': 'vstream_3_1789435150'}
+2026-09-14 19:19:10,951 - MyVoiceApp - INFO - Progressive playback session opened: sample_rate=24000Hz, monitor_session=stream_3_1789435150, virtual_session=vstream_3_1789435150
+2026-09-14 19:19:10,951 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:10,951 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:11,090 - MainWindow - INFO - TTS generation completed (stub) for: Alright so when you start to g...
+2026-09-14 19:19:11,917 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:11,917 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:11,919 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=75690 is_final=False batch_idx=0/1 total_bytes_so_far=75690
+2026-09-14 19:19:11,919 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:12,547 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:12,547 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:13,330 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:13,330 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:13,330 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=38400 is_final=False batch_idx=0/1 total_bytes_so_far=114090
+2026-09-14 19:19:13,595 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:13,595 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:14,009 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:14,009 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:14,009 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=38400 is_final=False batch_idx=0/1 total_bytes_so_far=152490
+2026-09-14 19:19:14,648 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:14,648 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:14,870 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:14,870 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:14,870 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=38400 is_final=False batch_idx=0/1 total_bytes_so_far=190890
+2026-09-14 19:19:15,649 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:15,649 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:15,720 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:15,720 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:15,720 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=38400 is_final=False batch_idx=0/1 total_bytes_so_far=229290
+2026-09-14 19:19:16,399 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:16,399 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:16,673 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:16,673 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:16,674 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=38400 is_final=False batch_idx=0/1 total_bytes_so_far=267690
+2026-09-14 19:19:17,395 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:17,395 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:17,678 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:17,678 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:17,678 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=38400 is_final=False batch_idx=0/1 total_bytes_so_far=306090
+2026-09-14 19:19:18,401 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:18,401 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:18,671 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:18,672 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:18,672 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=38400 is_final=False batch_idx=0/1 total_bytes_so_far=344490
+2026-09-14 19:19:19,393 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:19,393 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:19,920 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:19,920 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:19,920 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=38400 is_final=False batch_idx=0/1 total_bytes_so_far=382890
+2026-09-14 19:19:20,481 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:20,481 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:21,212 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:21,212 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:21,212 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=38400 dispatched_bytes=38400 is_final=False batch_idx=0/1 total_bytes_so_far=421290
+2026-09-14 19:19:21,944 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:21,944 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:22,389 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:22,389 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:22,389 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=23040 dispatched_bytes=23040 is_final=False batch_idx=0/1 total_bytes_so_far=444330
+2026-09-14 19:19:22,400 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:22,400 - QwenTTSService - INFO - TTS generation complete (TRUE_STREAM): 222165 samples, 12 chunks, 13.30s total, 1.83s first chunk
+2026-09-14 19:19:22,401 - MyVoiceApp - INFO - TTS generation completed successfully, 444374 bytes
+2026-09-14 19:19:22,401 - MyVoiceApp - INFO - Starting audio playback via AudioCoordinator
+2026-09-14 19:19:22,401 - MyVoiceApp - INFO - Progressive playback already active; skipping batch dispatch (queue_token=548a5315-a704-484d-b9ef-a6534c732035)
+2026-09-14 19:19:22,401 - MyVoiceApp - INFO - Audio playback dispatched successfully
+2026-09-14 19:19:22,769 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:22,769 - myvoice.metrics - INFO - metric
+2026-09-14 19:19:22,769 - myvoice.services.audio_coordinator - INFO - stop_streaming_session called: wait_for_drain=True _streaming_buffer=set _stream_total_bytes=444330 _stream_first_write_ts=set _stream_last_chunk_bytes=23040
+2026-09-14 19:19:22,939 - myvoice.services.audio_coordinator - INFO - Drain calc: last_chunk_bytes=23040 total_bytes=444330 bytes_per_sec=48000 last_chunk_dur=0.480s time_since_last_write=0.546s last_chunk_remaining=0.000s total_audio_dur=9.257s playback_elapsed=11.015s total_queued=0.000s drain_wait=0.800s
+2026-09-14 19:19:23,757 - myvoice.services.audio_coordinator - INFO - Drain wait complete: planned=0.800s actual=0.813s
+2026-09-14 19:19:23,948 - myvoice.services.monitor_audio_service - INFO - Streaming session stopped
+2026-09-14 19:19:24,140 - myvoice.services.virtual_microphone_service - INFO - Virtual mic streaming session stopped
+2026-09-14 19:19:24,142 - myvoice.services.audio_coordinator - INFO - Streaming sessions stopped: {'monitor': True, 'virtual': True}
+2026-09-14 19:19:36,063 - VoiceSelector - INFO - Populated 21 voice profiles (grouped by type)
+2026-09-14 19:19:36,064 - VoiceLibraryWidget - INFO - Refreshed voice library: 21 voices
+2026-09-14 19:19:36,066 - VoiceLibraryWidget - INFO - Voice creation buttons ENABLED - TTS available: True
+2026-09-14 19:19:36,066 - SettingsDialog - INFO - Voice library buttons enabled (TTS available)
+2026-09-14 19:19:36,066 - MainWindow - INFO - Populating device lists in settings dialog
+2026-09-14 19:19:36,066 - MainWindow - INFO - Triggering device refresh for settings dialog
+2026-09-14 19:19:36,066 - MyVoiceApp - INFO - Device refresh requested
+2026-09-14 19:19:36,066 - MainWindow - INFO - Device refresh signal emitted successfully
+2026-09-14 19:19:36,066 - VoiceSelector - INFO - Populated 21 voice profiles (grouped by type)
+2026-09-14 19:19:36,066 - VoiceLibraryWidget - INFO - Refreshed voice library: 21 voices
+2026-09-14 19:19:36,106 - SettingsDialog - INFO - Settings dialog opened - triggering device refresh
+2026-09-14 19:19:36,114 - myvoice.services.monitor_audio_service - INFO - Found 61 monitor devices
+2026-09-14 19:19:36,114 - myvoice.services.virtual_microphone_service - INFO - Found 39 virtual microphone devices
+2026-09-14 19:19:36,115 - myvoice.services.microphone_capture_service - INFO - Found 25 microphone input devices
+2026-09-14 19:19:36,115 - MyVoiceApp - INFO - Device refresh completed with <class 'dict'> devices
+2026-09-14 19:19:36,115 - SettingsDialog - INFO - Updated device list with 61 devices
+2026-09-14 19:19:36,115 - MyVoiceApp - INFO - Updated monitor device list with 61 devices
+2026-09-14 19:19:36,115 - SettingsDialog - INFO - Updated virtual device list with 39 devices
+2026-09-14 19:19:36,115 - MyVoiceApp - INFO - Updated virtual device list with 39 devices
+2026-09-14 19:19:36,115 - SettingsDialog - INFO - Updated mic device list with 25 devices
+2026-09-14 19:19:36,115 - MyVoiceApp - INFO - Updated mic device list with 25 devices
+2026-09-14 19:19:36,420 - MyVoiceApp - INFO - Device refresh requested
+2026-09-14 19:19:36,423 - myvoice.services.monitor_audio_service - INFO - Found 61 monitor devices
+2026-09-14 19:19:36,424 - myvoice.services.virtual_microphone_service - INFO - Found 39 virtual microphone devices
+2026-09-14 19:19:36,424 - myvoice.services.microphone_capture_service - INFO - Found 25 microphone input devices
+2026-09-14 19:19:36,424 - MyVoiceApp - INFO - Device refresh completed with <class 'dict'> devices
+2026-09-14 19:19:36,424 - SettingsDialog - INFO - Updated device list with 61 devices
+2026-09-14 19:19:36,424 - MyVoiceApp - INFO - Updated monitor device list with 61 devices
+2026-09-14 19:19:36,424 - SettingsDialog - INFO - Updated virtual device list with 39 devices
+2026-09-14 19:19:36,426 - MyVoiceApp - INFO - Updated virtual device list with 39 devices
+2026-09-14 19:19:36,426 - SettingsDialog - INFO - Updated mic device list with 25 devices
+2026-09-14 19:19:36,426 - MyVoiceApp - INFO - Updated mic device list with 25 devices
+2026-09-14 19:19:37,421 - MainWindow - INFO - Triggering device refresh for settings dialog
+2026-09-14 19:19:37,421 - MyVoiceApp - INFO - Device refresh requested
+2026-09-14 19:19:37,421 - MainWindow - INFO - Device refresh signal emitted successfully
+2026-09-14 19:19:37,421 - myvoice.services.monitor_audio_service - INFO - Found 61 monitor devices
+2026-09-14 19:19:37,422 - myvoice.services.virtual_microphone_service - INFO - Found 39 virtual microphone devices
+2026-09-14 19:19:37,422 - myvoice.services.microphone_capture_service - INFO - Found 25 microphone input devices
+2026-09-14 19:19:37,422 - MyVoiceApp - INFO - Device refresh completed with <class 'dict'> devices
+2026-09-14 19:19:37,422 - SettingsDialog - INFO - Updated device list with 61 devices
+2026-09-14 19:19:37,422 - MyVoiceApp - INFO - Updated monitor device list with 61 devices
+2026-09-14 19:19:37,422 - SettingsDialog - INFO - Updated virtual device list with 39 devices
+2026-09-14 19:19:37,422 - MyVoiceApp - INFO - Updated virtual device list with 39 devices
+2026-09-14 19:19:37,424 - SettingsDialog - INFO - Updated mic device list with 25 devices
+2026-09-14 19:19:37,424 - MyVoiceApp - INFO - Updated mic device list with 25 devices
+2026-09-14 19:20:03,347 - StreamingSettingsPanel - INFO - Streaming mode override set to: 'sentence_stream'
+2026-09-14 19:20:06,340 - MyVoiceApp - INFO - Voice changed to: Sarira-F
+2026-09-14 19:20:06,342 - MainWindow - INFO - Applying theme from settings: dark
+2026-09-14 19:20:06,382 - MainWindow - INFO - THEME DEBUG: Successfully applied theme from settings: dark
+2026-09-14 19:20:06,389 - MyVoiceApp - INFO - Settings changed, saving and applying updates
+2026-09-14 19:20:06,395 - VoiceProfileManager - INFO - Set active voice profile: Sarira-F
+2026-09-14 19:20:06,395 - MyVoiceApp - INFO - Active profile set successfully
+2026-09-14 19:20:06,395 - MyVoiceApp - INFO - Auto-pipeline: preparing voice_clone_prompt cache for 'Sarira-F'
+2026-09-14 19:20:06,397 - ConfigurationManager - INFO - Voice selection updated: 'Sarira-F' -> 'Sarira-F'
+2026-09-14 19:20:06,399 - myvoice.services.audio_coordinator - INFO - Updating device settings in AudioCoordinator
+2026-09-14 19:20:06,399 - myvoice.services.audio_coordinator - INFO - Device settings updated successfully
+2026-09-14 19:20:06,399 - MyVoiceApp - INFO - Audio coordinator settings updated successfully
+2026-09-14 19:20:06,399 - MyVoiceApp - INFO - [MIC_DEBUG] ========================================
+2026-09-14 19:20:06,399 - MyVoiceApp - INFO - [MIC_DEBUG] _setup_mic_mixing_from_settings called
+2026-09-14 19:20:06,399 - MyVoiceApp - INFO - [MIC_DEBUG] mic_mixing_enabled: False
+2026-09-14 19:20:06,399 - MyVoiceApp - INFO - [MIC_DEBUG] mic_input_device_id: None
+2026-09-14 19:20:06,399 - MyVoiceApp - INFO - [MIC_DEBUG] virtual_microphone_device_id: None
+2026-09-14 19:20:06,399 - MyVoiceApp - INFO - [MIC_DEBUG] mic_monitor_running: False
+2026-09-14 19:20:06,399 - MyVoiceApp - INFO - [MIC_DEBUG] continuous_passthrough_running: False
+2026-09-14 19:20:06,399 - MyVoiceApp - INFO - [MIC_DEBUG] NOTE: Mic mixing is DISABLED - enable 'Enable Microphone Mixing' in settings
+2026-09-14 19:20:06,399 - MyVoiceApp - INFO - [MIC_DEBUG] ========================================
+2026-09-14 19:20:06,399 - myvoice.services.audio_coordinator - INFO - Mic mixing disabled
+2026-09-14 19:20:06,399 - myvoice.services.device_resilience_manager - INFO - Unregistered microphone device: unknown
+2026-09-14 19:20:06,399 - myvoice.services.audio_coordinator - INFO - Microphone capture stopped
+2026-09-14 19:20:06,454 - MyVoiceApp - INFO - Auto-pipeline: voice_clone_prompt ready for 'Sarira-F'
+2026-09-14 19:20:06,457 - ConfigurationManager - INFO - Settings saved successfully to D:\MyVoice\config\settings.json in 0.060s
+2026-09-14 19:20:06,457 - ConfigurationManager - INFO - Settings saved successfully to D:\MyVoice\config\settings.json in 0.060s
+2026-09-14 19:20:47,551 - MainWindow - INFO - Starting TTS generation for: Alright so now lets see what happens when i do sen...
+2026-09-14 19:20:47,551 - MyVoiceApp - INFO - TTS generation requested for text: Alright so now lets see what happens when i do sen...
+2026-09-14 19:20:47,551 - MyVoiceApp - INFO - Voice type 'VoiceType.CLONED' does not support emotion, skipping instruct
+2026-09-14 19:20:47,551 - MyVoiceApp - INFO - TTS generation using voice profile: Sarira-F
+2026-09-14 19:20:47,551 - MyVoiceApp - INFO - TTS request for cloned voice 'Sarira-F' (no emotion support)
+2026-09-14 19:20:47,551 - MyVoiceApp - INFO - [DEBUG] Voice type: VoiceType.CLONED (value=cloned)
+2026-09-14 19:20:47,551 - MyVoiceApp - INFO - [DEBUG] file_path: D:\MyVoice\voice_files\Sarira-F.wav
+2026-09-14 19:20:47,551 - MyVoiceApp - INFO - [DEBUG] VoiceType.EMBEDDING = VoiceType.EMBEDDING, comparison = False
+2026-09-14 19:20:47,551 - MyVoiceApp - INFO - Using Base model for cloned voice with ICL mode (transcription available)
+2026-09-14 19:20:47,552 - myvoice.metrics - INFO - metric
+2026-09-14 19:20:47,552 - QwenTTSService - INFO - Starting TTS generation (streaming): model=Base (Clone), chunks=3, text='Alright so now lets see what happens when i do sen...'
+2026-09-14 19:20:47,552 - MainWindow - INFO - Model loading: Loading Base (Clone)...
+2026-09-14 19:20:47,552 - MainWindow - INFO - Model ready: Base (Clone)
+2026-09-14 19:20:47,876 - qwen_tts.core.models.configuration_qwen3_tts - INFO - code_predictor_config is None. Initializing code_predictor model with default values
+2026-09-14 19:20:49,547 - MainWindow - INFO - TTS generation completed (stub) for: Alright so now lets see what h...
+2026-09-14 19:20:55,558 - QwenTTSService - INFO - First chunk latency: 8.01s
+2026-09-14 19:20:55,559 - myvoice.services.audio_coordinator - INFO - Streaming buffer: adaptive pre-buffer ENABLED — text_length=220 chars, T_a_estimate=12.60s, cushion_budget=2.0s, detected_vram=12.0 GiB (< 16 GiB threshold)
+2026-09-14 19:20:55,559 - myvoice.services.monitor_audio_service - INFO - Found 61 monitor devices
+2026-09-14 19:20:55,559 - myvoice.services.audio_coordinator - INFO - [WIN11-DEBUG] Monitor service health check result: True, health=(True, None)
+2026-09-14 19:20:55,559 - myvoice.services.monitor_audio_service - INFO - Using OS default output device for monitor: index=14 name='Voicemeeter AUX Input (VB-Audio'
+2026-09-14 19:20:55,582 - myvoice.services.monitor_audio_service - INFO - Started streaming session stream_4_1789435255: 1ch, 24000Hz, device=14
+2026-09-14 19:20:55,582 - myvoice.services.audio_coordinator - INFO - [WIN11-DEBUG] Virtual service health check result: True, health=(True, None)
+2026-09-14 19:20:55,582 - myvoice.services.virtual_microphone_service - INFO - Found 39 virtual microphone devices
+2026-09-14 19:20:55,591 - myvoice.services.virtual_microphone_service - INFO - Started virtual mic streaming session vstream_4_1789435255: 1ch, 24000Hz, device=14
+2026-09-14 19:20:55,591 - myvoice.services.audio_coordinator - INFO - Streaming sessions started: {'monitor': 'stream_4_1789435255', 'virtual': 'vstream_4_1789435255'}
+2026-09-14 19:20:55,591 - MyVoiceApp - INFO - Progressive playback session opened: sample_rate=24000Hz, monitor_session=stream_4_1789435255, virtual_session=vstream_4_1789435255
+2026-09-14 19:20:55,591 - myvoice.metrics - INFO - metric
+2026-09-14 19:20:55,591 - myvoice.metrics - INFO - metric
+2026-09-14 19:20:55,630 - qwen_tts.core.models.configuration_qwen3_tts - INFO - code_predictor_config is None. Initializing code_predictor model with default values
+2026-09-14 19:21:02,874 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=168666 dispatched_bytes=333498 is_final=False batch_idx=0/1 total_bytes_so_far=333498
+2026-09-14 19:21:02,874 - myvoice.metrics - INFO - metric
+2026-09-14 19:21:02,975 - qwen_tts.core.models.configuration_qwen3_tts - INFO - code_predictor_config is None. Initializing code_predictor model with default values
+2026-09-14 19:21:09,566 - myvoice.metrics - INFO - metric
+2026-09-14 19:21:09,566 - myvoice.metrics - INFO - metric
+2026-09-14 19:21:14,568 - myvoice.metrics - INFO - metric
+2026-09-14 19:21:14,568 - QwenTTSService - INFO - TTS generation complete (streaming): 306702 samples, 3 chunks, 27.02s total, 8.01s first chunk
+2026-09-14 19:21:14,568 - MyVoiceApp - INFO - TTS generation completed successfully, 613448 bytes
+2026-09-14 19:21:14,569 - myvoice.services.audio_coordinator - INFO - Dispatch chunk: input_bytes=279906 dispatched_bytes=279906 is_final=True batch_idx=0/1 total_bytes_so_far=613404
+2026-09-14 19:21:14,569 - MyVoiceApp - INFO - Starting audio playback via AudioCoordinator
+2026-09-14 19:21:14,569 - MyVoiceApp - INFO - Progressive playback already active; skipping batch dispatch (queue_token=7ce22a6e-91ef-4406-9143-bfb710aebf51)
+2026-09-14 19:21:14,569 - MyVoiceApp - INFO - Audio playback dispatched successfully
+2026-09-14 19:21:20,242 - myvoice.metrics - INFO - metric
+2026-09-14 19:21:20,242 - myvoice.metrics - INFO - metric
+2026-09-14 19:21:20,242 - myvoice.services.audio_coordinator - INFO - stop_streaming_session called: wait_for_drain=True _streaming_buffer=set _stream_total_bytes=613404 _stream_first_write_ts=set _stream_last_chunk_bytes=279906
+2026-09-14 19:21:20,581 - myvoice.services.audio_coordinator - INFO - Drain calc: last_chunk_bytes=279906 total_bytes=613404 bytes_per_sec=48000 last_chunk_dur=5.831s time_since_last_write=6.016s last_chunk_remaining=0.000s total_audio_dur=12.779s playback_elapsed=17.703s total_queued=0.000s drain_wait=0.800s
+2026-09-14 19:21:21,398 - myvoice.services.audio_coordinator - INFO - Drain wait complete: planned=0.800s actual=0.813s
+2026-09-14 19:21:21,589 - myvoice.services.monitor_audio_service - INFO - Streaming session stopped
+2026-09-14 19:21:21,781 - myvoice.services.virtual_microphone_service - INFO - Virtual mic streaming session stopped
+2026-09-14 19:21:21,781 - myvoice.services.audio_coordinator - INFO - Streaming sessions stopped: {'monitor': True, 'virtual': True}
+2026-09-14 19:21:41,586 - MainWindow - INFO - MainWindow closing
+2026-09-14 19:21:41,586 - MainWindow - INFO - Background process cleanup completed
+2026-09-14 19:21:41,590 - __main__ - INFO - Force exit failsafe armed (10s timeout)
+2026-09-14 19:21:41,590 - __main__ - INFO - Application shutting down - cleaning up services...
+2026-09-14 19:21:41,590 - MyVoiceApp - INFO - Starting async cleanup - stopping services...
+2026-09-14 19:21:41,590 - myvoice.services.api_server.server - INFO - Local TTS API stopped
+2026-09-14 19:21:41,590 - MyVoiceApp - INFO - Local TTS API server stopped
+2026-09-14 19:21:41,590 - QwenTTSService - INFO - Service 'QwenTTSService' status changed: running -> stopping
+2026-09-14 19:21:41,590 - QwenTTSService - INFO - Stopping QwenTTSService
+2026-09-14 19:21:41,590 - ModelRegistry - INFO - Unloading model: Base (Clone)
+2026-09-14 19:21:42,048 - myvoice.metrics - INFO - metric
+2026-09-14 19:21:42,048 - myvoice.reload_compile_diag - INFO - reload_compile_diagnostic value=0.0 stage='post_unload' cycle_idx=2 is_available=True device_count=1 in_bad_fork=False initialized=True last_cuda_error='AttributeError' cuda_path_present=True path_has_cuda_redist=True
+2026-09-14 19:21:42,048 - ModelRegistry - INFO - Model Base (Clone) unloaded
+2026-09-14 19:21:42,050 - ModelRegistry - INFO - Shutting down ModelRegistry
+2026-09-14 19:21:42,405 - ModelRegistry - INFO - ModelRegistry shutdown complete
+2026-09-14 19:21:42,405 - QwenTTSService - INFO - Service 'QwenTTSService' status changed: stopping -> stopped
+2026-09-14 19:21:42,406 - QwenTTSService - INFO - QwenTTSService stopped
+2026-09-14 19:21:42,406 - MyVoiceApp - INFO - TTS service stopped
+2026-09-14 19:21:42,406 - ConfigurationManager - INFO - Service 'ConfigurationManager' status changed: running -> stopping
+2026-09-14 19:21:42,406 - ConfigurationManager - INFO - Stopping ConfigurationManager service
+2026-09-14 19:21:42,408 - ConfigurationManager - INFO - Settings saved successfully to D:\MyVoice\config\settings.json in 0.002s
+2026-09-14 19:21:42,408 - ConfigurationManager - INFO - Service 'ConfigurationManager' status changed: stopping -> stopped
+2026-09-14 19:21:42,408 - ConfigurationManager - INFO - ConfigurationManager service stopped successfully
+2026-09-14 19:21:42,409 - VoiceProfileManager - INFO - Service 'VoiceProfileManager' status changed: running -> stopping
+2026-09-14 19:21:42,409 - VoiceProfileManager - INFO - Stopping VoiceProfileManager service
+2026-09-14 19:21:42,411 - VoiceProfileManager - INFO - Service 'VoiceProfileManager' status changed: stopping -> stopped
+2026-09-14 19:21:42,411 - VoiceProfileManager - INFO - VoiceProfileManager service stopped successfully
+2026-09-14 19:21:42,411 - myvoice.services.audio_coordinator - INFO - Shutting down AudioCoordinator
+2026-09-14 19:21:42,411 - myvoice.services.monitor_audio_service - INFO - Shutting down MonitorAudioService
+2026-09-14 19:21:42,412 - myvoice.services.monitor_audio_service - INFO - MonitorAudioService shutdown complete
+2026-09-14 19:21:42,412 - myvoice.services.virtual_microphone_service - INFO - Shutting down VirtualMicrophoneService
+2026-09-14 19:21:42,412 - myvoice.services.virtual_microphone_service - INFO - VirtualMicrophoneService shutdown complete
+2026-09-14 19:21:42,412 - myvoice.services.microphone_capture_service - INFO - Shutting down MicrophoneCaptureService
+2026-09-14 19:21:42,412 - myvoice.services.microphone_capture_service - INFO - MicrophoneCaptureService shutdown complete
+2026-09-14 19:21:42,412 - myvoice.services.audio_coordinator - INFO - Monitor service shutdown successful
+2026-09-14 19:21:42,412 - myvoice.services.audio_coordinator - INFO - Virtual service shutdown successful
+2026-09-14 19:21:42,412 - myvoice.services.audio_coordinator - INFO - MicCapture service shutdown successful
+2026-09-14 19:21:42,412 - myvoice.services.device_resilience_manager - INFO - Shutting down DeviceResilienceManager
+2026-09-14 19:21:42,412 - WindowsAudioClient - INFO - Stopping audio device monitoring
+2026-09-14 19:21:42,412 - WindowsAudioClient - INFO - Closing Windows Audio Client
+2026-09-14 19:21:42,412 - myvoice.services.device_resilience_manager - INFO - DeviceResilienceManager shutdown complete
+2026-09-14 19:21:42,412 - myvoice.services.audio_coordinator - INFO - AudioCoordinator shutdown complete
+2026-09-14 19:21:42,412 - MyVoiceApp - INFO - Releasing service references...
+2026-09-14 19:21:42,412 - MyVoiceApp - INFO - Running garbage collection...
+2026-09-14 19:21:43,477 - MyVoiceApp - INFO - CUDA cache cleared
+2026-09-14 19:21:43,479 - MyVoiceApp - INFO - Async cleanup complete
+2026-09-14 19:21:43,479 - __main__ - INFO - Cleanup complete, exiting normally...
+2026-09-14 19:21:43,479 - MyVoiceApp - INFO - Application shutting down
+2026-09-14 19:21:43,479 - MyVoiceApp - WARNING - _cleanup_services() is deprecated - use cleanup_async() instead
+2026-09-14 19:21:43,502 - __main__ - INFO - MyVoice application exited with code: 0
+2026-09-14 19:21:43,502 - __main__ - INFO - Forcing process termination...

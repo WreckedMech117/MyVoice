@@ -298,3 +298,8 @@ development_status:
   ui-2-no-modal-in-settings-init: done
   20-9-qasync-call-site-audit: done
   tooling-5-clear-the-failure-backlog: done
+  # 2026-09-14 RTX 3060 log analysis (F6): Epic 20 confirmed on a 12 GiB card
+  # (-57 % first chunk), but the bundled prompt caches never hydrated on any
+  # end-user install -- Inno Setup rounds installed mtimes to 2 s, the 1 ms
+  # fingerprint check rejected them, priming skipped, cold compile on first click.
+  20-10-installer-timestamp-rounding: done

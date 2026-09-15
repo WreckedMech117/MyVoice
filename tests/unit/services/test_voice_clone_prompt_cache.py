@@ -727,6 +727,86 @@ class TestHydrateVoiceClonePromptCache:
         cache_key = (str(ref_audio.resolve()), tier)
         assert cache_key in service._voice_clone_prompts
 
+    # ----- Story 20.10: installer timestamp rounding ------------------- #
+
+    @staticmethod
+    async def _persist_then_reinstall(
+        service, ref_audio: Path, tier: str, *, shift_seconds: float
+    ):
+        """Persist a valid .pt + meta, then mimic what the installer does
+        to the files it ships: the .wav and .txt sidecar land with their
+        mtime moved by ``shift_seconds`` while the meta keeps the build
+        host's original fingerprint. Returns (hits, total) of a hydration
+        run over a fresh in-memory cache."""
+        sidecar = ref_audio.with_suffix(".txt")
+        sidecar.write_text("hello", encoding="utf-8")
+        prompt = _make_synthetic_prompt()
+        with patch.object(
+            service,
+            "create_voice_clone_prompt_for_tier",
+            new=AsyncMock(return_value=prompt),
+        ), _patch_normalize(service):
+            await service._ensure_voice_clone_prompt_for_voice(
+                None, ref_audio, "hello", tier
+            )
+        service._voice_clone_prompts.clear()
+
+        for path in (ref_audio, sidecar):
+            new_time = path.stat().st_mtime + shift_seconds
+            os.utime(str(path), (new_time, new_time))
+
+        profile = MagicMock()
+        profile.voice_type = VoiceType.CLONED
+        profile.file_path = ref_audio
+        manager = MagicMock()
+        manager.get_profiles = MagicMock(return_value={"Sarira-F": profile})
+        service.set_voice_profile_manager(manager)
+        with _patch_normalize(service):
+            return await service.hydrate_voice_clone_prompt_cache()
+
+    @pytest.mark.asyncio
+    async def test_hydration_survives_installer_timestamp_rounding(
+        self, tmp_path
+    ):
+        """Story 20.10 — the exact bug class from the RTX 3060 log
+        (2026-09-14, "hydrated 0/12"). Inno Setup's default
+        ``TimeStampRounding=2`` rounds each installed file's mtime DOWN to
+        an even second, so the shipped .wav/.txt sit up to 1.999 s EARLIER
+        than the fingerprint in the bundled meta. The 1 ms tolerance
+        rejected every precomputed default-voice prompt on every end-user
+        install, and compile priming (which needs a cached prompt) was
+        skipped. Shift the files back by the worst case the rounding can
+        produce and the prompt must still hydrate.
+        """
+        service = _make_service()
+        ref_audio = _make_clone_voice_file(tmp_path)
+        tier = service._model_registry.quality_tier.value
+        hits, total = await self._persist_then_reinstall(
+            service, ref_audio, tier, shift_seconds=-1.999
+        )
+        assert (hits, total) == (1, 1)
+        pt_path = ref_audio.with_suffix(f".{tier}.pt")
+        assert pt_path.exists(), "a valid cache must not be deleted as stale"
+
+    @pytest.mark.asyncio
+    async def test_hydration_still_rejects_mtime_drift_beyond_rounding(
+        self, tmp_path
+    ):
+        """The widened tolerance covers only the installer's rounding
+        class. A file whose mtime differs by more than 2 s (a re-recorded
+        voice, an edited transcription) is still a miss. Hydration leaves
+        the stale files in place by design -- the lazy path purges and
+        recomputes on first use -- so only the hit count is asserted."""
+        service = _make_service()
+        ref_audio = _make_clone_voice_file(tmp_path)
+        tier = service._model_registry.quality_tier.value
+        hits, total = await self._persist_then_reinstall(
+            service, ref_audio, tier, shift_seconds=-2.5
+        )
+        assert (hits, total) == (0, 1)
+        cache_key = (str(ref_audio.resolve()), tier)
+        assert cache_key not in service._voice_clone_prompts
+
 
 # --------------------------------------------------------------------------- #
 # AC #4 / Task 5 — TestPreparingVoiceIndicator

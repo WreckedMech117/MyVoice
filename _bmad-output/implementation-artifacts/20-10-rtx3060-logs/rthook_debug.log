@@ -1,0 +1,211 @@
+=== Runtime Hook Starting ===
+base_path: D:\MyVoice\_internal
+torch_lib_path: D:\MyVoice\_internal\torch\lib
+torch_lib exists: True
+Updated PATH with: ['D:\\MyVoice\\_internal\\torch\\lib', 'D:\\MyVoice\\_internal', 'D:\\MyVoice\\_internal\\PyQt6\\Qt6\\bin']
+Added DLL directory: D:\MyVoice\_internal\torch\lib
+Added DLL directory: D:\MyVoice\_internal
+Added DLL directory: D:\MyVoice\_internal\PyQt6\Qt6\bin
+Pre-loaded: vcruntime140.dll -> 140710431031296
+Pre-loaded: vcruntime140_1.dll -> 140710428082176
+Pre-loaded: msvcp140.dll -> 140708071735296
+Pre-loaded: libiomp5md.dll -> 140707962880000
+Pre-loaded: c10.dll -> 140708070555648
+Pre-loaded: torch_cpu.dll -> 140704250593280
+Pre-loaded: c10_cuda.dll -> 140707970875392
+Pre-loaded: torch_cuda.dll -> 140703328174080
+Pre-loaded: torch.dll -> 140710346293248
+Pre-loaded 9 DLLs successfully
+=== Runtime Hook Complete ===
+=== CUDA Redistributable Path Injection ===
+cuda_redist_root: D:\MyVoice\_internal\cuda_redist
+cuda_redist_root exists: True
+cuda_redist_bin exists: True
+triton_cuda_root: D:\MyVoice\_internal\triton\backends\nvidia
+triton_cuda_root exists: True
+Set CUDA_PATH = D:\MyVoice\_internal\triton\backends\nvidia (triton's bundled ptxas/cuda.h/cuda.lib)
+Prepended D:\MyVoice\_internal\cuda_redist\bin to PATH
+Added DLL directory: D:\MyVoice\_internal\cuda_redist\bin
+CUDA redistributable paths injected (CUDA_PATH=D:\MyVoice\_internal\triton\backends\nvidia, DLL search path += D:\MyVoice\_internal\cuda_redist\bin)
+=== CUDA Redistributable Path Injection Complete ===
+=== Triton Backend Discovery Configuration ===
+Set TRITON_BACKENDS_IN_TREE=1 (filesystem-based backend discovery)
+Set CC = D:\MyVoice\_internal\triton\runtime\tcc\tcc.exe (bundled TinyCC)
+=== Triton Backend Discovery Configuration Complete ===
+=== Subprocess CREATE_NO_WINDOW Injection ===
+Patched subprocess.Popen.__init__ to OR CREATE_NO_WINDOW (0x08000000)
+=== Subprocess CREATE_NO_WINDOW Injection Complete ===
+=== Triton Availability Probe ===
+triton-windows available (version=3.6.0)
+triton.backends.backends discovered: ['amd', 'nvidia'] (expected: ['amd', 'nvidia'] or subset)
+=== Triton Availability Probe Complete ===
+=== Runtime Hook Starting ===
+base_path: D:\MyVoice\_internal
+torch_lib_path: D:\MyVoice\_internal\torch\lib
+torch_lib exists: True
+Updated PATH with: ['D:\\MyVoice\\_internal\\torch\\lib', 'D:\\MyVoice\\_internal', 'D:\\MyVoice\\_internal\\PyQt6\\Qt6\\bin']
+Added DLL directory: D:\MyVoice\_internal\torch\lib
+Added DLL directory: D:\MyVoice\_internal
+Added DLL directory: D:\MyVoice\_internal\PyQt6\Qt6\bin
+Pre-loaded: vcruntime140.dll -> 140710431031296
+Pre-loaded: vcruntime140_1.dll -> 140710428082176
+Pre-loaded: msvcp140.dll -> 140708071735296
+Pre-loaded: libiomp5md.dll -> 140707962880000
+Pre-loaded: c10.dll -> 140708070555648
+Pre-loaded: torch_cpu.dll -> 140704250593280
+Pre-loaded: c10_cuda.dll -> 140707970875392
+Pre-loaded: torch_cuda.dll -> 140703328174080
+Pre-loaded: torch.dll -> 140710346293248
+Pre-loaded 9 DLLs successfully
+=== Runtime Hook Complete ===
+=== CUDA Redistributable Path Injection ===
+cuda_redist_root: D:\MyVoice\_internal\cuda_redist
+cuda_redist_root exists: True
+cuda_redist_bin exists: True
+triton_cuda_root: D:\MyVoice\_internal\triton\backends\nvidia
+triton_cuda_root exists: True
+Set CUDA_PATH = D:\MyVoice\_internal\triton\backends\nvidia (triton's bundled ptxas/cuda.h/cuda.lib)
+Prepended D:\MyVoice\_internal\cuda_redist\bin to PATH
+Added DLL directory: D:\MyVoice\_internal\cuda_redist\bin
+CUDA redistributable paths injected (CUDA_PATH=D:\MyVoice\_internal\triton\backends\nvidia, DLL search path += D:\MyVoice\_internal\cuda_redist\bin)
+=== CUDA Redistributable Path Injection Complete ===
+=== Triton Backend Discovery Configuration ===
+Set TRITON_BACKENDS_IN_TREE=1 (filesystem-based backend discovery)
+Set CC = D:\MyVoice\_internal\triton\runtime\tcc\tcc.exe (bundled TinyCC)
+=== Triton Backend Discovery Configuration Complete ===
+=== Subprocess CREATE_NO_WINDOW Injection ===
+Patched subprocess.Popen.__init__ to OR CREATE_NO_WINDOW (0x08000000)
+=== Subprocess CREATE_NO_WINDOW Injection Complete ===
+=== Triton Availability Probe ===
+triton-windows available (version=3.6.0)
+triton.backends.backends discovered: ['amd', 'nvidia'] (expected: ['amd', 'nvidia'] or subset)
+=== Triton Availability Probe Complete ===
+=== Runtime Hook Starting ===
+base_path: D:\MyVoice\_internal
+torch_lib_path: D:\MyVoice\_internal\torch\lib
+torch_lib exists: True
+Updated PATH with: ['D:\\MyVoice\\_internal\\torch\\lib', 'D:\\MyVoice\\_internal', 'D:\\MyVoice\\_internal\\PyQt6\\Qt6\\bin']
+Added DLL directory: D:\MyVoice\_internal\torch\lib
+Added DLL directory: D:\MyVoice\_internal
+Added DLL directory: D:\MyVoice\_internal\PyQt6\Qt6\bin
+Pre-loaded: vcruntime140.dll -> 140705891811328
+Pre-loaded: vcruntime140_1.dll -> 140705891614720
+Pre-loaded: msvcp140.dll -> 140705112588288
+Pre-loaded: libiomp5md.dll -> 140705046724608
+Pre-loaded: c10.dll -> 140705111408640
+Pre-loaded: torch_cpu.dll -> 140734571610112
+Pre-loaded: c10_cuda.dll -> 140704926531584
+Pre-loaded: torch_cuda.dll -> 140733649190912
+Pre-loaded: torch.dll -> 140705867628544
+Pre-loaded 9 DLLs successfully
+=== Runtime Hook Complete ===
+=== CUDA Redistributable Path Injection ===
+cuda_redist_root: D:\MyVoice\_internal\cuda_redist
+cuda_redist_root exists: True
+cuda_redist_bin exists: True
+triton_cuda_root: D:\MyVoice\_internal\triton\backends\nvidia
+triton_cuda_root exists: True
+Set CUDA_PATH = D:\MyVoice\_internal\triton\backends\nvidia (triton's bundled ptxas/cuda.h/cuda.lib)
+Prepended D:\MyVoice\_internal\cuda_redist\bin to PATH
+Added DLL directory: D:\MyVoice\_internal\cuda_redist\bin
+CUDA redistributable paths injected (CUDA_PATH=D:\MyVoice\_internal\triton\backends\nvidia, DLL search path += D:\MyVoice\_internal\cuda_redist\bin)
+=== CUDA Redistributable Path Injection Complete ===
+=== Triton Backend Discovery Configuration ===
+Set TRITON_BACKENDS_IN_TREE=1 (filesystem-based backend discovery)
+Set CC = D:\MyVoice\_internal\triton\runtime\tcc\tcc.exe (bundled TinyCC)
+=== Triton Backend Discovery Configuration Complete ===
+=== Subprocess CREATE_NO_WINDOW Injection ===
+Patched subprocess.Popen.__init__ to OR CREATE_NO_WINDOW (0x08000000)
+=== Subprocess CREATE_NO_WINDOW Injection Complete ===
+=== Triton Availability Probe ===
+triton-windows available (version=3.6.0)
+triton.backends.backends discovered: ['amd', 'nvidia'] (expected: ['amd', 'nvidia'] or subset)
+=== Triton Availability Probe Complete ===
+=== Runtime Hook Starting ===
+base_path: D:\MyVoice\_internal
+torch_lib_path: D:\MyVoice\_internal\torch\lib
+torch_lib exists: True
+Updated PATH with: ['D:\\MyVoice\\_internal\\torch\\lib', 'D:\\MyVoice\\_internal', 'D:\\MyVoice\\_internal\\PyQt6\\Qt6\\bin']
+Added DLL directory: D:\MyVoice\_internal\torch\lib
+Added DLL directory: D:\MyVoice\_internal
+Added DLL directory: D:\MyVoice\_internal\PyQt6\Qt6\bin
+Pre-loaded: vcruntime140.dll -> 140705891942400
+Pre-loaded: vcruntime140_1.dll -> 140705894301696
+Pre-loaded: msvcp140.dll -> 140705326366720
+Pre-loaded: libiomp5md.dll -> 140705046724608
+Pre-loaded: c10.dll -> 140704925941760
+Pre-loaded: torch_cpu.dll -> 140734571610112
+Pre-loaded: c10_cuda.dll -> 140705111408640
+Pre-loaded: torch_cuda.dll -> 140733649190912
+Pre-loaded: torch.dll -> 140705891287040
+Pre-loaded 9 DLLs successfully
+=== Runtime Hook Complete ===
+=== reinject_runtime_paths ===
+cuda_redist_root exists: True
+cuda_redist_bin exists: True
+triton_cuda_root exists: True
+Set CUDA_PATH = D:\MyVoice\_internal\triton\backends\nvidia
+Prepended D:\MyVoice\_internal\cuda_redist\bin to PATH
+Set TRITON_BACKENDS_IN_TREE=1
+Set CC = D:\MyVoice\_internal\triton\runtime\tcc\tcc.exe
+=== reinject_runtime_paths complete: {'cuda_path_set': True, 'path_prepended': True, 'triton_env_set': True, 'cc_env_set': True} ===
+=== reinject_runtime_paths ===
+cuda_redist_root exists: True
+cuda_redist_bin exists: True
+triton_cuda_root exists: True
+Set CUDA_PATH = D:\MyVoice\_internal\triton\backends\nvidia
+PATH already contains D:\MyVoice\_internal\cuda_redist\bin; skipping prepend
+Set TRITON_BACKENDS_IN_TREE=1
+Set CC = D:\MyVoice\_internal\triton\runtime\tcc\tcc.exe
+=== reinject_runtime_paths complete: {'cuda_path_set': True, 'path_prepended': True, 'triton_env_set': True, 'cc_env_set': True} ===
+=== Subprocess CREATE_NO_WINDOW Injection ===
+Patched subprocess.Popen.__init__ to OR CREATE_NO_WINDOW (0x08000000)
+=== Subprocess CREATE_NO_WINDOW Injection Complete ===
+=== Triton Availability Probe ===
+triton-windows available (version=3.6.0)
+triton.backends.backends discovered: ['amd', 'nvidia'] (expected: ['amd', 'nvidia'] or subset)
+=== Triton Availability Probe Complete ===
+=== Runtime Hook Starting ===
+base_path: D:\MyVoice\_internal
+torch_lib_path: D:\MyVoice\_internal\torch\lib
+torch_lib exists: True
+Updated PATH with: ['D:\\MyVoice\\_internal\\torch\\lib', 'D:\\MyVoice\\_internal', 'D:\\MyVoice\\_internal\\PyQt6\\Qt6\\bin']
+Added DLL directory: D:\MyVoice\_internal\torch\lib
+Added DLL directory: D:\MyVoice\_internal
+Added DLL directory: D:\MyVoice\_internal\PyQt6\Qt6\bin
+Pre-loaded: vcruntime140.dll -> 140705450295296
+Pre-loaded: vcruntime140_1.dll -> 140705894301696
+Pre-loaded: msvcp140.dll -> 140705326170112
+Pre-loaded: libiomp5md.dll -> 140705046724608
+Pre-loaded: c10.dll -> 140703944540160
+Pre-loaded: torch_cpu.dll -> 140734571610112
+Pre-loaded: c10_cuda.dll -> 140705111408640
+Pre-loaded: torch_cuda.dll -> 140733649190912
+Pre-loaded: torch.dll -> 140705891155968
+Pre-loaded 9 DLLs successfully
+=== Runtime Hook Complete ===
+=== reinject_runtime_paths ===
+cuda_redist_root exists: True
+cuda_redist_bin exists: True
+triton_cuda_root exists: True
+Set CUDA_PATH = D:\MyVoice\_internal\triton\backends\nvidia
+Prepended D:\MyVoice\_internal\cuda_redist\bin to PATH
+Set TRITON_BACKENDS_IN_TREE=1
+Set CC = D:\MyVoice\_internal\triton\runtime\tcc\tcc.exe
+=== reinject_runtime_paths complete: {'cuda_path_set': True, 'path_prepended': True, 'triton_env_set': True, 'cc_env_set': True} ===
+=== reinject_runtime_paths ===
+cuda_redist_root exists: True
+cuda_redist_bin exists: True
+triton_cuda_root exists: True
+Set CUDA_PATH = D:\MyVoice\_internal\triton\backends\nvidia
+PATH already contains D:\MyVoice\_internal\cuda_redist\bin; skipping prepend
+Set TRITON_BACKENDS_IN_TREE=1
+Set CC = D:\MyVoice\_internal\triton\runtime\tcc\tcc.exe
+=== reinject_runtime_paths complete: {'cuda_path_set': True, 'path_prepended': True, 'triton_env_set': True, 'cc_env_set': True} ===
+=== Subprocess CREATE_NO_WINDOW Injection ===
+Patched subprocess.Popen.__init__ to OR CREATE_NO_WINDOW (0x08000000)
+=== Subprocess CREATE_NO_WINDOW Injection Complete ===
+=== Triton Availability Probe ===
+triton-windows available (version=3.6.0)
+triton.backends.backends discovered: ['amd', 'nvidia'] (expected: ['amd', 'nvidia'] or subset)
+=== Triton Availability Probe Complete ===
