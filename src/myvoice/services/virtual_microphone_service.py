@@ -74,7 +74,18 @@ class VirtualPlaybackTask:
     error_message: Optional[str] = None
 
     def mark_started(self):
-        """Mark task as started."""
+        """Mark task as started.
+
+        Only a PENDING task becomes PLAYING. The stop path (Story ui-3)
+        writes STOPPED from the event-loop thread before the worker
+        thread has necessarily reached this call; an unconditional
+        assignment here overwrote that STOPPED, the worker played the
+        whole clip, and the stop reported success after a 2 s join. A
+        task stopped before it started stays STOPPED and the worker's
+        first poll exits.
+        """
+        if self.status is not PlaybackStatus.PENDING:
+            return
         self.status = PlaybackStatus.PLAYING
         self.start_time = datetime.now()
 
@@ -351,10 +362,18 @@ class VirtualMicrophoneService(BaseService):
             # The worker polls for this value between chunk writes
             task.status = PlaybackStatus.STOPPED
 
-            # Wait for thread to finish
+            # Wait for the worker to notice, WITHOUT blocking the event loop:
+            # this runs on the qasync/Qt thread from the Stop button and
+            # cancel_playback, and the worker only polls between chunk
+            # writes -- a stalled stream.write or a slow device open would
+            # otherwise freeze the UI for the full timeout (Story ui-3
+            # review). Bounded join in the default executor.
             if task_id in self._playback_threads:
                 thread = self._playback_threads[task_id]
-                thread.join(timeout=2.0)
+                if thread.is_alive():
+                    await asyncio.get_running_loop().run_in_executor(
+                        None, thread.join, 2.0
+                    )
 
                 if thread.is_alive():
                     self.logger.warning(f"Thread for task {task_id} did not finish gracefully")

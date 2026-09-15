@@ -31,6 +31,7 @@ Structural template follows test_audio_coordinator.py (module docstring →
 fixtures → class-grouped Test* with one AC focus per class).
 """
 
+import asyncio
 import logging
 from unittest.mock import patch
 
@@ -281,3 +282,62 @@ class TestCoordinatorStopAllPlaybackRealServices:
         caplog.set_level(logging.DEBUG)
         assert await coordinator.stop_all_playback() == 0
         assert _error_records(caplog) == []
+
+
+class TestStopBeforeWorkerStarts:
+    """Story ui-3 review: a STOPPED written before the worker thread reaches
+    ``mark_started()`` used to be overwritten with PLAYING, so the clip
+    played to the end and the stop reported success. ``mark_started`` now
+    only promotes a PENDING task."""
+
+    def test_monitor_mark_started_does_not_revive_a_stopped_task(self):
+        task = _monitor_task("monitor_1", PlaybackStatus.PENDING)
+        task.status = PlaybackStatus.STOPPED  # the stop path, racing the worker
+        task.mark_started()
+        assert task.status is PlaybackStatus.STOPPED
+        assert task.start_time is None
+
+    def test_virtual_mark_started_does_not_revive_a_stopped_task(self):
+        task = _virtual_task("virtual_1", PlaybackStatus.PENDING)
+        task.status = PlaybackStatus.STOPPED
+        task.mark_started()
+        assert task.status is PlaybackStatus.STOPPED
+        assert task.start_time is None
+
+    def test_pending_task_still_starts(self):
+        task = _monitor_task("monitor_2", PlaybackStatus.PENDING)
+        task.mark_started()
+        assert task.status is PlaybackStatus.PLAYING
+        assert task.start_time is not None
+
+    @pytest.mark.asyncio
+    async def test_stop_join_does_not_block_the_event_loop(self, monitor):
+        """The join on the worker thread now happens in the default
+        executor: a worker that ignores STOPPED for a while must not stall
+        other coroutines on the loop for that time."""
+        import threading
+        import time
+
+        task = _monitor_task("monitor_3", PlaybackStatus.PLAYING)
+        monitor._active_tasks[task.playback_id] = task
+        worker = threading.Thread(target=lambda: time.sleep(0.4))
+        worker.start()
+        monitor._playback_threads[task.playback_id] = worker
+
+        ticks = 0
+
+        async def ticker():
+            nonlocal ticks
+            for _ in range(8):
+                await asyncio.sleep(0.05)
+                ticks += 1
+
+        t = asyncio.ensure_future(ticker())
+        result = await monitor.stop_monitor_playback(task.playback_id)
+        ticks_while_stopping = ticks
+        await t
+        assert result is True
+        # A blocking join gives the loop no turns for the whole 0.4 s, so
+        # the ticker would still read 0 when the stop returned.
+        assert ticks_while_stopping >= 4
+        assert task.playback_id not in monitor._active_tasks

@@ -776,6 +776,13 @@ class QwenTTSService(BaseService):
         # reasons about widgets.
         self._compile_priming_callback: Optional[Callable[[bool], None]] = None
         self._compile_priming_active: bool = False
+        # Story 20.11 review — the gate is held by a COUNT of priming runs,
+        # not a boolean. Since 20.11 a tier-change re-prime can overlap the
+        # startup prime (or a second tier change), and the later run parks
+        # on ``_request_semaphore`` behind the earlier one; a boolean would
+        # re-enable Generate when the FIRST run's ``finally`` fired while
+        # the second still held the semaphore -- the Story 20.7 bug class.
+        self._compile_priming_depth: int = 0
 
         self.logger.info(
             f"QwenTTSService initialized: device={device}, cache_dir={self._cache_dir}"
@@ -2063,7 +2070,20 @@ class QwenTTSService(BaseService):
         :meth:`_emit_preparing_voice` does, and the local flag is updated
         BEFORE the callback so the flag is right even if the UI hop fails.
         """
-        self._compile_priming_active = bool(active)
+        # Refcounted (Story 20.11 review): each priming run declares True on
+        # entry and False in its ``finally``; the gate is open while ANY run
+        # is between the two. Floor at zero so a redundant release (the
+        # app-side safety net, or a release without an engage) stays a
+        # no-op, and only TRANSITIONS reach the log and the callback -- so a
+        # single run still produces exactly the two lines Story 20.7 pins.
+        if active:
+            self._compile_priming_depth += 1
+        else:
+            self._compile_priming_depth = max(0, self._compile_priming_depth - 1)
+        now_active = self._compile_priming_depth > 0
+        if now_active == self._compile_priming_active:
+            return
+        self._compile_priming_active = now_active
         # Story 20.7 Task 5 — observable in ``myvoice.log`` on a real launch,
         # so "the gate engaged AND released" is verifiable from the log
         # without an operator watching the button. Two lines per launch, and
