@@ -306,7 +306,9 @@ development_status:
   # 2026-09-14 evening: the two follow-ups from the build-58 log, the two shipped
   # defects the same log and tooling-5 surfaced, an observability line, and the
   # build-script version capture -- then v2.3.0 build for the public release.
-  20-11-reprime-after-tier-change: ready-for-dev
-  20-12-prebuffer-release-reason-log: ready-for-dev
-  ui-3-playback-stop-and-clone-unsaved-work: ready-for-dev
-  tooling-6-build-script-version-capture: ready-for-dev
+  20-11-reprime-after-tier-change: done
+  20-12-prebuffer-release-reason-log: done
+  ui-3-playback-stop-and-clone-unsaved-work: done
+  tooling-6-build-script-version-capture: done
+  # 2026-09-14 22:xx -- v2.3.0 build 59 released: Backblaze (installer + portable),
+  # myvoicetts.com copy, README, GitHub Release v2.3.0 (first tagged release).
