@@ -1194,6 +1194,12 @@ class MyVoiceApp(QObject):
         not finished, the BASE priming path skips itself with
         ``no_priming_prompt`` — the designed, safe fallback — rather than
         priming the wrong model.
+
+        Story 20.11 reuses this body for the post-tier-change re-prime
+        (``_reprime_after_tier_change`` as the factory): the ``finally``
+        below is the release-on-exit guarantee AC #2 asks for, and the
+        hydration check above it is moot there (startup hydration finished
+        long before any Settings change) but harmless.
         """
         task = self._voice_clone_prompt_hydration_task
         if task is not None and not task.done():
@@ -1215,6 +1221,153 @@ class MyVoiceApp(QObject):
             # ``False`` is a no-op) and cheap, and a dead Generate button is
             # strictly worse than the silent queue this story fixes.
             self._on_tts_compile_priming_changed(False)
+
+    def _on_quality_tier_updated(self, changed: bool) -> None:
+        """Story 20.11 AC #1 — the ``set_quality_tier`` success continuation:
+        log the outcome (the pre-20.11 line, unchanged) and, when the tier
+        actually changed, hand off a re-prime against the new tier.
+
+        **Scheduling classification (AC #4, Story 20.9's scheme).**
+        ``_on_settings_changed`` is a Qt signal handler — class (a), no task
+        on the stack. This method, however, runs inside the ``_handle_task``
+        wrapper of the ``set_quality_tier`` task (``on_success`` is called
+        from that task's final step), so ``asyncio.current_task()`` here is
+        *that* task, not ``None`` — the (b0) shape of 20.9 §2.4. Its remaining
+        synchronous stretch after this call is ``return`` → task completes,
+        with no Qt pump, and Task-1 is parked at ``app_close.wait()`` for the
+        whole interactive phase, so a plainly-scheduled task would survive
+        today. The hand-off still goes through ``_schedule_when_loop_is_idle``
+        because the AC asks for it whenever the current task is not ``None``,
+        and because it is the shape that keeps surviving if a future edit
+        opens a dialog from this continuation: the idle callback lands on the
+        next Qt pass, with no task current, so the re-prime's first step is
+        never armed inside the parent's step. The cost is one loop pass.
+        Proved under the out-of-process qasync driver
+        (``tests/unit/_qasync_call_site_driver.py``, ``tier_change_*``).
+
+        Routed through ``_compile_warmup_entrypoint`` so the Story 20.7
+        Generate-gate release-on-exit guarantee wraps the preload as well as
+        the priming (AC #2): if the preload fails the gate was never engaged,
+        and the ``finally`` still lands a redundant ``False`` — a no-op.
+        """
+        self.logger.info(
+            f"Quality tier updated: {'changed' if changed else 'no change'}"
+        )
+        if not changed:
+            return
+        try:
+            self._schedule_when_loop_is_idle(
+                lambda: self._compile_warmup_entrypoint(
+                    self._reprime_after_tier_change
+                ),
+                label="post-tier-change compile warmup",
+                on_success=lambda result: self.logger.debug(
+                    "post-tier-change compile warmup task completed"
+                ),
+                on_error=lambda error: self.logger.warning(
+                    f"post-tier-change compile warmup task failed: {error}"
+                ),
+                failure_note=(
+                    "If the task is destroyed pending, the next generation "
+                    "pays the model reload and a cold compile for the new "
+                    "tier."
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Never let a wiring failure propagate into ``_handle_task``'s
+            # except — that would log it as a ``set_quality_tier`` error,
+            # which it is not: the tier DID change, only the re-prime is lost.
+            self.logger.warning(
+                f"post-tier-change compile warmup wiring failed: {exc}"
+            )
+
+    async def _reprime_after_tier_change(self) -> None:
+        """Story 20.11 AC #1/#2 — the startup preload + priming sequence,
+        re-run against the tier the user just switched to.
+
+        Mirrors ``_initialize_services_async`` step for step, because the
+        cache key ``warmup_compile_async`` computes is per ``model_id`` and
+        the tier change just unloaded the model whose key was primed:
+
+        1. **Re-hydrate** the voice_clone_prompt cache. Story 17.2's startup
+           hydration is per tier (``hydrate_voice_clone_prompt_cache`` reads
+           ``quality_tier`` once and loads ``<voice>.<tier>.pt`` for that
+           tier only), and the BASE priming request looks up the prompt
+           **in memory only** (``_active_profile_voice_clone_prompt``). On a
+           cloned-voice launch — the shipped default, 12/12 CLONED voices on
+           the RTX 3060 — a re-prime without this step would skip with
+           ``no_priming_prompt`` for the new tier and the user would still
+           pay the cold compile. The registry's ``quality_tier`` is already
+           the new tier here (``set_quality_tier`` flipped it before
+           unloading), so the same idempotent scan hydrates the new tier's
+           entries. Its body is synchronous (Story 20.3 §1.1a), so awaiting
+           it inline adds no task and no extra exposure.
+        2. **Preload** the model for the active profile — the same choice
+           logic as startup: ``get_active_profile_model_type()`` else
+           CUSTOM_VOICE. On failure or raise: WARNING naming why, and
+           priming is NOT attempted (AC #2) — there is no model to key a
+           compile cache from, and ``warmup_compile_async`` would only exit
+           at ``no_model_loaded`` anyway. The Generate gate was never
+           engaged; the entrypoint's ``finally`` releases it regardless.
+        3. **Prime** via ``warmup_compile_async``, untouched. It computes the
+           key from the now-resident model, so the warm/cold decision is per
+           tier, and a switch back to the original tier re-primes that key
+           too. The log lines are the startup ones (``Compile-priming
+           Generate gate: ENGAGED`` … ``RELEASED``) because they come from
+           the service.
+        """
+        tts_service = getattr(self, "_tts_service", None)
+        if tts_service is None:
+            self.logger.warning(
+                "Post-tier-change re-prime skipped: no TTS service"
+            )
+            return
+
+        # 1. Re-hydrate for the new tier (see docstring). Never raises by
+        #    contract, but a raise here must not cost the preload below.
+        try:
+            hydrated = await tts_service.hydrate_voice_clone_prompt_cache()
+            self.logger.info(
+                f"Voice clone prompt cache hydration after tier change: "
+                f"{hydrated}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(
+                f"Voice clone prompt cache hydration after tier change "
+                f"failed: {exc}"
+            )
+
+        # 2. Preload — same choice logic as ``_initialize_services_async``.
+        voice_manager = getattr(self, "_voice_manager", None)
+        preferred_model = (
+            voice_manager.get_active_profile_model_type()
+            if voice_manager is not None
+            else None
+        )
+        model_type = preferred_model or QwenModelType.CUSTOM_VOICE
+        self.logger.info(
+            f"Preloading model after tier change: {model_type.display_name}"
+        )
+        try:
+            success, error = await tts_service.preload_model(model_type)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(
+                f"Post-tier-change re-prime skipped: preloading "
+                f"{model_type.display_name} raised: {exc}"
+            )
+            return
+        if not success:
+            self.logger.warning(
+                f"Post-tier-change re-prime skipped: failed to preload "
+                f"{model_type.display_name}: {error}"
+            )
+            return
+        self.logger.info(
+            f"Model {model_type.display_name} preloaded after tier change"
+        )
+
+        # 3. Prime the new tier's key.
+        await tts_service.warmup_compile_async()
 
     def _run_async_task(self, coro, on_success=None, on_error=None):
         """
@@ -4547,9 +4700,16 @@ class MyVoiceApp(QObject):
             # Handle model quality tier change (no restart required)
             if old_tier != new_tier and hasattr(self, '_tts_service') and self._tts_service:
                 self.logger.info(f"Model quality tier changed from '{old_tier}' to '{new_tier}'")
+                # Story 20.11 AC #1 — ``set_quality_tier`` only UNLOADS the
+                # resident model ("will take effect on next generation"), so
+                # until now the next Generate paid the reload AND a cold
+                # compile for the new tier's key inside the request (19.2 s to
+                # first audio on an RTX 3060, 2026-09-14 20:24:35). The
+                # success continuation re-runs the startup preload + priming
+                # hand-off against the new tier; see ``_on_quality_tier_updated``.
                 self._run_async_task(
                     self._tts_service.set_quality_tier(new_tier),
-                    on_success=lambda changed: self.logger.info(f"Quality tier updated: {'changed' if changed else 'no change'}"),
+                    on_success=self._on_quality_tier_updated,
                     on_error=lambda error: self.logger.error(f"Failed to update quality tier: {error}")
                 )
 

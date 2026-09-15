@@ -39,6 +39,25 @@ shipped code and must survive:
   ``api_fixed`` — the shipped ``_setup_api_server_from_settings`` (deferred
         start) under the same rig: ``on_tick`` keeps being called after the
         pump and ``stop()`` completes.
+
+Story 20.11 adds the post-tier-change re-prime site (AC #4). The handler
+(``_on_settings_changed``) is a Qt signal slot with no task on the stack, but
+the ``on_success`` continuation that schedules the re-prime runs inside the
+``set_quality_tier`` task's final step — so ``current_task()`` there is NOT
+``None``. Three variants, all driven with Task-1 parked (the interactive
+phase; ``app_close.wait()`` in main.py):
+
+  ``tier_change_fixed`` — the shipped handler, called from a zero-timer Qt
+        slot exactly as the signal would. Records which task is current in
+        the slot and in the continuation, and that the re-prime runs once in
+        production order (hydrate -> preload -> warmup) with no re-entrancy
+        error.
+  ``tier_change_plain_pumped`` — control: the continuation replaced by the
+        plain ``_run_async_task`` shape, plus a Qt pump inside the
+        continuation (what a dialog opened from it would do). The re-prime's
+        first step is delivered inside the parent's step and destroyed.
+  ``tier_change_fixed_pumped`` — the shipped continuation under the same
+        pump: deferred through it, created once the parent completes, runs.
 """
 
 from __future__ import annotations
@@ -51,6 +70,7 @@ import re
 import socket
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List
 
@@ -61,7 +81,19 @@ from PyQt6.QtWidgets import QApplication
 
 import qasync
 
-from myvoice.models.app_settings import AppSettings
+# Story 20.11: import THIS checkout's ``src``, not whichever one the
+# interpreter was configured with. The bundled portable interpreter's
+# ``python310._pth`` pins ``..\src`` (the main checkout) and — being a
+# ``._pth`` — ignores ``PYTHONPATH`` entirely, so the ``env["PYTHONPATH"]`` the
+# spawning test sets never reached this process. Run from a git worktree, the
+# driver was importing the main checkout's ``app.py`` and proving nothing
+# about the code under test. ``conftest.py`` does the same insert for the
+# in-process suite; this is the out-of-process half of it.
+_SRC = Path(__file__).resolve().parents[2] / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+from myvoice.models.app_settings import AppSettings  # noqa: E402
 
 
 PUMP_ITERATIONS = 40  # Story 20.3's stand-in for main.py:397-404 (normal launch)
@@ -280,6 +312,94 @@ def main(variant: str) -> Dict[str, Any]:
             stop_task.cancel()
         gc.collect()
 
+    async def task1_tier_change(shape: str):
+        """Story 20.11 AC #4. Task-1 parks (the interactive phase) and the
+        Settings-changed handler fires from a Qt zero-timer slot — no task on
+        the stack, exactly as the ``settings_changed`` signal delivers it.
+
+        ``shape``: ``"fixed"`` (shipped continuation), ``"fixed_pumped"``
+        (shipped continuation + a Qt pump inside it), ``"plain_pumped"``
+        (pre-fix scheduling shape — plain ``_run_async_task`` from inside the
+        continuation — + the same pump; the control that must be destroyed).
+        """
+        from myvoice.models.service_enums import QwenModelType
+
+        async def set_quality_tier(tier):
+            await asyncio.sleep(0)
+            events.append(f"tier_set@{phase['now']}")
+            return True
+
+        async def hydrate_voice_clone_prompt_cache():
+            events.append(f"hydrate@{phase['now']}")
+            return (12, 12)
+
+        async def preload_model(model_type):
+            events.append(f"preload_start:{model_type.name}@{phase['now']}")
+            await asyncio.sleep(0.02)
+            events.append(f"preload_done@{phase['now']}")
+            return True, None
+
+        async def warmup_compile_async():
+            events.append(f"warmup@{phase['now']}")
+
+        app_obj._tts_service = SimpleNamespace(
+            set_app_settings=lambda s: None,
+            set_quality_tier=set_quality_tier,
+            hydrate_voice_clone_prompt_cache=hydrate_voice_clone_prompt_cache,
+            preload_model=preload_model,
+            warmup_compile_async=warmup_compile_async,
+        )
+        app_obj._voice_manager = SimpleNamespace(
+            get_active_profile_model_type=lambda: QwenModelType.BASE
+        )
+
+        async def save_settings():
+            return True
+
+        app_obj._config_manager = SimpleNamespace(save_settings=save_settings)
+        # Non-None sentinels so ``_reconcile_api_server`` takes its "disabled,
+        # not running" no-op branch instead of constructing a real controller.
+        app_obj._api_server = SimpleNamespace(is_running=False)
+        app_obj._stream_hub = object()
+        app_obj._app_settings = AppSettings(model_quality_tier="small")
+
+        shipped_continuation = app_obj._on_quality_tier_updated
+
+        def _task_name(task):
+            return task.get_name() if task is not None else None
+
+        def continuation(changed):
+            result["continuation_current_task"] = _task_name(asyncio.current_task())
+            if shape == "plain_pumped":
+                # The pre-fix shape: create the task directly from inside the
+                # parent's step. Its first step is a zero-timer, delivered
+                # by the pump below while the parent is still current.
+                app_obj.logger.info(f"Quality tier updated: {'changed' if changed else 'no change'}")
+                app_obj._run_async_task(
+                    app_obj._compile_warmup_entrypoint(
+                        app_obj._reprime_after_tier_change
+                    )
+                )
+            else:
+                shipped_continuation(changed)
+            if shape.endswith("_pumped"):
+                phase["now"] = "pumping-in-continuation"
+                result["pump_passes"] = _pump_for(0.2)
+                phase["now"] = "parked"
+
+        app_obj._on_quality_tier_updated = continuation
+
+        def qt_slot():
+            result["handler_current_task"] = _task_name(asyncio.current_task())
+            app_obj._on_settings_changed(AppSettings(model_quality_tier="quality"))
+
+        phase["now"] = "parked"
+        QTimer.singleShot(0, qt_slot)
+        # Task-1 parked, as at ``app_close.wait()``; long enough for the whole
+        # chain (tier set -> continuation -> idle pass -> re-prime) to land.
+        await asyncio.sleep(1.0)
+        gc.collect()
+
     if variant == "restore_legacy_fastfail":
         coro = task1_restore(fixed=False)
     elif variant == "restore_fixed_fastfail":
@@ -293,6 +413,12 @@ def main(variant: str) -> Dict[str, Any]:
         coro = task1_api(fixed=False)
     elif variant == "api_fixed":
         coro = task1_api(fixed=True)
+    elif variant == "tier_change_fixed":
+        coro = task1_tier_change("fixed")
+    elif variant == "tier_change_fixed_pumped":
+        coro = task1_tier_change("fixed_pumped")
+    elif variant == "tier_change_plain_pumped":
+        coro = task1_tier_change("plain_pumped")
     else:
         raise SystemExit(f"unknown variant {variant!r}")
 

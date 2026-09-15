@@ -2798,8 +2798,10 @@ class QwenTTSService(BaseService):
         # ``suppress_audio_output`` stays off those signatures — it is not a
         # knob any caller outside compile priming should reach for. The
         # construction mirrors the public generators' request shapes exactly
-        # (same model_type, same ``_resolve_streaming_mode()`` fork), so
-        # priming still exercises the production dispatch chain.
+        # (same model_type, same ``_dispatch_by_streaming_mode`` fork), so
+        # priming still exercises the production dispatch chain. The MODE fed
+        # to that fork is the one place priming deliberately differs from a
+        # user generation — see the Story 20.11 note at the dispatch below.
         request = self._build_compile_priming_request()
 
         # Story 20.2 review F6 - fail LOUDLY rather than silently
@@ -2825,13 +2827,32 @@ class QwenTTSService(BaseService):
         # BEFORE dispatch, so the caller's ``mark_warm`` guard sees the
         # target even if the dispatch raises.
         self._last_priming_model_type = request.model_type
+        # Story 20.11 AC #3 — prime through the HARDWARE-DEFAULT mode, not
+        # the user's ``streaming_mode_override``. Pre-20.11 this read
+        # ``_resolve_streaming_mode()``, so with the sentence-stream override
+        # on (left on from an earlier test on the RTX 3060, 2026-09-14 20:17)
+        # priming primed the batch decode path, and the first TRUE_STREAM
+        # generation after switching back still paid the ``CodecStateCache``
+        # self-test (~1.5 s on a 3060) and the streaming-geometry compile
+        # (3.08 s vs 1.86 s to first chunk). TRUE_STREAM is the shipping path
+        # and the one whose geometry (``decode_window_frames``) is a
+        # compile-cache-key dimension, so it is what priming must exercise.
+        # ``effective_streaming_mode(None)`` is the D-9 hardware probe:
+        # TRUE_STREAM on CUDA, SENTENCE_STREAM on a CPU-only host — where
+        # priming never gets here anyway (the Ampere gate exits first). The
+        # user's own generations are untouched: every public generator still
+        # resolves through ``_resolve_streaming_mode()``.
+        priming_mode = effective_streaming_mode(None)
         self.logger.info(
             "Compile priming: dispatching against the resident model %s",
             request.model_type.display_name,
         )
-        await self._dispatch_by_streaming_mode(
-            request, self._resolve_streaming_mode()
+        self.logger.info(
+            "Compile priming: mode %s (hardware default; the user's "
+            "streaming_mode_override is not applied to priming)",
+            priming_mode.value,
         )
+        await self._dispatch_by_streaming_mode(request, priming_mode)
 
     async def generate_voice_clone(
         self,
