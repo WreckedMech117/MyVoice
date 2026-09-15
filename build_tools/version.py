@@ -15,6 +15,7 @@ Usage:
     python version.py bump patch         # 1.0.0 -> 1.0.1
     python version.py set 1.2.3          # Set specific version
     python version.py update-all         # Update all files with current version
+    python version.py print              # Bare MAJOR.MINOR.PATCH for scripts
 """
 
 import re
@@ -339,6 +340,16 @@ def main():
         elif command == 'update-all':
             update_all_files(VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH)
             print(f"\n+ All files updated to {VERSION}")
+
+        elif command == 'print':
+            # Bare "MAJOR.MINOR.PATCH" on stdout, nothing else -- for
+            # build_release.bat's Step 5 `for /f` capture (tooling-6). The
+            # script used to run `python -c "import version; ..."`, which
+            # fails under the portable interpreter: python310._pth pins
+            # sys.path and does not include the working directory, so the
+            # import raised, stdout was empty, and every release folder was
+            # named "MyVoice-v\".
+            print(VERSION)
 
         elif command == 'increment-build':
             new_build = increment_build_number()

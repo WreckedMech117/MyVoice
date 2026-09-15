@@ -410,7 +410,10 @@ echo.
 
 REM Get version from version.py
 cd ..\build_tools
-for /f "tokens=*" %%a in ('"%PYTHON_EXE%" -c "import version; print(version.VERSION)"') do set VERSION=%%a
+REM tooling-6: `python -c "import version"` cannot see the working directory
+REM under the portable interpreter (python310._pth pins sys.path), so the old
+REM capture was always empty and the folder came out as "MyVoice-v\".
+for /f "tokens=*" %%a in ('"%PYTHON_EXE%" version.py print') do set VERSION=%%a
 cd ..\installer_output
 
 REM Create versioned release folder
