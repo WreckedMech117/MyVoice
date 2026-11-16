@@ -44,6 +44,35 @@ def qapp():
 
 
 # --------------------------------------------------------------------------- #
+# current_event_loop — a set, current asyncio loop for code that calls
+# asyncio.get_event_loop() (production relies on qasync to install one)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def current_event_loop():
+    """Install a fresh event loop as the thread's current loop.
+
+    On Python 3.10 ``asyncio.get_event_loop()`` raises ``RuntimeError``
+    once any earlier test has called ``asyncio.run()`` (which ends with
+    ``set_event_loop(None)``). Production code paths such as
+    ``MyVoiceApp._interrupt_active_playback_for_clear_comms`` call it and
+    rely on qasync having installed a loop, so tests exercising them failed
+    or passed depending on suite order. Opt in with
+    ``pytestmark = pytest.mark.usefixtures("current_event_loop")``.
+    """
+    import asyncio
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        yield loop
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
+
+
+# --------------------------------------------------------------------------- #
 # signal_records — capture the four D-13 SessionRegistry signals
 # --------------------------------------------------------------------------- #
 
