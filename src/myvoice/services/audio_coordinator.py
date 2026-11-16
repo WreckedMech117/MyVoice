@@ -1065,6 +1065,14 @@ class AudioCoordinator(BaseService):
             # Update monitor service settings
             if self.monitor_service:
                 self.monitor_service.app_settings = new_settings
+                # Re-resolve the monitor device explicitly. Before the
+                # 2026-11 Replay fix this only happened as a side effect of
+                # ``play_monitor_audio`` persisting its per-call device, so
+                # a Settings change never reached the streaming path.
+                try:
+                    await self.monitor_service.apply_monitor_device_from_settings()
+                except Exception as e:
+                    self.logger.warning(f"Error setting monitor device: {e}")
                 self.logger.debug("Monitor service settings updated")
 
             # Update virtual service settings and current_virtual_device

@@ -2156,6 +2156,29 @@ class MyVoiceApp(QObject):
                 asyncio.ensure_future(
                     self._audio_coordinator.stop_all_playback(), loop=loop
                 )
+                # Interrupt progressive (streaming) playback too -- mirrors
+                # the Stop button's block in _on_cancel_generation_requested.
+                # stop_all_playback only reaches batch tasks. Without this,
+                # a click mid-stream left _progressive_playback_active True,
+                # so the Clear Comms dispatch below took the "progressive
+                # playback already active" skip-branch: the clip never
+                # played, the skip-branch's deferred flag-clear made every
+                # remaining chunk drop as stale (own voice cut out
+                # mid-sentence), and the generation-complete dispatch then
+                # replayed the whole generation via the batch path
+                # (2026-11, Lucy's report).
+                #
+                # Generation is still NOT cancelled (see docstring). Bumping
+                # the epoch drops the rest of this stream's chunks; the
+                # completed generation then dispatches through the batch
+                # path and the queue plays it after the Clear Comms clip.
+                self._progressive_playback_epoch += 1
+                if self._progressive_playback_active:
+                    asyncio.ensure_future(
+                        self._audio_coordinator.stop_streaming_session(),
+                        loop=loop,
+                    )
+                    self._progressive_playback_active = False
 
             # Cancel the focal session if it is in PLAYING (mirrors the
             # focal-cancel block in _on_cancel_generation_requested at
