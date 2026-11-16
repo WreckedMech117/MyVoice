@@ -59,6 +59,12 @@ if _IMPORT_ERROR is not None:
     )
 
 
+@pytest.fixture(autouse=True)
+def _installed_event_loop(current_event_loop):
+    """Clear Comms' interrupt path calls asyncio.get_event_loop(); give
+    every test a current loop so results don't depend on suite order."""
+    yield current_event_loop
+
 # --------------------------------------------------------------------------- #
 # Helpers / fixtures
 # --------------------------------------------------------------------------- #
