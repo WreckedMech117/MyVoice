@@ -1246,6 +1246,11 @@ class QwenTTSService(BaseService):
     # (dffdeeq/Qwen3-TTS-streaming fork) — Story 17.2 cached `.pt` files from
     # the previous pin are invalidated on first run after this bump (Story 17.2
     # H1+H2 cache-invalidation discipline per memory/code_review_regression_test_exact_class.md).
+    # tooling-9 (2026-11-19): the install pin moved to fork commit 13ef823f after
+    # the fork's history rewrite orphaned 3fdb4682. qwen_tts code is byte-identical,
+    # so this key intentionally still reads "3fdb4682": it identifies the CODE the
+    # caches were built against, and changing it would invalidate every user's
+    # bundled and persisted prompt caches for no behavioural change.
     _QWEN_TTS_PIN_HASH = "3fdb4682"
     # mtime tolerance for the persisted-meta and in-memory fingerprint checks
     # (Story 20.10). Was 1 ms on the assumption that "filesystem timestamps

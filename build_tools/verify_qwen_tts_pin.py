@@ -47,7 +47,10 @@ import sys
 from pathlib import Path
 
 
-PINNED_COMMIT = "3fdb468233d73fa537202b94a1cc7c4e7a6160b8"
+# Repinned 2026-11-19 (tooling-9) from 3fdb468233d73fa537202b94a1cc7c4e7a6160b8,
+# orphaned by the fork's 2026-06 history rewrite. qwen_tts/*.py is byte-identical
+# between the two commits, so KNOWN_GOOD_HASHES below are unchanged.
+PINNED_COMMIT = "13ef823ffe76aec4ac7e35d3fec28ecfc8d7427a"
 PINNED_REPO = "dffdeeq/Qwen3-TTS-streaming"
 
 # Known-good SHA-256 hashes of the load-bearing qwen_tts files at the pinned
