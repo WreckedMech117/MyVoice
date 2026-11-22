@@ -44,7 +44,13 @@ openai-whisper>=20231117
 # Bumping further requires running tests/test_qwen_tts_internals.py first; do NOT
 # replace with the unpinned `pip install git+...` form, which would resolve to fork
 # HEAD and silently subvert the pin.
-qwen-tts @ git+https://github.com/dffdeeq/Qwen3-TTS-streaming.git@3fdb468233d73fa537202b94a1cc7c4e7a6160b8
+# 2026-11-19 (tooling-9): repinned from 3fdb4682 to 13ef823f. The fork rewrote its
+# history in 2026-06, leaving 3fdb4682 on no branch (garbage-collectable by GitHub, which
+# would break fresh installs). Every qwen_tts/*.py file is byte-identical between the two
+# commits (verified by installing both); only examples/README differ. The runtime cache
+# key `_QWEN_TTS_PIN_HASH` stays "3fdb4682" deliberately -- it names the CODE, which is
+# unchanged, so no user cache is invalidated.
+qwen-tts @ git+https://github.com/dffdeeq/Qwen3-TTS-streaming.git@13ef823ffe76aec4ac7e35d3fec28ecfc8d7427a
 
 # Audio I/O for Qwen3-TTS
 soundfile>=0.12.1
