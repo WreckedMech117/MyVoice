@@ -183,6 +183,12 @@ Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{#MyAppName}"; Fil
 ; write to HKLM\Software. Windows resolves App Paths from both hives.
 ;
 ; Register application for proper uninstall
+; The publisher parent key is created implicitly by the entries below, but
+; uninsdeletekey only removes the {#MyAppName} child, leaving an empty
+; "Software\{#MyAppPublisher}" behind (tooling-2 audit follow-up). Declare
+; the parent so uninstall removes it -- only when empty, so another product
+; from the same publisher keeps its key.
+Root: HKA; Subkey: "Software\{#MyAppPublisher}"; Flags: uninsdeletekeyifempty
 Root: HKA; Subkey: "Software\{#MyAppPublisher}\{#MyAppName}"; ValueType: string; ValueName: "Version"; ValueData: "{#MyAppVersion}"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\{#MyAppPublisher}\{#MyAppName}"; ValueType: string; ValueName: "Build"; ValueData: "{#MyAppBuild}"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\{#MyAppPublisher}\{#MyAppName}"; ValueType: string; ValueName: "InstallPath"; ValueData: "{app}"; Flags: uninsdeletekey
