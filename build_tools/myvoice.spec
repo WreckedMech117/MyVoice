@@ -596,6 +596,44 @@ a = Analysis(
 )
 
 # =============================================================================
+# tooling-10 (2026-11-22) — drop binaries nothing uses
+# =============================================================================
+# None of these is statically or delay-imported by any bundled DLL/PYD/EXE
+# (PE import-table scan of the build-60 install), and neither app code nor
+# Whisper calls ffprobe. Verified on a real install with the files renamed
+# away: launch + compiled first generation, long streamed generation, Clear
+# Comms mid-speech, Replay, Whisper transcription, Settings and Voice Design
+# Studio all passed. Saves ~458 MB installed / ~165 MB of installer.
+# Filtered here (not at collection) because some arrive via hooks
+# (opengl32sw.dll comes from the PyQt6 hook, not our lists).
+# Deliberately NOT touched: cuda_redist/bin's nvrtc copies (Story 18.5 triton
+# recipe resolves NVRTC there via CUDA_PATH) and cuDNN's sub-libraries, which
+# cuDNN loads dynamically.
+_UNUSED_BINARIES = {
+    'ffprobe.exe',            # ffmpeg sibling; only ffmpeg.exe is invoked
+    'cusolvermg64_11.dll',    # multi-GPU cuSOLVER; torch_cuda links cusolver64 only
+    'curand64_10.dll',        # host cuRAND; torch uses the device-side API
+    'nvperf_host.dll',        # Nsight profiling
+    'cufftw64_11.dll',        # FFTW compat shim
+    'nvrtc64_120_0.alt.dll',  # caffe2_nvrtc links the non-.alt nvrtc
+    'opengl32sw.dll',         # Qt software-OpenGL fallback; app uses no QOpenGL
+}
+
+
+def _drop_unused(toc):
+    kept = []
+    for entry in toc:
+        if Path(entry[0]).name.lower() in _UNUSED_BINARIES:
+            print(f"[SPEC] tooling-10: excluding unused binary {entry[0]}")
+            continue
+        kept.append(entry)
+    return kept
+
+
+a.binaries = _drop_unused(a.binaries)
+a.datas = _drop_unused(a.datas)
+
+# =============================================================================
 # PYZ (Python Archive)
 # =============================================================================
 
