@@ -52,7 +52,7 @@ from PyQt6.QtWidgets import (
     QTextEdit, QLineEdit, QPushButton, QGroupBox, QProgressBar,
     QComboBox, QTabWidget, QToolButton, QStyle, QFileDialog
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QEvent, pyqtSignal
 from PyQt6.QtGui import QFont, QIcon
 
 from myvoice.ui.dialogs.voice_design_studio.audio_player_widget import AudioPlayerWidget
@@ -79,6 +79,16 @@ class DescriptionPathPanel(QWidget):
         retry_requested: Emitted when user clicks Retry after an error
         save_ready_changed: Emitted when save readiness changes (has_embedding and has_name)
     """
+
+    CREATE_TAB_TOOLTIP = (
+        "Voice variations appear here after you click "
+        "\"Generate 5 Variations\" on the Imagine tab."
+    )
+    CREATE_EMPTY_HINT = (
+        "No voice variations yet.\n\n"
+        "On the Imagine tab, describe a voice, enter preview text and click "
+        "\"Generate 5 Variations\". They appear here to compare, pick and save."
+    )
 
     generate_requested = pyqtSignal(str, str, str)  # description, preview_text, language
     content_changed = pyqtSignal()  # Emitted when inputs change
@@ -253,8 +263,20 @@ class DescriptionPathPanel(QWidget):
         create_layout.setContentsMargins(4, 4, 4, 4)
         create_layout.setSpacing(6)
 
+        # Empty state: without it a user who opens Create before generating
+        # sees a blank page and no hint where the variations come from.
+        self.create_empty_label = QLabel(self.CREATE_EMPTY_HINT)
+        self.create_empty_label.setObjectName("create_empty_label")
+        self.create_empty_label.setWordWrap(True)
+        self.create_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.create_empty_label.setStyleSheet("color: #666; font-style: italic; padding: 24px;")
+        create_layout.addWidget(self.create_empty_label)
+
         # Result section (variant list and save options)
         self._create_result_section(create_layout)
+        # Track result_group's own show/hide so every caller (including the
+        # dialog's session-restore path) keeps the empty state in sync.
+        self.result_group.installEventFilter(self)
 
         create_layout.addStretch()
 
@@ -277,6 +299,7 @@ class DescriptionPathPanel(QWidget):
         # Add tabs to sub-tab widget
         self.sub_tabs.addTab(self.imagine_tab, "Imagine")
         self.sub_tabs.addTab(self.create_tab, "Create")
+        self.sub_tabs.setTabToolTip(1, self.CREATE_TAB_TOOLTIP)
         self.sub_tabs.addTab(self.clone_tab, "Clone")  # QA8: New Clone tab
 
         # Connect tab change to handle state
@@ -1535,6 +1558,18 @@ class DescriptionPathPanel(QWidget):
         """Handle regenerate button click from variant list (Story 1.9)."""
         self.logger.debug("Regenerate All clicked")
         self.regenerate_requested.emit()
+
+    def eventFilter(self, obj, event):
+        if obj is getattr(self, "result_group", None) and event.type() in (
+            QEvent.Type.ShowToParent,
+            QEvent.Type.HideToParent,
+        ):
+            self._sync_create_empty_state()
+        return super().eventFilter(obj, event)
+
+    def _sync_create_empty_state(self):
+        """Show the Create-tab hint exactly while no variations are shown."""
+        self.create_empty_label.setVisible(self.result_group.isHidden())
 
     def _on_sub_tab_changed(self, index: int):
         """Handle sub-tab change (QA3, QA8)."""
