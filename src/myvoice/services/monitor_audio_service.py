@@ -307,10 +307,18 @@ class MonitorAudioService(BaseService):
                     self.logger.error("No monitor devices available")
                     return None
 
-            # Update current monitor device if a specific device was provided
-            if device:
-                self.current_monitor_device = device
-                self.logger.debug(f"Updated current monitor device to: {device.name}")
+            # ``device`` applies to THIS playback only. It must not be
+            # written back to ``current_monitor_device``: that field is the
+            # user's configured monitor and is what every streaming session
+            # opens on (``start_streaming_session``). The batch callers
+            # resolve ``device`` with their own heuristics -- Replay / Clear
+            # Comms substitute the first enumerated output for "Default"
+            # and re-route on a monitor/virtual collision; the Settings
+            # tone test plays whichever device is being tested -- so
+            # persisting it silently re-pointed all later generations at
+            # that device ("can't hear own voice after Replay", 2026-11).
+            # Settings changes reach the monitor through
+            # ``AudioCoordinator.update_device_settings`` instead.
 
             # Generate unique task ID
             self._task_counter += 1
@@ -792,6 +800,29 @@ class MonitorAudioService(BaseService):
         except Exception as e:
             self.logger.warning(f"Monitor device {device_index} validation failed: {e}")
             return False
+
+    async def apply_monitor_device_from_settings(self) -> bool:
+        """Re-resolve ``current_monitor_device`` from ``app_settings``.
+
+        Called when the user changes the monitor device in Settings.
+        "Default" (no ``monitor_device_id``) clears the device so streaming
+        follows the OS default output live. A configured device that is no
+        longer enumerated leaves the previous device in place (and returns
+        False) rather than dropping to an arbitrary output.
+        """
+        if not self.app_settings or not getattr(
+            self.app_settings, 'monitor_device_id', None
+        ):
+            self.current_monitor_device = None
+            self.logger.info("Monitor device set to OS default output")
+            return True
+        loaded = await self._load_monitor_device_from_settings()
+        if not loaded:
+            self.logger.warning(
+                f"Configured monitor device {self.app_settings.monitor_device_id} "
+                "not found; keeping previous monitor device"
+            )
+        return loaded
 
     async def _load_monitor_device_from_settings(self) -> bool:
         """Load monitor device from application settings."""
