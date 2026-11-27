@@ -1359,28 +1359,13 @@ class MainWindow(QMainWindow):
         # Set generating state with visual feedback
         self.set_generation_status("Generating speech...", is_generating=True)
 
-        # Emit signal for actual TTS processing (when service is connected)
+        # Emit signal for actual TTS processing. The app controller owns the
+        # outcome: it calls set_generation_status(..., False) on completion,
+        # failure or cancel. (A pre-integration demo stub used to force
+        # "Speech generated successfully!" + is_generating=False after a
+        # fixed 2 s here, mid-generation for anything longer -- flipping the
+        # Clear button from Stop back to clear-text too early.)
         self.text_generate_requested.emit(text)
-
-        # TTS Handler Stub - Simulate processing time for demo/testing
-        # In production, this will be replaced by actual TTS service integration
-        QTimer.singleShot(2000, lambda: self._complete_tts_generation_stub(text))
-
-    def _complete_tts_generation_stub(self, text: str):
-        """
-        Complete TTS generation stub - simulates successful generation.
-        This method will be replaced when actual TTS service is integrated.
-
-        Args:
-            text: Text that was processed
-        """
-        self.logger.info(f"TTS generation completed (stub) for: {text[:30]}...")
-
-        # Reset button state
-        self.set_generation_status("Speech generated successfully!", is_generating=False)
-
-        # Clear status message after 3 seconds and show appropriate ready message
-        QTimer.singleShot(3000, lambda: self.status_bar.showMessage(self._get_ready_message()))
 
     def eventFilter(self, obj, event):
         """Handle events for text input, specifically Enter key for generation."""
@@ -1681,6 +1666,15 @@ class MainWindow(QMainWindow):
         else:
             return "TTS Unavailable"
 
+    SETTLED_STATUS_REVERT_MS = 3000
+
+    def _revert_settled_status(self, status: str) -> None:
+        try:
+            if not self._is_generating and self.status_bar.currentMessage() == status:
+                self.status_bar.showMessage(self._get_ready_message())
+        except RuntimeError:
+            pass  # window already destroyed
+
     def set_generation_status(self, status: str, is_generating: bool = False):
         """
         Update the generation status display.
@@ -1690,6 +1684,14 @@ class MainWindow(QMainWindow):
             is_generating: Whether generation is in progress
         """
         self.status_bar.showMessage(status)
+
+        # Once generation settles, fall back to the ready message after a
+        # few seconds -- unless something newer has replaced the text.
+        if not is_generating and status:
+            QTimer.singleShot(
+                self.SETTLED_STATUS_REVERT_MS,
+                lambda: self._revert_settled_status(status),
+            )
 
         # Story 11.4 follow-up: track in-flight state so the Clear button
         # knows whether to clear text (idle) or emit cancel (generating).
