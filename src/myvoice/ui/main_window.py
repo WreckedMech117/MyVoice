@@ -15,7 +15,10 @@ from PyQt6.QtWidgets import (
     QSizePolicy, QStatusBar, QSystemTrayIcon, QMenu
 )
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QTimer, QEvent
-from PyQt6.QtGui import QIcon, QFont, QCloseEvent, QKeyEvent, QShowEvent
+from PyQt6.QtGui import (
+    QIcon, QFont, QCloseEvent, QKeyEvent, QShowEvent,
+    QColor, QKeySequence, QPalette, QTextCharFormat, QTextCursor,
+)
 
 # QAccessibleEvent may not be available in all PyQt6 versions
 try:
@@ -286,6 +289,13 @@ class MainWindow(QMainWindow):
         self.text_input.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.text_input.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.text_input.installEventFilter(self)  # Install event filter for Enter key handling
+        # ui-5: "ghost text" -- after Generate the text stays in the box,
+        # greyed, cursor at the start. Tab makes it live again; typing
+        # replaces it. Any other change to the box (Esc, Stop restore,
+        # Quick Speak, dictation) ends the ghost state via textChanged.
+        self._ghost_text_active = False
+        self._ghost_text_guard = False
+        self.text_input.textChanged.connect(self._on_text_input_changed)
 
         # Action buttons layout (vertical stack)
         action_buttons_layout = QVBoxLayout()
@@ -1198,6 +1208,15 @@ class MainWindow(QMainWindow):
 
     def _on_generate_clicked(self):
         """Handle generate button click with enhanced visual feedback."""
+        if self._ghost_text_active:
+            # Greyed text is the PREVIOUS utterance, not live input:
+            # Enter/Generate must not silently resend it.
+            self.status_bar.showMessage(
+                "Press Tab to reuse the last text, or type something new", 3000
+            )
+            self.text_input.setFocus()
+            return
+
         text = self.text_input.toPlainText().strip()
 
         if not text:
@@ -1215,9 +1234,107 @@ class MainWindow(QMainWindow):
         # that opt-in clear.
         self._last_generation_text = text
 
-        # Clear the text input after starting generation
-        self.text_input.clear()
+        # ui-5: grey the text out instead of clearing it. Typing still
+        # starts a fresh utterance (the ghost is replaced on the first
+        # keystroke); Tab brings it back to edit and resend.
+        self._set_ghost_text(text)
         self.text_input.setFocus()
+
+    # ----- ui-5: ghost text ------------------------------------------- #
+
+    def _set_ghost_text(self, text: str) -> None:
+        """Show ``text`` greyed out with the cursor at the start."""
+        self._ghost_text_guard = True
+        try:
+            self.text_input.setPlainText(text)
+            fmt = QTextCharFormat()
+            fmt.setForeground(self._ghost_text_color())
+            cursor = self.text_input.textCursor()
+            cursor.select(QTextCursor.SelectionType.Document)
+            cursor.mergeCharFormat(fmt)
+            cursor.movePosition(QTextCursor.MoveOperation.Start)
+            self.text_input.setTextCursor(cursor)
+        finally:
+            self._ghost_text_guard = False
+        self._ghost_text_active = True
+
+    def _ghost_text_color(self) -> QColor:
+        """Half-way between the box's text and background colours.
+
+        Not PlaceholderText: Qt's default for it is the default text colour
+        at 50 % alpha, which the theme QSS does not override -- on the dark
+        theme that would be near-invisible. The QSS ``color`` and
+        ``background-color`` do reach the palette's Text and Base roles, so
+        mixing those stays legible-but-muted in every theme.
+        """
+        pal = self.text_input.palette()
+        fg = pal.color(QPalette.ColorRole.Text)
+        bg = pal.color(QPalette.ColorRole.Base)
+        return QColor(
+            (fg.red() + bg.red()) // 2,
+            (fg.green() + bg.green()) // 2,
+            (fg.blue() + bg.blue()) // 2,
+        )
+
+    def _end_ghost_text(self, keep_text: bool) -> None:
+        """Leave the ghost state: restore the text live, or empty the box."""
+        if not self._ghost_text_active:
+            return
+        self._ghost_text_active = False
+        self._ghost_text_guard = True
+        try:
+            if keep_text:
+                self._reset_text_input_format()
+                self.text_input.moveCursor(QTextCursor.MoveOperation.End)
+            else:
+                self.text_input.clear()
+                self.text_input.setCurrentCharFormat(QTextCharFormat())
+        finally:
+            self._ghost_text_guard = False
+
+    def _reset_text_input_format(self) -> None:
+        """Drop the grey format in place (no content change, no re-set of
+        the text, so it is safe to call from inside textChanged)."""
+        cursor = QTextCursor(self.text_input.document())
+        cursor.select(QTextCursor.SelectionType.Document)
+        cursor.setCharFormat(QTextCharFormat())
+        self.text_input.setCurrentCharFormat(QTextCharFormat())
+
+    def _on_text_input_changed(self) -> None:
+        """Any change we did not make ourselves ends the ghost state, with
+        the box's new content treated as live text (Esc, Stop restore,
+        Quick Speak, dictation, context-menu paste, drag and drop)."""
+        if self._ghost_text_active and not self._ghost_text_guard:
+            self._ghost_text_active = False
+            self._ghost_text_guard = True
+            try:
+                self._reset_text_input_format()
+            finally:
+                self._ghost_text_guard = False
+
+    def _handle_ghost_key(self, event) -> bool:
+        """Key handling while ghost text is shown. True = event consumed."""
+        key = event.key()
+        mods = event.modifiers()
+        if key == Qt.Key.Key_Tab and not (
+            mods & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier)
+        ):
+            self._end_ghost_text(keep_text=True)
+            return True
+        if key in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete):
+            self._end_ghost_text(keep_text=False)
+            return True
+        if event.matches(QKeySequence.StandardKey.Paste):
+            self._end_ghost_text(keep_text=False)
+            return False  # let the paste land in the now-empty box
+        typed = event.text()
+        ctrl_only = (mods & Qt.KeyboardModifier.ControlModifier) and not (
+            mods & Qt.KeyboardModifier.AltModifier  # AltGr reports Ctrl+Alt
+        )
+        if typed and typed.isprintable() and not ctrl_only:
+            self._end_ghost_text(keep_text=False)
+            return False  # let the keystroke insert into the empty box
+        return False  # navigation, modifiers, shortcuts: ghost stays
 
     def _on_replay_last_clicked(self):
         """
@@ -1268,9 +1385,16 @@ class MainWindow(QMainWindow):
     def eventFilter(self, obj, event):
         """Handle events for text input, specifically Enter key for generation."""
         if obj is self.text_input and event.type() == QEvent.Type.KeyPress:
+            if self._ghost_text_active and event.key() not in (
+                Qt.Key.Key_Return, Qt.Key.Key_Enter
+            ):
+                if self._handle_ghost_key(event):
+                    return True
             if event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter:
                 # Ctrl+Enter allows normal newline behavior
                 if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                    # ui-5: a newline is new input -- replace ghost text
+                    self._end_ghost_text(keep_text=False)
                     return False  # Allow normal processing
                 else:
                     # Plain Enter triggers generation
@@ -1316,6 +1440,11 @@ class MainWindow(QMainWindow):
             if self._last_generation_text:
                 self.text_input.setPlainText(self._last_generation_text)
                 self.text_input.setFocus()
+            return
+
+        if self._ghost_text_active:
+            # Greyed previous text: Clear simply removes it.
+            self._end_ghost_text(keep_text=False)
             return
 
         try:
@@ -2262,7 +2391,11 @@ class MainWindow(QMainWindow):
             UIState: Current UI state object
         """
         # Update current values
-        self.ui_state.last_text_input = self.text_input.toPlainText()
+        # Greyed ghost text is the previous utterance, not a draft: persist
+        # it as empty, as the box was before ui-5 kept the text around.
+        self.ui_state.last_text_input = (
+            "" if self._ghost_text_active else self.text_input.toPlainText()
+        )
         self.ui_state.selected_voice = self.current_voice_label.text().replace("Voice: ", "")
         # Store emotion preset index for persistence
         current_preset = self.emotion_button_group.get_current_preset()
@@ -3086,8 +3219,9 @@ class MainWindow(QMainWindow):
         try:
             self.logger.info(f"Quick Speak entry selected: {text[:50]}...")
 
-            # Get current text in input field
-            current_text = self.text_input.toPlainText()
+            # Get current text in input field (greyed ghost text is the
+            # previous utterance, so it never triggers append mode)
+            current_text = "" if self._ghost_text_active else self.text_input.toPlainText()
 
             # Check if current text ends with apostrophe for append mode
             if current_text.endswith("'"):
