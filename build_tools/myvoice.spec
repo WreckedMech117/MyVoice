@@ -656,6 +656,33 @@ def _drop_unused(toc):
 a.binaries = _drop_unused(a.binaries)
 a.datas = _drop_unused(a.datas)
 
+
+# Epic 19 — PyInstaller reclassifies the Lightning DLLs (collected as datas
+# under lightning/bin) as binaries, resolves their imports, and copies those
+# to the bundle ROOT: a second cublasLt64_12 (660 MB) and cublas64_12
+# (108 MB), plus a second ggml-cuda (129 MB). Build 61 shipped ~900 MB of
+# these duplicates. The engine never needs them: it loads from lightning/bin
+# and adds torch/lib to the DLL search path itself (engine._cuda_dll_dirs).
+_LIGHTNING_ROOT_DUPLICATES = {
+    'cublaslt64_12.dll', 'cublas64_12.dll', 'cudart64_12.dll',
+    'qwen3tts.dll', 'ggml.dll', 'ggml-base.dll', 'ggml-cpu.dll', 'ggml-cuda.dll',
+}
+
+
+def _drop_lightning_root_duplicates(toc):
+    kept = []
+    for entry in toc:
+        dest = Path(entry[0])
+        if len(dest.parts) == 1 and dest.name.lower() in _LIGHTNING_ROOT_DUPLICATES:
+            print(f"[SPEC] Epic 19: dropping root-level duplicate {entry[0]}")
+            continue
+        kept.append(entry)
+    return kept
+
+
+a.binaries = _drop_lightning_root_duplicates(a.binaries)
+a.datas = _drop_lightning_root_duplicates(a.datas)
+
 # =============================================================================
 # PYZ (Python Archive)
 # =============================================================================

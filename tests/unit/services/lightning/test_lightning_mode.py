@@ -18,7 +18,9 @@ from myvoice.models.app_settings import AppSettings
 from myvoice.services.core.base_service import ServiceStatus
 from myvoice.services.lightning import engine as engine_module
 from myvoice.services.lightning import ref_codes
-from myvoice.services.qwen_tts_service import QwenModelType, QwenTTSService
+from myvoice.services.qwen_tts_service import (
+    QwenModelType, QwenTTSResponse, QwenTTSService,
+)
 from myvoice.services.sessions.session_registry import SessionRegistry
 
 
@@ -81,7 +83,14 @@ def rig(qapp, monkeypatch, tmp_path):
     service._model_registry.ensure_model_loaded = AsyncMock(return_value=(True, None))
     service._save_audio_to_cache = lambda audio, rate: tmp_path / "current.wav"
     monkeypatch.setattr(engine_module, "availability", lambda: (True, ""))
-    monkeypatch.setattr(ref_codes, "ensure_ref_code_file", lambda ref_audio, cache_dir=None: None)
+    seen_prompt_caches = []
+    service.seen_prompt_caches = seen_prompt_caches
+
+    def _no_codes(ref_audio, cache_dir=None, prompt_cache=None):
+        seen_prompt_caches.append(prompt_cache)
+        return None
+
+    monkeypatch.setattr(ref_codes, "ensure_ref_code_file", _no_codes)
     fake = FakeEngine()
     service._lightning_engine = fake
     chunks = []
@@ -331,3 +340,82 @@ class TestSuppressedRequest:
         assert registry.focal_session_id is None
         assert service._cancel_requested is True
         assert not response.success  # the pending Stop aborted it
+
+
+class TestStudioEmbeddingVoice:
+    """A Voice Design Studio voice (tester's 'AnnaEmotion') is a clone of an
+    audio clip kept beside its embedding, so Lightning can speak it."""
+
+    def _voice(self, tmp_path, ref_text="the reference words", tier_folder=True, clip=True):
+        import torch
+
+        from myvoice.services.qwen_tts_service import VoiceClonePromptItem
+
+        emotion_dir = tmp_path / "AnnaEmotion" / "neutral"
+        pt_dir = emotion_dir / "1.7" if tier_folder else emotion_dir
+        pt_dir.mkdir(parents=True)
+        torch.save(
+            VoiceClonePromptItem(
+                ref_code=torch.zeros(4, 16, dtype=torch.long),
+                ref_spk_embedding=torch.zeros(2048),  # 1.7B-sized: irrelevant here
+                ref_text=ref_text,
+            ),
+            str(pt_dir / "embedding.pt"),
+        )
+        if clip:
+            (emotion_dir / "source_audio.wav").write_bytes(b"RIFF")
+        return pt_dir / "embedding.pt", emotion_dir / "source_audio.wav"
+
+    def test_studio_voice_is_spoken_by_lightning_from_its_source_clip(self, rig, tmp_path):
+        service, _, fake, _ = rig
+        service._lightning_enabled = True
+        embedding, clip = self._voice(tmp_path)
+
+        response = _run(service.generate_with_embedding("sounds good to me", embedding))
+
+        assert response.success
+        assert fake.icl_calls == [("sounds good to me", clip, "the reference words", None)]
+        assert service.seen_prompt_caches == [embedding]  # codes come from the embedding
+        service._model_registry.ensure_model_loaded.assert_not_awaited()
+
+    def test_legacy_layout_without_a_tier_folder(self, rig, tmp_path):
+        service, _, fake, _ = rig
+        service._lightning_enabled = True
+        embedding, clip = self._voice(tmp_path, tier_folder=False)
+        assert _run(service.generate_with_embedding("hi", embedding)).success
+        assert fake.icl_calls[0][1] == clip
+
+    def test_studio_voice_without_a_transcript_uses_timbre_only_mode(self, rig, tmp_path):
+        service, _, fake, _ = rig
+        service._lightning_enabled = True
+        embedding, clip = self._voice(tmp_path, ref_text=None)
+        assert _run(service.generate_with_embedding("hi", embedding)).success
+        assert fake.xvector_calls == [("hi", clip)] and not fake.icl_calls
+
+    def test_studio_voice_without_its_clip_goes_to_the_standard_engine(self, rig, tmp_path):
+        service, _, fake, _ = rig
+        service._lightning_enabled = True
+        standard = QwenTTSResponse(success=True)
+        service._dispatch_by_streaming_mode = AsyncMock(return_value=standard)
+        embedding, _ = self._voice(tmp_path, clip=False)
+
+        assert _run(service.generate_with_embedding("hi", embedding)) is standard
+        assert not fake.icl_calls and not fake.xvector_calls
+        assert service.lightning_enabled  # not a failure: the mode stays on
+
+    def test_lightning_off_leaves_studio_voices_on_the_standard_engine(self, rig, tmp_path):
+        service, _, fake, _ = rig
+        standard = QwenTTSResponse(success=True)
+        service._dispatch_by_streaming_mode = AsyncMock(return_value=standard)
+        embedding, _ = self._voice(tmp_path)
+        assert _run(service.generate_with_embedding("hi", embedding)) is standard
+        assert not fake.icl_calls
+
+    def test_codes_are_read_from_the_named_embedding_file(self, tmp_path):
+        embedding, clip = self._voice(tmp_path)
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        from myvoice.services.lightning.ref_codes import ensure_ref_code_file as real
+
+        path = real(clip, cache, prompt_cache=embedding)
+        assert len(path.read_text().splitlines()) == 4
