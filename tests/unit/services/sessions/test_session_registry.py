@@ -2463,3 +2463,67 @@ class TestCancelChainModuleBoundary:
                             f"session_registry.py"
                         )
 
+
+
+# --------------------------------------------------------------------------- #
+# Late mutations after discard — field report on build 59:
+#   KeyError: 'Unknown session_id: ...' from SessionRegistry.cancel
+# Two owners each posted a terminal mutation for one session; the second
+# landed after the first owner's cancel + discard.
+# --------------------------------------------------------------------------- #
+
+class TestLateMutationAfterDiscard:
+    def test_queued_cancel_landing_after_cancel_and_discard_is_absorbed(self, qapp):
+        """The exact reported sequence, through the real queued path:
+        owner A posts cancel + discard, owner B's cancel is queued behind."""
+        registry = make_registry(qapp)
+        sid = make_session_in(registry, SessionState.PLAYING)
+        registry.post_mutation("cancel", sid)
+        registry.post_mutation("discard", sid)
+        registry.post_mutation("cancel", sid)  # the late one — raised KeyError
+        registry.post_mutation("discard", sid)
+        qapp.processEvents()
+        assert registry.get(sid) is None
+
+    @pytest.mark.parametrize("method", [
+        "cancel", "discard", "mark_done", "mark_audible", "finalize",
+        "set_error", "try_set_error",
+    ])
+    def test_direct_late_mutation_on_discarded_session_is_a_no_op(self, qapp, method):
+        registry = make_registry(qapp)
+        sid = make_session_in(registry, SessionState.PLAYING)
+        registry.cancel(sid)
+        registry.discard(sid)
+        getattr(registry, method)(sid)  # must not raise
+
+    def test_late_append_chunk_on_discarded_session_is_a_no_op(self, qapp):
+        registry = make_registry(qapp)
+        sid = make_session_in(registry, SessionState.PLAYING)
+        registry.cancel(sid)
+        registry.discard(sid)
+        registry.append_chunk(sid, np.zeros(8, dtype=np.float32))
+
+    def test_second_cancel_before_discard_is_idempotent(self, qapp):
+        registry = make_registry(qapp)
+        sid = make_session_in(registry, SessionState.PLAYING)
+        registry.cancel(sid)
+        registry.cancel(sid)
+        assert registry.get(sid).state == SessionState.CANCELLED
+
+    def test_never_created_id_still_raises(self, qapp):
+        registry = make_registry(qapp)
+        with pytest.raises(KeyError, match="Unknown session_id"):
+            registry.cancel("no-such-id")
+
+    def test_discarded_id_memory_is_bounded(self, qapp):
+        from myvoice.services.sessions import session_registry as mod
+        registry = make_registry(qapp)
+        first = None
+        for _ in range(mod._DISCARDED_ID_MEMORY + 5):
+            sid = make_session_in(registry, SessionState.PLAYING)
+            first = first or sid
+            registry.cancel(sid)
+            registry.discard(sid)
+        assert len(registry._discarded_ids) == mod._DISCARDED_ID_MEMORY
+        with pytest.raises(KeyError):
+            registry.cancel(first)  # aged out — unknown again

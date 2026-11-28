@@ -242,6 +242,7 @@ Cooperative Cancellation Chain Contract (Story 16.5 lock-down)
     classes ``TestCancelHookRegistration``, ``TestRequestCancelInvocation``.
 """
 
+import logging
 import time
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -258,6 +259,8 @@ from PyQt6.QtCore import (
     QThread,
 )
 from PyQt6.QtWidgets import QApplication
+
+logger = logging.getLogger(__name__)
 
 from myvoice.observability import metrics
 from myvoice.services.sessions.generation_session import (
@@ -300,6 +303,12 @@ class SaveableAudio:
 # Terminal sessions remain focal-eligible for this many seconds after their
 # last transition (validation gap #1, tier (c)).
 _FOCAL_DECAY_SECONDS: float = 5.0
+
+# How many discarded session ids the registry remembers for late-mutation
+# absorption. A late post trails its session's discard by one or two event-
+# loop turns, so a short memory is ample; the bound keeps a long-running app
+# from accumulating ids forever.
+_DISCARDED_ID_MEMORY: int = 256
 
 # Names of `@pyqtSlot`-decorated mutation methods that `post_mutation` may
 # dispatch. Pre-validation against this set catches typos and mis-targeted
@@ -380,6 +389,10 @@ class SessionRegistry(QObject):
         # (cancel / mark_done / set_error / discard) per
         # `_maybe_clear_cancel_hook`.
         self._cancel_hooks: dict[str, Callable[[], None]] = {}
+        # Ids of sessions already discarded, oldest first (dict = ordered
+        # set). Lets `_guard_and_lookup` tell a late post for a real,
+        # finished session from a genuinely unknown id (still a KeyError).
+        self._discarded_ids: dict[str, None] = {}
 
     # ----- AC #4 / #5 — creation gateway and read-only access ----------- #
 
@@ -423,6 +436,8 @@ class SessionRegistry(QObject):
     @pyqtSlot(str)
     def start_generation(self, session_id: str) -> None:
         session = self._guard_and_lookup("start_generation", session_id)
+        if session is None:
+            return  # late post for a discarded session — absorbed
         old_state = session.state
         self._transition_for_slot(session, "start_generation", SessionState.GENERATING)
         self._maybe_emit_state_changed(session_id, session, old_state)
@@ -431,6 +446,8 @@ class SessionRegistry(QObject):
     @pyqtSlot(str, object)
     def append_chunk(self, session_id: str, audio: np.ndarray) -> None:
         session = self._guard_and_lookup("append_chunk", session_id)
+        if session is None:
+            return  # late post for a discarded session — absorbed
         old_state = session.state
         session.append_chunk(audio)
         self._maybe_emit_state_changed(session_id, session, old_state)
@@ -439,6 +456,8 @@ class SessionRegistry(QObject):
     @pyqtSlot(str)
     def finalize(self, session_id: str) -> None:
         session = self._guard_and_lookup("finalize", session_id)
+        if session is None:
+            return  # late post for a discarded session — absorbed
         old_state = session.state
         session.finalize()
         self._maybe_emit_state_changed(session_id, session, old_state)
@@ -452,6 +471,8 @@ class SessionRegistry(QObject):
     @pyqtSlot(str)
     def mark_playing(self, session_id: str) -> None:
         session = self._guard_and_lookup("mark_playing", session_id)
+        if session is None:
+            return  # late post for a discarded session — absorbed
         old_state = session.state
         session.mark_playing()
         self._maybe_emit_state_changed(session_id, session, old_state)
@@ -466,6 +487,8 @@ class SessionRegistry(QObject):
         # already audible are silently absorbed so subscribers don't repaint
         # on noise.
         session = self._guard_and_lookup("mark_audible", session_id)
+        if session is None:
+            return  # late post for a discarded session — absorbed
         was_audible = session.is_audible
         session.mark_audible()
         if not was_audible:
@@ -475,6 +498,8 @@ class SessionRegistry(QObject):
     @pyqtSlot(str)
     def mark_done(self, session_id: str) -> None:
         session = self._guard_and_lookup("mark_done", session_id)
+        if session is None:
+            return  # late post for a discarded session — absorbed
         old_state = session.state
         session.mark_done()
         self._maybe_emit_state_changed(session_id, session, old_state)
@@ -490,6 +515,13 @@ class SessionRegistry(QObject):
     @pyqtSlot(str)
     def cancel(self, session_id: str) -> None:
         session = self._guard_and_lookup("cancel", session_id)
+        if session is None:
+            return  # late post for a discarded session — absorbed
+        if session.state == SessionState.CANCELLED:
+            # Same race, one step earlier: a second owner's cancel landed
+            # after the first's but before the discard. Idempotent, like
+            # `set_error` on an already-errored session.
+            return
         old_state = session.state
         session.cancel()
         self._maybe_emit_state_changed(session_id, session, old_state)
@@ -511,11 +543,16 @@ class SessionRegistry(QObject):
         # the in-flight collection bounded — long-running apps can
         # otherwise accumulate DISCARDED sessions indefinitely.
         session = self._guard_and_lookup("discard", session_id)
+        if session is None:
+            return  # late post for a discarded session — absorbed
         old_state = session.state
         session.discard()
         self._maybe_emit_state_changed(session_id, session, old_state)
         del self._sessions[session_id]
         self._session_model_types.pop(session_id, None)
+        self._discarded_ids[session_id] = None
+        while len(self._discarded_ids) > _DISCARDED_ID_MEMORY:
+            self._discarded_ids.pop(next(iter(self._discarded_ids)))
         # Story 14.1: do NOT modify _saveable / _previous_saveable here. The
         # slot's strong reference to complete_audio survives session.discard()
         # (which set session.complete_audio to None at generation_session.py:197).
@@ -537,6 +574,8 @@ class SessionRegistry(QObject):
         # transition graph; once a session has settled into a non-ERROR
         # terminal it is not reclassifiable as an error.
         session = self._guard_and_lookup("set_error", session_id)
+        if session is None:
+            return  # late post for a discarded session — absorbed
         if session.state == SessionState.ERROR:
             return
         old_state = session.state
@@ -578,6 +617,8 @@ class SessionRegistry(QObject):
         no-op.
         """
         session = self._guard_and_lookup("try_set_error", session_id)
+        if session is None:
+            return  # late post for a discarded session — absorbed
         if session.state in (
             SessionState.ERROR,
             SessionState.CANCELLED,
@@ -796,7 +837,9 @@ class SessionRegistry(QObject):
 
     # ----- internal helpers --------------------------------------------- #
 
-    def _guard_and_lookup(self, method_name: str, session_id: str) -> GenerationSession:
+    def _guard_and_lookup(
+        self, method_name: str, session_id: str
+    ) -> Optional[GenerationSession]:
         # Anti-pattern catalog row 3: cross-thread mutation must use
         # `post_mutation` instead of calling slots directly.
         if QThread.currentThread() is not self.thread():
@@ -806,6 +849,24 @@ class SessionRegistry(QObject):
             )
         session = self._sessions.get(session_id)
         if session is None:
+            if session_id in self._discarded_ids:
+                # A queued mutation that lost the race with this session's
+                # own discard. Several owners can each post a terminal
+                # mutation for one session (Stop, Clear Comms, the
+                # generation's CancelledError handler, the streaming
+                # decoder's drain-on-cancel); whichever lands after the
+                # discard used to raise KeyError out of the Qt slot and
+                # surface as an "Unexpected Error" dialog. The session is
+                # already settled, so there is nothing left to do.
+                logger.debug(
+                    "Late %s for discarded session %s absorbed",
+                    method_name, session_id,
+                )
+                metrics.record(
+                    "late_session_mutation", 1.0,
+                    session_id=session_id, method_name=method_name,
+                )
+                return None
             raise KeyError(f"Unknown session_id: {session_id}")
         return session
 
