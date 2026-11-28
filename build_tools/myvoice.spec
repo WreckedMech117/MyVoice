@@ -640,6 +640,16 @@ _UNUSED_BINARIES = {
     'cufftw64_11.dll',        # FFTW compat shim
     'nvrtc64_120_0.alt.dll',  # caffe2_nvrtc links the non-.alt nvrtc
     'opengl32sw.dll',         # Qt software-OpenGL fallback; app uses no QOpenGL
+    # tooling-11 (2026-11-27): cuDNN's sub-libraries, 956 MB installed. The app
+    # disables cuDNN at startup (torch_runtime.disable_cudnn), so nothing loads
+    # them; cudnn64_9.dll + cudnn_graph64_9.dll stay because torch imports them.
+    # Keep in lockstep with torch_runtime.CUDNN_LIBRARIES_NOT_SHIPPED.
+    'cudnn_adv64_9.dll',
+    'cudnn_cnn64_9.dll',
+    'cudnn_engines_precompiled64_9.dll',
+    'cudnn_engines_runtime_compiled64_9.dll',
+    'cudnn_heuristic64_9.dll',
+    'cudnn_ops64_9.dll',
 }
 
 

@@ -1160,3 +1160,40 @@ def _apply_h3_dynamo_triton_reset() -> None:
                 "(before=%r, after=%r)",
                 triton_before, triton_after,
             )
+
+
+# Bundle files this decision removes. ``build_tools/myvoice.spec`` reads the
+# same names; ``tests/unit/test_cudnn_removal.py`` holds the two in lockstep.
+CUDNN_LIBRARIES_NOT_SHIPPED = (
+    "cudnn_adv64_9.dll",
+    "cudnn_cnn64_9.dll",
+    "cudnn_engines_precompiled64_9.dll",
+    "cudnn_engines_runtime_compiled64_9.dll",
+    "cudnn_heuristic64_9.dll",
+    "cudnn_ops64_9.dll",
+)
+
+
+def disable_cudnn() -> bool:
+    """Route PyTorch's convolutions and RNNs to its own CUDA kernels.
+
+    tooling-11 (2026-11-27): the bundle no longer ships six cuDNN libraries
+    (956 MB installed). Measured on an RTX 5090 with the files physically
+    removed, for both model tiers: streamed cloned-voice speed and first
+    audio unchanged (RTF 0.72-0.75 either way), and new-voice prompt
+    creation, Voice Design, speaking from a Studio embedding, bundled voices
+    with emotion and Whisper all work. ``cudnn64_9.dll`` and
+    ``cudnn_graph64_9.dll`` (2 MB) stay: torch will not import without them.
+
+    This MUST run before any model executes. With cuDNN left enabled and its
+    libraries absent, the first convolution aborts the process ("Could not
+    locate cudnn_...dll"). Whisper's helper process is CPU-only and needs no
+    equivalent. Returns True when the flag was set.
+    """
+    try:
+        import torch
+    except (ImportError, OSError):
+        return False
+    torch.backends.cudnn.enabled = False
+    _logger.info("cuDNN disabled: convolutions use PyTorch's native CUDA kernels")
+    return True
