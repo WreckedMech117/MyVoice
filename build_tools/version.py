@@ -31,7 +31,7 @@ from typing import Tuple
 VERSION_MAJOR = 2
 VERSION_MINOR = 3
 VERSION_PATCH = 0
-VERSION_BUILD = 60  # Auto-incremented on each build
+VERSION_BUILD = 64  # Auto-incremented on each build
 
 # Derived version strings
 VERSION = f"{VERSION_MAJOR}.{VERSION_MINOR}.{VERSION_PATCH}"
