@@ -40,9 +40,11 @@ _RUNTIME_DLLS = (_DLL_NAME, "ggml.dll", "ggml-base.dll", "ggml-cpu.dll", "ggml-c
 # native call. ``setdefault`` keeps a developer's own override.
 _ENV_DEFAULTS = {
     "QWEN3_TTS_BACKEND": "cuda",
-    # Decoder look-back per streamed window. Upstream 48; 24 saves ~130 MB and
-    # passed the listening check.
-    "QWEN3_TTS_STREAM_CONTEXT_FRAMES": "24",
+    # Decoder look-back per streamed window (12.5 frames/s -> 3.8 s). The
+    # upstream default. 24 saved ~130 MB of VRAM and sounded clean on short
+    # lines, but on long lines the user heard an occasional mid-sentence tone
+    # shift; 48 was their pick from a long-line comparison (2026-11-27).
+    "QWEN3_TTS_STREAM_CONTEXT_FRAMES": "48",
     # Frames per streamed chunk (12.5 frames/s). Upstream 25 waits 2 s of audio
     # before the first delivery; 10 matches the standard engine's chunk size
     # and halves time-to-first-audio (1.9 s -> 1.0 s measured).
