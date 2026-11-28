@@ -594,8 +594,8 @@ class SettingsDialog(QDialog):
         model_layout.addWidget(model_desc)
 
         # Model quality radio buttons
-        self.model_quality_small = QRadioButton("Small (0.6B) - Lower VRAM (~1.2 GB), faster inference")
-        self.model_quality_quality = QRadioButton("Quality (1.7B) - Higher quality output (~3.4 GB VRAM)")
+        self.model_quality_small = QRadioButton("Small (0.6B) - Lighter, about 2.9 GB of GPU memory")
+        self.model_quality_quality = QRadioButton("Quality (1.7B) - Best output quality, about 4.8 GB of GPU memory")
         self.model_quality_quality.setChecked(True)  # Default to quality
 
         model_layout.addWidget(self.model_quality_small)

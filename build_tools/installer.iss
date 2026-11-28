@@ -115,12 +115,15 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked; OnlyBelowVersion: 6.1; Check: not IsAdminInstallMode
 ; Model Quality Selection - mutually exclusive radio buttons (Quality is default)
-Name: "modelquality_quality"; Description: "Quality (1.7B) - Higher output quality (~3.4 GB VRAM, recommended)"; GroupDescription: "Qwen3-TTS Model Selection:"; Flags: exclusive
-Name: "modelquality_small"; Description: "Small (0.6B) - Lower VRAM (~1.2 GB), faster inference"; GroupDescription: "Qwen3-TTS Model Selection:"; Flags: exclusive unchecked
+; GPU memory figures are measured peaks while speaking (RTX 5090, 2026-11-27,
+; device-wide delta): Quality 4.8 GB, Small 2.9 GB, Lightning 1.9 GB. The
+; "~3.4 GB" / "~1.2 GB" this page used to call VRAM were the download sizes.
+Name: "modelquality_quality"; Description: "Quality (1.7B) - Best output quality. About 4.8 GB of GPU memory, 3.4 GB download (recommended)"; GroupDescription: "Qwen3-TTS Model Selection:"; Flags: exclusive
+Name: "modelquality_small"; Description: "Small (0.6B) - Lighter. About 2.9 GB of GPU memory, 1.2 GB download"; GroupDescription: "Qwen3-TTS Model Selection:"; Flags: exclusive unchecked
 ; Epic 19: Lightning mode from first launch. The Lightning engine itself is
 ; bundled; the Small models are still downloaded because bundled voices,
 ; voice-from-description and new-voice creation use the standard engine.
-Name: "modelquality_lightning"; Description: "Lightning - Lightest on the GPU (~1.9 GB VRAM), for running beside games. Cloned voices only; other voices use Small"; GroupDescription: "Qwen3-TTS Model Selection:"; Flags: exclusive unchecked
+Name: "modelquality_lightning"; Description: "Lightning - Lightest, for running beside games. About 1.9 GB of GPU memory for cloned voices; other voices use Small. 1.2 GB download"; GroupDescription: "Qwen3-TTS Model Selection:"; Flags: exclusive unchecked
 ; Optional components
 Name: "vbcable"; Description: "Install VB-Audio Cable (required for microphone routing, ~1MB download, requires restart)"; GroupDescription: "Optional Components:"; Check: not IsVirtualCableInstalled
 
