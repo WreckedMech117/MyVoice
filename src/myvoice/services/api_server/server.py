@@ -99,6 +99,13 @@ class ApiServerController:
             log_level="warning",
             reload=False,
             access_log=False,
+            # uvicorn's default log config builds a colourising formatter
+            # that calls ``sys.stderr.isatty()``. In the installed (windowed)
+            # build ``sys.stderr`` is None, so the server never started:
+            # "Unable to configure formatter 'default'" (found on build 63).
+            # None leaves logging alone; uvicorn's loggers propagate to the
+            # app's own handlers, so its warnings still reach myvoice.log.
+            log_config=None,
         )
         config.install_signal_handlers = False  # Qt owns signals on main thread
         self._server = uvicorn.Server(config)

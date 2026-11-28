@@ -63,3 +63,25 @@ async def test_start_warns_when_keyless(caplog):
         server_mod.build_app = original
 
     assert any("WITHOUT an API key" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_start_works_with_no_stderr_as_in_the_installed_build(monkeypatch):
+    """Found on packaged build 63: the installed app is windowed, so
+    ``sys.stderr`` is None, and uvicorn's default log config raised
+    "Unable to configure formatter 'default'" (its formatter calls
+    ``sys.stderr.isatty()``). The server must start regardless."""
+    import sys
+
+    import httpx
+
+    monkeypatch.setattr(sys, "stderr", None)
+    monkeypatch.setattr(sys, "stdout", None)
+    ctrl = _controller(api_key="k")
+    await ctrl.start(host="127.0.0.1", port=7797)
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get("http://127.0.0.1:7797/health")
+        assert response.status_code == 200
+    finally:
+        await ctrl.stop()
