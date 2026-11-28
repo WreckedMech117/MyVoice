@@ -419,3 +419,15 @@ class TestStudioEmbeddingVoice:
 
         path = real(clip, cache, prompt_cache=embedding)
         assert len(path.read_text().splitlines()) == 4
+
+
+def test_streaming_configuration_is_the_listening_tested_one():
+    """Chosen by ear, not by metric: 48 frames of decoder look-back (long
+    lines), 10-frame chunks (first audio), exact reference cut (no clipped
+    first words). A change here needs a new listening pass."""
+    assert engine_module._ENV_DEFAULTS == {
+        "QWEN3_TTS_BACKEND": "cuda",
+        "QWEN3_TTS_STREAM_CONTEXT_FRAMES": "48",
+        "QWEN3_TTS_STREAM_CHUNK_FRAMES": "10",
+        "QWEN3_TTS_ECHO_MARGIN_FRAMES": "0",
+    }
