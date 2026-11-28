@@ -13,6 +13,8 @@
 #define MyAppURL "https://github.com/myvoice/myvoice"
 #define MyAppExeName "MyVoice.exe"
 #define MyAppDescription "Desktop Text-to-Speech Application with Qwen3-TTS Voice Cloning, Emotion Control, and Voice Design"
+; Cloned default voice that a Lightning install starts on (see WriteModelQualitySettings)
+#define LightningDefaultVoice "Anna-F"
 
 ; =============================================================================
 ; SETUP CONFIGURATION
@@ -115,6 +117,10 @@ Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescrip
 ; Model Quality Selection - mutually exclusive radio buttons (Quality is default)
 Name: "modelquality_quality"; Description: "Quality (1.7B) - Higher output quality (~3.4 GB VRAM, recommended)"; GroupDescription: "Qwen3-TTS Model Selection:"; Flags: exclusive
 Name: "modelquality_small"; Description: "Small (0.6B) - Lower VRAM (~1.2 GB), faster inference"; GroupDescription: "Qwen3-TTS Model Selection:"; Flags: exclusive unchecked
+; Epic 19: Lightning mode from first launch. The Lightning engine itself is
+; bundled; the Small models are still downloaded because bundled voices,
+; voice-from-description and new-voice creation use the standard engine.
+Name: "modelquality_lightning"; Description: "Lightning - Lightest on the GPU (~1.9 GB VRAM), for running beside games. Cloned voices only; other voices use Small"; GroupDescription: "Qwen3-TTS Model Selection:"; Flags: exclusive unchecked
 ; Optional components
 Name: "vbcable"; Description: "Install VB-Audio Cable (required for microphone routing, ~1MB download, requires restart)"; GroupDescription: "Optional Components:"; Check: not IsVirtualCableInstalled
 
@@ -355,8 +361,9 @@ var
   QualityTier: String;
   SettingsContent: String;
 begin
-  // Determine which model quality was selected
-  if WizardIsTaskSelected('modelquality_small') then
+  // Determine which model quality was selected. Lightning runs on top of
+  // the Small tier (see the [Tasks] note).
+  if WizardIsTaskSelected('modelquality_small') or WizardIsTaskSelected('modelquality_lightning') then
     QualityTier := 'small'
   else
     QualityTier := 'quality';  // Default to quality
@@ -384,6 +391,16 @@ begin
   begin
     // Write minimal settings.json with model quality tier
     // The application will merge defaults on first load
+    if WizardIsTaskSelected('modelquality_lightning') then
+      // Lightning speaks cloned voices only, and a fresh install has no
+      // voice selected, so start on a bundled cloned voice: the mode is
+      // then in effect from the very first line.
+      SettingsContent := '{' + #13#10 +
+        '  "model_quality_tier": "' + QualityTier + '",' + #13#10 +
+        '  "lightning_mode": true,' + #13#10 +
+        '  "selected_voice_profile": "{#LightningDefaultVoice}"' + #13#10 +
+        '}'
+    else
     SettingsContent := '{' + #13#10 +
       '  "model_quality_tier": "' + QualityTier + '"' + #13#10 +
       '}';
@@ -416,7 +433,7 @@ var
   EstimatedSize: String;
 begin
   // Determine which tier was selected (mirrors WriteModelQualitySettings)
-  if WizardIsTaskSelected('modelquality_small') then
+  if WizardIsTaskSelected('modelquality_small') or WizardIsTaskSelected('modelquality_lightning') then
   begin
     QualityTier := 'small';
     EstimatedSize := '~1.2 GB';
