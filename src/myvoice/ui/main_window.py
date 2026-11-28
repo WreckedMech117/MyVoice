@@ -1760,8 +1760,9 @@ class MainWindow(QMainWindow):
     # ----- Epic 19: Lightning mode toggle -------------------------------- #
 
     _LIGHTNING_TOOLTIP = (
-        "Lightning mode: a lighter engine for cloned voices that uses about "
-        "a third less GPU memory, for running beside games."
+        "Lightning mode: a lighter engine for cloned and Studio voices, for "
+        "running beside games. About 1.9 GB of GPU memory, against 2.9 GB "
+        "(Small) or 4.8 GB (Quality)."
     )
 
     def _on_lightning_toggled(self, checked: bool) -> None:
