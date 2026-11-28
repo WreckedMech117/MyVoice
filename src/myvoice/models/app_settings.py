@@ -107,6 +107,11 @@ class AppSettings:
     # (hand-edit settings.json or set programmatically for testing).
     streaming_mode_override: Optional[str] = None
 
+    # Epic 19 — Lightning mode. When True, cloned voices are spoken by the
+    # 4-bit qwen3-tts.cpp engine (about 1.9 GB VRAM peak against 3.0 GB) and
+    # the PyTorch model stays off the GPU. Toggled from the main window.
+    lightning_mode: bool = False
+
     # Story 18.3 — TTS precision override. "auto" (default) = bf16 on Ampere+ /
     # fp32 elsewhere; "bf16" = force bf16 (engages on CPU too if user opts in);
     # "fp32" = force fp32 (NFR7 fallback if bf16 audition flags any utterance
@@ -617,6 +622,7 @@ class AppSettings:
                 "clear_comms_file_path": self.clear_comms_file_path,
                 "clear_comms_queue_mode": self.clear_comms_queue_mode,
                 "streaming_mode_override": self.streaming_mode_override,
+                "lightning_mode": self.lightning_mode,
                 "tts_precision": self.tts_precision,
                 "tts_compile": self.tts_compile,
                 "enable_http_api": self.enable_http_api,
@@ -688,6 +694,7 @@ class AppSettings:
                 clear_comms_file_path=data.get("clear_comms_file_path"),
                 clear_comms_queue_mode=data.get("clear_comms_queue_mode", False),
                 streaming_mode_override=data.get("streaming_mode_override"),
+                lightning_mode=bool(data.get("lightning_mode", False)),
                 tts_precision=data.get("tts_precision", "auto"),
                 tts_compile=data.get("tts_compile", "auto"),
                 enable_http_api=data.get("enable_http_api", False),

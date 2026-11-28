@@ -2527,3 +2527,18 @@ class TestLateMutationAfterDiscard:
         assert len(registry._discarded_ids) == mod._DISCARDED_ID_MEMORY
         with pytest.raises(KeyError):
             registry.cancel(first)  # aged out — unknown again
+
+    def test_reused_session_id_is_live_again_after_discard(self, qapp):
+        """A caller-supplied id discarded once and then created again names a
+        live session: its mutations must apply, not be absorbed as late."""
+        registry = make_registry(qapp)
+        sid = registry.create_session(
+            text="hi", voice="v", model_type="m", session_id="reused-id"
+        )
+        registry.cancel(sid)
+        registry.discard(sid)
+        again = registry.create_session(
+            text="hi", voice="v", model_type="m", session_id="reused-id"
+        )
+        registry.start_generation(again)
+        assert registry.get(again).state == SessionState.GENERATING
