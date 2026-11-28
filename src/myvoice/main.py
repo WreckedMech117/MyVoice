@@ -528,6 +528,10 @@ def main() -> int:
                 enable_tf32_and_cudnn_benchmark,
             )
             enable_tf32_and_cudnn_benchmark()
+            # tooling-11: the bundle ships without cuDNN's sub-libraries, so
+            # cuDNN must be off before any model runs (see disable_cudnn).
+            from myvoice.services.tts_streaming.torch_runtime import disable_cudnn
+            disable_cudnn()
         except (ImportError, OSError) as _tf32_err:
             logger.warning(
                 f"TF32 + cuDNN benchmark enable failed "
