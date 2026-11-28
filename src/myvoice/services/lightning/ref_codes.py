@@ -47,7 +47,7 @@ def _code_file_path(ref_audio: Path, prompt_cache: Path, cache_dir: Path) -> Pat
         str(part)
         for part in (
             ref_audio.resolve(), audio_stat.st_mtime_ns, audio_stat.st_size,
-            prompt_cache.name, cache_stat.st_mtime_ns, cache_stat.st_size,
+            prompt_cache.resolve(), cache_stat.st_mtime_ns, cache_stat.st_size,
         )
     )
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
@@ -67,15 +67,22 @@ def write_code_file(ref_code, destination: Path) -> None:
 
 
 def ensure_ref_code_file(
-    ref_audio: Path, cache_dir: Optional[Path] = None
+    ref_audio: Path,
+    cache_dir: Optional[Path] = None,
+    prompt_cache: Optional[Path] = None,
 ) -> Optional[Path]:
     """Return a code file for ``ref_audio``, creating it from the voice's
     prompt cache if needed. ``None`` when the voice has no usable cache —
     never raises, because the engine has a working fallback.
+
+    ``prompt_cache`` names the ``.pt`` holding the codes when it is not the
+    clip's ``<voice>.<tier>.pt`` sibling: a Voice Design Studio voice keeps
+    them in ``<emotion>/[<tier>/]embedding.pt`` beside ``source_audio.wav``.
     """
     try:
-        prompt_cache = _prompt_cache_for(ref_audio)
         if prompt_cache is None:
+            prompt_cache = _prompt_cache_for(ref_audio)
+        if prompt_cache is None or not prompt_cache.is_file():
             return None
         destination = _code_file_path(ref_audio, prompt_cache, cache_dir or _cache_dir())
         if destination.is_file():

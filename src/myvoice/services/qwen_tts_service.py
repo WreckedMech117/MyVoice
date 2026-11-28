@@ -3562,6 +3562,15 @@ class QwenTTSService(BaseService):
                 error_message=f"Embedding file not found: {resolved_path}"
             )
 
+        if self._lightning_enabled:
+            lightning_response = await self._generate_lightning_from_embedding(
+                resolved_path, text, language
+            )
+            if lightning_response is not None:
+                return lightning_response
+            # None = Lightning cannot serve this voice (no source clip kept)
+            # or failed before any audio; the standard engine handles it.
+
         try:
             # Load the voice clone prompt from disk
             # weights_only=False required for VoiceClonePromptItem dataclass (PyTorch 2.6+)
@@ -5924,8 +5933,63 @@ class QwenTTSService(BaseService):
                     "[QwenTTS] lightning state callback raised; swallowing"
                 )
 
+    async def _generate_lightning_from_embedding(
+        self, embedding_file: Path, text: str, language: str
+    ) -> Optional["QwenTTSResponse"]:
+        """Speak a Voice Design Studio (embedding) voice with Lightning.
+
+        Such a voice is a clone of an audio clip: next to each
+        ``embedding.pt`` the Studio keeps the clip itself
+        (``source_audio.wav``), and the ``.pt`` holds the clip's transcript
+        and codec codes. That is everything Lightning's accent-matching mode
+        needs, and none of it depends on the model tier the embedding was
+        extracted for. Returns None when the clip was not kept.
+        """
+        source_audio = embedding_file.parent / "source_audio.wav"
+        if not source_audio.is_file():
+            # Tier subfolder layout: <emotion>/<tier>/embedding.pt
+            source_audio = embedding_file.parent.parent / "source_audio.wav"
+        if not source_audio.is_file():
+            self.logger.info(
+                "[QwenTTS] Lightning: no source clip beside %s; using the "
+                "standard engine for this voice", embedding_file,
+            )
+            return None
+
+        ref_text = ""
+        try:
+            def _read_ref_text() -> str:
+                import torch
+
+                loaded = torch.load(
+                    str(embedding_file), map_location="cpu", weights_only=False
+                )
+                prompt = self._normalize_voice_clone_prompt(loaded)
+                return (getattr(prompt, "ref_text", None) or "").strip()
+
+            loop = asyncio.get_running_loop()
+            ref_text = await loop.run_in_executor(self._executor, _read_ref_text)
+        except Exception as exc:
+            # No transcript -> timbre-only mode, which still speaks the line.
+            self.logger.warning(
+                "[QwenTTS] Lightning: could not read the transcript from %s "
+                "(%s); using timbre-only mode", embedding_file, exc,
+            )
+
+        request = QwenTTSRequest(
+            text=text,
+            language=language,
+            model_type=QwenModelType.BASE,
+            ref_audio=source_audio,
+            ref_text=ref_text,
+            x_vector_only_mode=not ref_text,
+        )
+        return await self._generate_lightning(request, prompt_cache=embedding_file)
+
     async def _generate_lightning(
-        self, request: "QwenTTSRequest"
+        self,
+        request: "QwenTTSRequest",
+        prompt_cache: Optional[Path] = None,
     ) -> Optional["QwenTTSResponse"]:
         """Speak a cloned-voice request with the Lightning engine.
 
@@ -6076,7 +6140,9 @@ class QwenTTSService(BaseService):
                             ref_audio,
                             request.ref_text,
                             _on_chunk,
-                            ensure_ref_code_file(ref_audio),
+                            ensure_ref_code_file(
+                                ref_audio, prompt_cache=prompt_cache
+                            ),
                         )
 
                 loop = asyncio.get_running_loop()
