@@ -16,6 +16,7 @@ Usage:
 import sys
 import os
 import logging
+from logging.handlers import RotatingFileHandler
 import asyncio
 import multiprocessing
 from pathlib import Path
@@ -238,18 +239,49 @@ def create_splash_screen() -> QSplashScreen:
     return splash
 
 
+_LOG_MAX_BYTES = 5 * 1024 * 1024
+_LOG_BACKUP_COUNT = 3
+
+
+def _trim_oversized_log(log_file) -> None:
+    """One-time cut for a log that grew before rotation existed: rotation
+    would otherwise carry the whole oversized file forward as ``.1``. Keeps
+    the newest ``_LOG_MAX_BYTES``; never raises (logging must still start)."""
+    try:
+        size = log_file.stat().st_size
+        if size <= 2 * _LOG_MAX_BYTES:
+            return
+        with open(log_file, "rb") as handle:
+            handle.seek(size - _LOG_MAX_BYTES)
+            tail = handle.read()
+        newline = tail.find(b"\n")
+        with open(log_file, "wb") as handle:
+            handle.write(tail[newline + 1:] if newline >= 0 else tail)
+    except OSError:
+        pass
+
+
 def setup_logging():
     """Configure application logging for portable distribution."""
     from myvoice.utils.portable_paths import get_logs_path
 
     # Use portable logs directory (same folder as executable)
     log_dir = get_logs_path()
+    _trim_oversized_log(log_dir / "myvoice.log")
 
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler(log_dir / "myvoice.log"),
+            # Bounded: a tester's myvoice.log had grown to 153 MB over nine
+            # months of appending. 5 MB x (1 live + 3 old) keeps roughly the
+            # last few weeks of sessions and caps the folder at 20 MB.
+            RotatingFileHandler(
+                log_dir / "myvoice.log",
+                maxBytes=_LOG_MAX_BYTES,
+                backupCount=_LOG_BACKUP_COUNT,
+                encoding="utf-8",
+            ),
             logging.StreamHandler(sys.stdout)
         ]
     )

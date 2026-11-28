@@ -37,6 +37,12 @@ except ImportError:
     LibraryVoiceClonePromptItem = None
 
 
+_ENGINE_STALLED_MESSAGE = (
+    "The voice engine is still busy with a line that stalled, usually because "
+    "the GPU is out of memory. Wait a moment and try again, or restart MyVoice."
+)
+
+
 class StartupState(Enum):
     """
     State of TTS service startup/initialization.
@@ -788,6 +794,7 @@ class QwenTTSService(BaseService):
         # qwen3-tts.cpp engine instead of the PyTorch model. Exactly one of
         # the two engines holds the GPU at a time; see ``_ensure_lightning_
         # loaded`` and ``_release_lightning_for_standard_engine``.
+        self._stalled_engine_thread: Optional[threading.Thread] = None
         self._lightning_engine: Optional[Any] = None
         self._lightning_enabled: bool = bool(
             getattr(app_settings, "lightning_mode", False)
@@ -5781,6 +5788,17 @@ class QwenTTSService(BaseService):
                 worker.join(timeout=2.0)
             if talker_thread is not None and talker_thread.is_alive():
                 talker_thread.join(timeout=2.0)
+            if talker_thread is not None and talker_thread.is_alive():
+                # The talker is still inside the model (stalled on the GPU,
+                # e.g. VRAM exhausted beside a game). A thread cannot be
+                # killed, so the model stays in use until it returns.
+                # ``_dispatch_by_streaming_mode`` reads this and refuses to
+                # start another generation on the same model meanwhile.
+                self._stalled_engine_thread = talker_thread
+                self.logger.error(
+                    "[QwenTTS] the speech model did not return from a "
+                    "generation; further generations are refused until it does"
+                )
             if sid is not None and self._session_registry is not None:
                 # try_set_error rather than set_error: setting the
                 # streamer cancel_event above causes the worker's drain-
@@ -6166,6 +6184,18 @@ class QwenTTSService(BaseService):
             if sid is not None and self._current_session_id == sid:
                 self._current_session_id = None
 
+    def _engine_is_stalled(self) -> bool:
+        """True while a talker thread that outlived its generation is still
+        running inside the model. Clears itself once that thread returns."""
+        thread = getattr(self, "_stalled_engine_thread", None)
+        if thread is None:
+            return False
+        if thread.is_alive():
+            return True
+        self._stalled_engine_thread = None
+        self.logger.info("[QwenTTS] the stalled generation returned; generations resume")
+        return False
+
     @staticmethod
     def _fallback_chain_from(mode: StreamingMode) -> List[StreamingMode]:
         """Story 16.6 — order of modes to attempt starting from ``mode``.
@@ -6242,6 +6272,34 @@ class QwenTTSService(BaseService):
         failed_requests_snapshot = getattr(self, "_failed_requests", 0)
 
         for i, current_mode in enumerate(chain):
+            # Field crash, build 59 (2026-11-26 and -27): a TRUE_STREAM
+            # generation stalled past its timeout with the talker thread still
+            # inside the compiled, CUDA-graphed model. The fallback then ran
+            # the SAME model from a second thread ("Offset increment outside
+            # graph capture"), then a third, and the process died. Running a
+            # model that is still mid-generation is never safe, so the chain
+            # stops here: the line fails with a message instead.
+            if self._engine_is_stalled():
+                failures.append((current_mode, RuntimeError(_ENGINE_STALLED_MESSAGE)))
+                metrics.record(
+                    "streaming_mode_fallback",
+                    "refused_engine_stalled",
+                    session_id=getattr(self, "_current_session_id", None),
+                    from_mode=current_mode.value,
+                    model_type=model_type,
+                    hardware=hardware,
+                )
+                if getattr(self, "_failed_requests", 0) == failed_requests_snapshot:
+                    self._failed_requests = failed_requests_snapshot + 1
+                callback = getattr(self, "_generation_failed_callback", None)
+                if callback:
+                    callback(_ENGINE_STALLED_MESSAGE)
+                return QwenTTSResponse(
+                    success=False,
+                    error_message=_ENGINE_STALLED_MESSAGE,
+                    mode=GenerationMode.BATCH,
+                    used_fallback=bool(i),
+                )
             # Per-dispatch-entry metric (D-19 / P-9). session_id is the
             # currently-active session if a generator has set it; for the
             # initial call before any generator runs it's None.
