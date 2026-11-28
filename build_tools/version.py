@@ -29,7 +29,7 @@ from typing import Tuple
 
 # Single source of truth for version number
 VERSION_MAJOR = 2
-VERSION_MINOR = 3
+VERSION_MINOR = 4
 VERSION_PATCH = 0
 VERSION_BUILD = 64  # Auto-incremented on each build
 
