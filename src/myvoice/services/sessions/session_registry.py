@@ -421,6 +421,10 @@ class SessionRegistry(QObject):
         else:
             session = GenerationSession(text=text, voice=voice, source=source)
         self._sessions[session.session_id] = session
+        # A caller-supplied id may reuse one that was discarded earlier (a
+        # request retried on another engine). It names a live session again,
+        # so mutations for it must stop being absorbed as late.
+        self._discarded_ids.pop(session.session_id, None)
         self._session_model_types[session.session_id] = model_type
         # PENDING is not focal-eligible, so this is usually a no-op until the
         # first transition; call it anyway for symmetry with mutation slots.

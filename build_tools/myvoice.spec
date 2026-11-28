@@ -238,6 +238,28 @@ else:
 # `stage_cuda_subset.py` enforces this at staging time via a hard-reject;
 # `build_release.bat` enforces it at build time via the [Bundle Prerequisites]
 # probe; this spec relies on those upstream gates and does not re-check.
+# ---------------------------------------------------------------------------
+# Epic 19 — Lightning engine (qwen3-tts.cpp DLLs + 4-bit GGUF models, ~1.2 GB).
+# Staged into <repo>/lightning by `build_tools/stage_lightning.py`; how the
+# binaries themselves are built is in
+# `_bmad-output/implementation-artifacts/19-1-lightning-build-recipe.md`.
+# Bundled as datas (not binaries) so PyInstaller leaves the DLLs untouched and
+# in one folder: the engine loads them itself via `os.add_dll_directory`.
+# The CUDA runtime is NOT duplicated here; the engine reuses torch/lib's copy.
+# Absent staging folder = a build without Lightning (the toggle stays disabled
+# with "files are not installed" as its tooltip).
+# ---------------------------------------------------------------------------
+lightning_src = project_root / 'lightning'
+lightning_datas = []
+if lightning_src.exists():
+    for _sub in ('bin', 'models'):
+        for _f in sorted((lightning_src / _sub).glob('*')):
+            if _f.is_file():
+                lightning_datas.append((str(_f), f'lightning/{_sub}'))
+    print(f"[SPEC] Epic 19 — bundling {len(lightning_datas)} Lightning engine files")
+else:
+    print("[SPEC] Epic 19 — no lightning/ folder staged; building WITHOUT Lightning mode")
+
 cuda_redist_src = project_root / 'build_tools' / 'cuda_toolkit_subset'
 cuda_redist_binaries = []
 cuda_redist_datas = []
@@ -572,6 +594,7 @@ a = Analysis(
         + transformers_deps_datas + transformers_datas
         + triton_datas + python_headers_datas + python_libs_datas
         + cuda_redist_datas
+        + lightning_datas
     ),
     hiddenimports=hiddenimports,
     hookspath=[],

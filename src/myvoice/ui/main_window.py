@@ -12,7 +12,7 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTextEdit, QLineEdit, QComboBox,
-    QSizePolicy, QStatusBar, QSystemTrayIcon, QMenu
+    QSizePolicy, QStatusBar, QSystemTrayIcon, QMenu, QCheckBox
 )
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QTimer, QEvent
 from PyQt6.QtGui import (
@@ -90,6 +90,7 @@ class MainWindow(QMainWindow):
     # Payload: (source_kind, file_path, queue_mode); object slot for the
     # nullable file_path. Forwarded to MyVoiceApp._on_clear_comms_test_playback_requested.
     clear_comms_test_playback_requested = pyqtSignal(str, object, bool)
+    lightning_mode_toggled = pyqtSignal(bool)  # Epic 19: user flipped the Lightning toggle
     cancel_generation_requested = pyqtSignal()  # Story 11.4 follow-up: Clear button doubles as Stop during generation
     # Microphone control signals
     mic_mute_toggled = pyqtSignal(bool)  # is_muted
@@ -295,6 +296,9 @@ class MainWindow(QMainWindow):
         # Quick Speak, dictation) ends the ghost state via textChanged.
         self._ghost_text_active = False
         self._ghost_text_guard = False
+        self._lightning_guard = False
+        self._lightning_available = False
+        self._lightning_busy = False
         self.text_input.textChanged.connect(self._on_text_input_changed)
 
         # Action buttons layout (vertical stack)
@@ -384,6 +388,17 @@ class MainWindow(QMainWindow):
         self.current_voice_label = QLabel("Voice: (None)")
         self.current_voice_label.setObjectName("voice_label")
         emotion_voice_layout.addWidget(self.current_voice_label, 1)
+
+        # Epic 19: Lightning mode toggle. Cloned voices are spoken by the
+        # lighter engine while it is ticked. Disabled, with the reason in the
+        # tooltip, until the app reports the engine can run on this machine.
+        self.lightning_checkbox = QCheckBox("⚡")
+        self.lightning_checkbox.setObjectName("lightning_checkbox")
+        self.lightning_checkbox.setAccessibleName("Lightning mode")
+        self.lightning_checkbox.setEnabled(False)
+        self.lightning_checkbox.setToolTip(self._LIGHTNING_TOOLTIP)
+        self.lightning_checkbox.toggled.connect(self._on_lightning_toggled)
+        emotion_voice_layout.addWidget(self.lightning_checkbox)
 
         # Settings button with Qt standard icon
         self.settings_button = QPushButton()
@@ -1741,6 +1756,41 @@ class MainWindow(QMainWindow):
         """
         self._is_priming = bool(is_priming)
         self._refresh_generate_enabled()
+
+    # ----- Epic 19: Lightning mode toggle -------------------------------- #
+
+    _LIGHTNING_TOOLTIP = (
+        "Lightning mode: a lighter engine for cloned voices that uses about "
+        "a third less GPU memory, for running beside games."
+    )
+
+    def _on_lightning_toggled(self, checked: bool) -> None:
+        if self._lightning_guard:
+            return
+        self.lightning_mode_toggled.emit(checked)
+
+    def set_lightning_available(self, available: bool, reason: str = "") -> None:
+        """Enable the toggle, or disable it with ``reason`` as its tooltip."""
+        self._lightning_available = available
+        self.lightning_checkbox.setEnabled(available and not self._lightning_busy)
+        self.lightning_checkbox.setToolTip(
+            self._LIGHTNING_TOOLTIP if available else reason
+        )
+        if not available:
+            self.set_lightning_checked(False)
+
+    def set_lightning_checked(self, checked: bool) -> None:
+        """Reflect the engine's actual state without re-emitting the signal."""
+        self._lightning_guard = True
+        try:
+            self.lightning_checkbox.setChecked(checked)
+        finally:
+            self._lightning_guard = False
+
+    def set_lightning_busy(self, busy: bool) -> None:
+        """Lock the toggle while the engines are being swapped."""
+        self._lightning_busy = busy
+        self.lightning_checkbox.setEnabled(self._lightning_available and not busy)
 
     def _refresh_generate_enabled(self) -> None:
         """Story 20.7 AC #4 — the single owner of the Generate button's

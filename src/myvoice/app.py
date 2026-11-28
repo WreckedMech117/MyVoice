@@ -748,6 +748,8 @@ class MyVoiceApp(QObject):
                 self._on_clear_comms_test_playback_requested
             )  # Story 15.3
             self._main_window.cancel_generation_requested.connect(self._on_cancel_generation_requested)  # Story 11.4 follow-up
+            self._main_window.lightning_mode_toggled.connect(self._on_lightning_mode_toggled)  # Epic 19
+            self._sync_lightning_toggle()
             self._main_window.whisper_init_requested.connect(self._on_whisper_init_requested)  # QA4
             self._main_window.mic_device_refresh_requested.connect(self._on_mic_device_refresh_requested)
             self._main_window.mic_monitor_toggled.connect(self._on_mic_monitor_toggled)
@@ -1716,6 +1718,96 @@ class MyVoiceApp(QObject):
             self.logger.exception(f"Error during TTS generation: {e}")
             if self._main_window:
                 self._main_window.set_generation_status(f"Generation failed: {str(e)}", False)
+
+    # ----- Epic 19: Lightning mode ---------------------------------------- #
+
+    def _sync_lightning_toggle(self) -> None:
+        """Make the main window's toggle reflect what the service can do and
+        is doing. Safe to call at any point in startup; never raises."""
+        try:
+            window = getattr(self, "_main_window", None)
+            service = getattr(self, "_tts_service", None)
+            if window is None or service is None:
+                return
+            service.set_lightning_state_callback(self._on_lightning_switched_off)
+            available, reason = service.lightning_availability()
+            window.set_lightning_available(available, reason)
+            window.set_lightning_checked(available and service.lightning_enabled)
+        except Exception:
+            self.logger.exception("Lightning toggle sync failed")
+
+    def _on_lightning_mode_toggled(self, enabled: bool) -> None:
+        """User flipped the toggle: swap which engine holds the GPU."""
+        window = self._main_window
+        window.set_lightning_busy(True)
+        window.set_generation_status(
+            "Switching to Lightning mode..." if enabled
+            else "Switching to the standard engine...",
+            False,
+        )
+        self._run_async_task(
+            self._switch_lightning_mode(enabled),
+            on_success=lambda result: self._on_lightning_switch_done(enabled, result),
+            on_error=lambda error: self._on_lightning_switch_done(
+                enabled, (False, str(error))
+            ),
+        )
+
+    async def _switch_lightning_mode(self, enabled: bool):
+        ok, message = await self._tts_service.set_lightning_enabled(enabled)
+        if not enabled or not ok:
+            # Back on the standard engine: load its model now, so the next
+            # line doesn't pay for it. Same choice logic as startup.
+            voice_manager = getattr(self, "_voice_manager", None)
+            preferred = (
+                voice_manager.get_active_profile_model_type()
+                if voice_manager is not None else None
+            )
+            try:
+                await self._tts_service.preload_model(
+                    preferred or QwenModelType.CUSTOM_VOICE
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning(f"Standard engine preload failed: {exc}")
+        return ok, message
+
+    def _on_lightning_switch_done(self, requested: bool, result) -> None:
+        ok, message = result
+        active = bool(requested and ok)
+        self.logger.info(
+            f"Lightning mode {'on' if active else 'off'}"
+            + (f" ({message})" if message else "")
+        )
+        if self._main_window:
+            self._main_window.set_lightning_busy(False)
+            self._main_window.set_lightning_checked(active)
+            if requested and not ok:
+                self._main_window.set_generation_status(message, False)
+            else:
+                self._main_window.set_generation_status(
+                    "Lightning mode on" if active else "Lightning mode off", False
+                )
+        self._persist_lightning_mode(active)
+
+    def _on_lightning_switched_off(self, enabled: bool, message: str) -> None:
+        """The service turned Lightning off by itself (the engine failed)."""
+        if self._main_window:
+            self._main_window.set_lightning_checked(enabled)
+            self._main_window.set_generation_status(message, False)
+        self._persist_lightning_mode(enabled)
+
+    def _persist_lightning_mode(self, enabled: bool) -> None:
+        settings = getattr(self, "_app_settings", None)
+        if settings is None or settings.lightning_mode == enabled:
+            return
+        settings.lightning_mode = enabled
+        if hasattr(self, "_config_manager"):
+            self._run_async_task(
+                self._config_manager.save_settings(),
+                on_error=lambda error: self.logger.error(
+                    f"Failed to save Lightning mode setting: {error}"
+                ),
+            )
 
     def _on_cancel_generation_requested(self):
         """

@@ -784,6 +784,18 @@ class QwenTTSService(BaseService):
         # the second still held the semaphore -- the Story 20.7 bug class.
         self._compile_priming_depth: int = 0
 
+        # Lightning mode (Epic 19): cloned voices are spoken by the
+        # qwen3-tts.cpp engine instead of the PyTorch model. Exactly one of
+        # the two engines holds the GPU at a time; see ``_ensure_lightning_
+        # loaded`` and ``_release_lightning_for_standard_engine``.
+        self._lightning_engine: Optional[Any] = None
+        self._lightning_enabled: bool = bool(
+            getattr(app_settings, "lightning_mode", False)
+        )
+        self._lightning_state_callback: Optional[
+            Callable[[bool, str], None]
+        ] = None
+
         self.logger.info(
             f"QwenTTSService initialized: device={device}, cache_dir={self._cache_dir}"
         )
@@ -1103,6 +1115,12 @@ class QwenTTSService(BaseService):
 
             # Unload all models
             await self._model_registry.unload_all()
+            if self._lightning_engine is not None:
+                try:
+                    self._lightning_engine.unload()
+                except Exception:
+                    self.logger.exception("Failed to unload Lightning engine")
+                self._lightning_engine = None
 
             # Shutdown executor - QA Round 2 Item #8: Non-blocking shutdown
             if self._executor:
@@ -2207,6 +2225,14 @@ class QwenTTSService(BaseService):
         not need a try/except wrapper (mirrors Story 17.2's
         ``hydrate_voice_clone_prompt_cache`` discipline).
         """
+        if self._lightning_enabled:
+            # Priming compiles the PyTorch model, which Lightning mode keeps
+            # off the GPU. Running it would load that model beside the
+            # Lightning engine, the exact VRAM cost the mode exists to avoid.
+            self.logger.info(
+                "[QwenTTS] compile warmup skipped: Lightning mode is on"
+            )
+            return
         import os
         import time
 
@@ -2920,6 +2946,13 @@ class QwenTTSService(BaseService):
             x_vector_only_mode=x_vector_only_mode,
             streaming=streaming,
         )
+
+        if self._lightning_enabled:
+            lightning_response = await self._generate_lightning(request)
+            if lightning_response is not None:
+                return lightning_response
+            # None = the engine could not serve this request and has been
+            # switched off; the standard engine handles it below.
 
         resolved_mode = self._resolve_streaming_mode()
 
@@ -5780,6 +5813,359 @@ class QwenTTSService(BaseService):
             if sid is not None and self._current_session_id == sid:
                 self._current_session_id = None
 
+    # ----- Lightning mode (Epic 19) ------------------------------------- #
+
+    def lightning_availability(self) -> Tuple[bool, str]:
+        """Whether Lightning mode can be offered here: ``(ok, reason)``."""
+        from myvoice.services.lightning import engine as lightning_engine
+
+        return lightning_engine.availability()
+
+    @property
+    def lightning_enabled(self) -> bool:
+        return self._lightning_enabled
+
+    def set_lightning_state_callback(
+        self, callback: Optional[Callable[[bool, str], None]]
+    ) -> None:
+        """``callback(enabled, message)`` fires when the service itself turns
+        Lightning off (the engine failed), so the UI can follow."""
+        self._lightning_state_callback = callback
+
+    async def set_lightning_enabled(self, enabled: bool) -> Tuple[bool, str]:
+        """Switch Lightning mode and swap which engine holds the GPU.
+
+        Turning it on unloads the PyTorch model and loads the Lightning
+        engine; turning it off does the reverse lazily (the PyTorch model
+        loads on the next generation, or when the caller preloads it).
+        Returns ``(ok, message)``; on failure the mode is left off.
+        """
+        if not enabled:
+            self._lightning_enabled = False
+            await self._release_lightning_for_standard_engine()
+            return True, ""
+        ok, reason = self.lightning_availability()
+        if not ok:
+            self._lightning_enabled = False
+            return False, reason
+        self._lightning_enabled = True
+        try:
+            semaphore = self._request_semaphore
+            if semaphore is None:
+                await self._ensure_lightning_loaded()
+            else:
+                # Wait out a generation in flight before swapping engines.
+                async with semaphore:
+                    await self._ensure_lightning_loaded()
+        except Exception as exc:
+            self.logger.exception("[QwenTTS] Lightning engine failed to load")
+            self._lightning_enabled = False
+            await self._release_lightning_for_standard_engine()
+            return False, f"Lightning mode could not start: {exc}"
+        return True, ""
+
+    async def _ensure_lightning_loaded(self) -> Any:
+        """Load the Lightning engine, unloading the PyTorch model first."""
+        from myvoice.services.lightning.engine import LightningEngine
+
+        if self._lightning_engine is None:
+            self._lightning_engine = LightningEngine()
+        engine = self._lightning_engine
+        if not engine.is_loaded:
+            await self._model_registry.unload_all()
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(self._executor, engine.load)
+        return engine
+
+    async def _release_lightning_for_standard_engine(self) -> None:
+        """Unload the Lightning engine if it is loaded. Waits for a Lightning
+        generation in flight (the engine serializes its own native calls)."""
+        engine = getattr(self, "_lightning_engine", None)
+        if engine is None or not engine.is_loaded:
+            return
+        self.logger.info(
+            "[QwenTTS] unloading Lightning engine for the standard engine"
+        )
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(self._executor, engine.unload)
+
+    def _disable_lightning_after_failure(self, exc: BaseException) -> None:
+        self.logger.error(
+            "[QwenTTS] Lightning mode switched off after a failure: %s", exc
+        )
+        self._lightning_enabled = False
+        callback = self._lightning_state_callback
+        if callback is not None:
+            try:
+                callback(
+                    False,
+                    "Lightning mode ran into a problem and was switched off.",
+                )
+            except Exception:
+                self.logger.exception(
+                    "[QwenTTS] lightning state callback raised; swallowing"
+                )
+
+    async def _generate_lightning(
+        self, request: "QwenTTSRequest"
+    ) -> Optional["QwenTTSResponse"]:
+        """Speak a cloned-voice request with the Lightning engine.
+
+        Mirrors ``_generate_true_stream``'s contract towards the rest of the
+        app: one registry session (start_generation -> append_chunk... ->
+        finalize), every chunk also offered to the progressive-playback sink,
+        a terminal zero-length chunk, the cache file and the completion
+        callback. Returns None when the engine itself failed before any audio
+        was delivered: Lightning is then switched off and the caller falls
+        through to the standard engine, so the user still hears the line.
+        """
+        from myvoice.services.lightning.ref_codes import ensure_ref_code_file
+
+        self._total_requests += 1
+        self._streaming_requests += 1
+        start_time = time.time()
+        first_chunk_time: Optional[float] = None
+        sample_rate = 24000
+        # Story 20.2's per-request suppression contract, honoured the same
+        # way as in ``_generate_true_stream``: a suppressed generation resets
+        # no shared cancel flag, registers no session, claims no cancel
+        # bookkeeping and writes no replay cache. (``_audio_chunk_sink``
+        # already withholds the speakers.) No caller sends one here today:
+        # compile priming is skipped in Lightning mode.
+        suppressed = self._is_suppressed(request)
+        if not suppressed:
+            self._cancel_requested = False
+        self._generation_state = GenerationState.IDLE
+
+        validation = self.validate_text(request.text)
+        if not validation.can_proceed or not self.is_running():
+            # Answered here rather than by falling through: the standard
+            # dispatcher would unload the Lightning engine on its way to
+            # reporting the same error.
+            self._failed_requests += 1
+            return QwenTTSResponse(
+                success=False,
+                error_message=(
+                    validation.message or "Invalid text input."
+                    if not validation.can_proceed
+                    else "TTS service is not running."
+                ),
+                mode=GenerationMode.STREAMING,
+            )
+
+        sid: Optional[str] = None
+        if self._session_registry is not None and not suppressed:
+            sid = self._session_registry.create_session(
+                text=request.text,
+                voice=self._resolve_voice_label(request),
+                model_type="Lightning",
+                source=SessionSource.GENERATED,
+                session_id=request.session_id,
+            )
+            self._current_session_id = sid
+        owned_generation_task: Optional[asyncio.Task] = None
+        if not suppressed:
+            owned_generation_task = asyncio.current_task()
+            self._current_generation_task = owned_generation_task
+
+        cancel_event = threading.Event()
+        chunks: List[np.ndarray] = []
+        registry_post = (
+            self._session_registry.post_mutation
+            if self._session_registry is not None and sid is not None
+            else None
+        )
+
+        def _emit(audio: np.ndarray, is_final: bool) -> None:
+            sink = self._audio_chunk_sink(request)
+            if sink is None:
+                return
+            try:
+                sink(
+                    AudioChunk(
+                        audio_data=audio,
+                        sample_rate=sample_rate,
+                        chunk_index=len(chunks) - (0 if is_final else 1),
+                        is_final=is_final,
+                        text_segment="",
+                        session_id=sid,
+                    )
+                )
+            except Exception:
+                self.logger.exception(
+                    "[QwenTTS] Lightning audio chunk callback raised; swallowing"
+                )
+
+        def _on_chunk(pcm: np.ndarray) -> bool:
+            # Runs on the engine's worker thread.
+            nonlocal first_chunk_time
+            if cancel_event.is_set() or self._cancel_requested:
+                return False
+            if pcm.size == 0:
+                return True
+            if first_chunk_time is None:
+                first_chunk_time = time.time() - start_time
+            chunks.append(pcm)
+            if registry_post is not None:
+                registry_post('append_chunk', sid, pcm)
+            metrics.record(
+                "progressive_chunk_emit_ms",
+                time.time() * 1000.0,
+                session_id=sid,
+                chunk_index=len(chunks) - 1,
+            )
+            _emit(pcm, is_final=False)
+            return True
+
+        try:
+            self.logger.info(
+                f"Starting TTS generation (LIGHTNING): "
+                f"text='{request.text[:50]}...'"
+            )
+            async with self._request_semaphore:
+                self._generation_state = GenerationState.LOADING_MODEL
+                engine = self._lightning_engine
+                if engine is None or not engine.is_loaded:
+                    if self._model_loading_callback:
+                        self._model_loading_callback("Loading Lightning...")
+                    engine = await self._ensure_lightning_loaded()
+                    if self._model_ready_callback:
+                        self._model_ready_callback("Lightning")
+
+                self._generation_state = GenerationState.STREAMING
+                if registry_post is not None:
+                    registry_post('start_generation', sid)
+                    self._session_registry.register_cancel_hook(
+                        sid, cancel_event.set
+                    )
+                if self._generation_started_callback:
+                    self._generation_started_callback()
+                # Streamed windows are decoded with look-back context and
+                # concatenate directly; the consumer must not cross-fade them.
+                self._progressive_stream_continuous = True
+
+                ref_audio = Path(request.ref_audio)
+                use_xvector = request.x_vector_only_mode or not (
+                    request.ref_text or ""
+                ).strip()
+
+                def _run() -> None:
+                    if use_xvector:
+                        _on_chunk(engine.synthesize_xvector(request.text, ref_audio))
+                    else:
+                        engine.synthesize_icl_stream(
+                            request.text,
+                            ref_audio,
+                            request.ref_text,
+                            _on_chunk,
+                            ensure_ref_code_file(ref_audio),
+                        )
+
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(self._executor, _run)
+
+            if cancel_event.is_set() or self._cancel_requested:
+                raise asyncio.CancelledError()
+            if not chunks:
+                raise RuntimeError("Lightning produced no audio")
+
+            if registry_post is not None:
+                registry_post('finalize', sid)
+            _emit(np.zeros(0, dtype=np.float32), is_final=True)
+
+            complete_audio = np.concatenate(chunks)
+            audio_file = (
+                None if suppressed
+                else self._save_audio_to_cache(complete_audio, sample_rate)
+            )
+            generation_time = time.time() - start_time
+            self._successful_requests += 1
+            self._last_generation_time = generation_time
+            self._generation_state = GenerationState.COMPLETE
+            audio_seconds = len(complete_audio) / sample_rate
+            if first_chunk_time is not None:
+                metrics.record(
+                    "first_chunk_latency_ms",
+                    first_chunk_time * 1000.0,
+                    session_id=sid,
+                    model_type="Lightning",
+                    hardware="gpu",
+                )
+            # One line a tester's log can be read from: speed and first audio.
+            self.logger.info(
+                "TTS generation complete (LIGHTNING): %.2fs audio in %.2fs "
+                "(RTF %.2f), first audio %.2fs, %d chunks, mode=%s",
+                audio_seconds,
+                generation_time,
+                generation_time / max(audio_seconds, 1e-6),
+                first_chunk_time or 0.0,
+                len(chunks),
+                "x-vector" if use_xvector else "icl",
+            )
+            if self._generation_complete_callback and audio_file:
+                self._generation_complete_callback(audio_file)
+            return QwenTTSResponse(
+                success=True,
+                audio_data=complete_audio,
+                sample_rate=sample_rate,
+                audio_file_path=audio_file,
+                generation_time_seconds=generation_time,
+                mode=GenerationMode.STREAMING,
+                chunks_generated=len(chunks),
+                first_chunk_latency=first_chunk_time,
+            )
+
+        except asyncio.CancelledError:
+            self.logger.info("Lightning generation cancelled")
+            cancel_event.set()
+            self._generation_state = GenerationState.CANCELLED
+            if registry_post is not None:
+                registry_post('cancel', sid)
+                registry_post('discard', sid)
+            if self._generation_cancelled_callback:
+                self._generation_cancelled_callback()
+            return QwenTTSResponse(
+                success=False,
+                error_message="Generation was cancelled",
+                mode=GenerationMode.STREAMING,
+                chunks_generated=len(chunks),
+            )
+
+        except Exception as exc:
+            self.logger.exception("[QwenTTS] Lightning generation failed")
+            cancel_event.set()
+            if registry_post is not None:
+                registry_post('try_set_error', sid)
+                registry_post('discard', sid)
+            self._disable_lightning_after_failure(exc)
+            if chunks:
+                # Audio already reached the user; replaying the line through
+                # the standard engine would say it twice.
+                self._failed_requests += 1
+                self._generation_state = GenerationState.ERROR
+                if self._generation_failed_callback:
+                    self._generation_failed_callback(
+                        "Lightning mode stopped mid-line and was switched off."
+                    )
+                return QwenTTSResponse(
+                    success=False,
+                    error_message=f"Lightning generation failed: {exc}",
+                    mode=GenerationMode.STREAMING,
+                    chunks_generated=len(chunks),
+                )
+            self._total_requests -= 1
+            self._streaming_requests -= 1
+            return None
+
+        finally:
+            if (
+                owned_generation_task is not None
+                and self._current_generation_task is owned_generation_task
+            ):
+                self._current_generation_task = None
+            if sid is not None and self._current_session_id == sid:
+                self._current_session_id = None
+
     @staticmethod
     def _fallback_chain_from(mode: StreamingMode) -> List[StreamingMode]:
         """Story 16.6 — order of modes to attempt starting from ``mode``.
@@ -5823,6 +6209,11 @@ class QwenTTSService(BaseService):
         empirical-validation harness can correlate fallback rates with
         hardware/model-type tags.
         """
+        # One engine on the GPU at a time: every standard-engine generation
+        # passes through here, so this is where a loaded Lightning engine
+        # gives the VRAM back (a voice type Lightning does not serve).
+        await self._release_lightning_for_standard_engine()
+
         # AC #8 second clause: legacy override forces BATCH.
         if request.streaming is False:
             mode = StreamingMode.BATCH
@@ -6667,4 +7058,14 @@ class QwenTTSService(BaseService):
         Returns:
             Tuple[bool, Optional[str]]: (success, error_message)
         """
+        if getattr(self, "_lightning_enabled", False):
+            if model_type == QwenModelType.BASE:
+                # Cloned voices are Lightning's; load it instead of PyTorch.
+                try:
+                    await self._ensure_lightning_loaded()
+                    return True, None
+                except Exception as exc:
+                    self._disable_lightning_after_failure(exc)
+            else:
+                await self._release_lightning_for_standard_engine()
         return await self._model_registry.ensure_model_loaded(model_type)

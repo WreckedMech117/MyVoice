@@ -209,3 +209,4 @@ test_output.wav
 # verifier is committed; its per-run verdict table is not (each invocation
 # overwrites it with a fresh timestamp + table).
 build_tools/verify_reload_compile_verdict.md
+/lightning/
